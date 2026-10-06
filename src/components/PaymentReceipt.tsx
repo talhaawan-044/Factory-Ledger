@@ -57,6 +57,19 @@ export const PaymentReceipt = React.forwardRef<HTMLDivElement, PaymentReceiptPro
       >
         {/* Top Header */}
         <div style={{ textAlign: 'center', marginBottom: 14 }}>
+          {settings?.logoUrl && (
+            <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 8 }}>
+              <img
+                src={settings.logoUrl}
+                alt="Company Logo"
+                style={{
+                  maxHeight: 46,
+                  maxWidth: 140,
+                  objectFit: 'contain',
+                }}
+              />
+            </div>
+          )}
           <div
             style={{
               fontSize: 20,
@@ -273,7 +286,18 @@ export const PaymentReceipt = React.forwardRef<HTMLDivElement, PaymentReceiptPro
           </div>
 
           <div style={{ textAlign: 'center', width: 140 }}>
-            <div style={{ borderBottom: '1px solid #94A3B8', height: 28, marginBottom: 4 }} />
+            {settings?.signatureUrl ? (
+              <div style={{ height: 40, display: 'flex', alignItems: 'flex-end', justifyContent: 'center', paddingBottom: 2 }}>
+                <img
+                  src={settings.signatureUrl}
+                  alt="Authorized Signature"
+                  style={{ maxHeight: 36, maxWidth: 130, objectFit: 'contain' }}
+                />
+              </div>
+            ) : (
+              <div style={{ height: 26 }} />
+            )}
+            <div style={{ borderBottom: '1px solid #94A3B8', marginBottom: 4 }} />
             <div style={{ fontSize: 9.5, fontWeight: 600, color: '#475569' }}>
               Authorized Signatory
             </div>

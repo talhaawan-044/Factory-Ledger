@@ -175,7 +175,13 @@ export interface ExportDispatchesPdfOptions {
  * - If exporting multiple parties / all dispatches, produces a high-density Landscape A4 Fleet Audit Report.
  */
 export async function exportDispatchesPdf(options: ExportDispatchesPdfOptions): Promise<void> {
-  const settings = options.settings || (await getSettings());
+  const dbSettings = await getSettings();
+  const settings: AppSettings = {
+    ...dbSettings,
+    ...(options.settings || {}),
+    logoUrl: options.settings?.logoUrl || dbSettings.logoUrl || '',
+    signatureUrl: options.settings?.signatureUrl || dbSettings.signatureUrl || '',
+  };
 
   // Determine if this is a single party account statement or a multi-dispatch fleet audit
   const isPartyStatement = Boolean(options.party || (options.partyName && options.payments));
@@ -213,10 +219,21 @@ async function exportPartyStatementPdf(options: ExportDispatchesPdfOptions & { s
   const contentWidth = pageWidth - margin * 2;
 
   // 1. Header Bar: Business Info
+  let headerTextX = margin;
+  if (settings.logoUrl && settings.logoUrl.startsWith('data:image')) {
+    try {
+      const isPng = settings.logoUrl.includes('image/png');
+      doc.addImage(settings.logoUrl, isPng ? 'PNG' : 'JPEG', margin, 11, 14, 14);
+      headerTextX = margin + 17;
+    } catch {
+      // ignore if image format unsupported
+    }
+  }
+
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(16);
   doc.setTextColor(15, 23, 42); // slate-900
-  doc.text((settings.businessName || 'AWAN COAL LOGISTICS').toUpperCase(), margin, 18);
+  doc.text((settings.businessName || 'AWAN COAL LOGISTICS').toUpperCase(), headerTextX, 18);
 
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(8.5);
@@ -229,7 +246,7 @@ async function exportPartyStatementPdf(options: ExportDispatchesPdfOptions & { s
     .filter(Boolean)
     .join('  •  ');
   if (subline) {
-    doc.text(subline, margin, 23);
+    doc.text(subline, headerTextX, 23);
   }
 
   // Right-aligned Document Badge
@@ -340,12 +357,70 @@ async function exportPartyStatementPdf(options: ExportDispatchesPdfOptions & { s
       const s = calculateSettlement(d);
       const invoiced = Math.round(s.totalRevenue);
       runningBal += invoiced;
-      const po = pos.find((p) => p.id === d.poId);
+      const po = pos?.find((p) => p.id === d.poId);
+      const transit = calculateTransitLoss(d);
+
+      const sourcesStr =
+        d.coalInputs && d.coalInputs.length > 0
+          ? d.coalInputs
+              .filter((c) => (c.weight || 0) > 0)
+              .map((c) => `${c.sourceName || 'Coal'}: ${c.weight}t`)
+              .join(', ')
+          : '';
+
+      // 4-Line Detailed Specification for each dispatch
+      const lines: string[] = [];
+
+      // Line 1: Primary logistics & commercial settlement rate
+      const truckPart = d.truckNumber ? `Truck: ${d.truckNumber}` : 'Direct Delivery';
+      const destPart = d.factoryName ? ` • ${d.factoryName}` : '';
+      const ratePart = ` • Rs. ${Math.round(s.payableRate).toLocaleString('en-PK')}/t${
+        d.baseRate && Math.round(d.baseRate) !== Math.round(s.payableRate)
+          ? ` (Base: Rs. ${Math.round(d.baseRate).toLocaleString('en-PK')})`
+          : ''
+      }`;
+      lines.push(`DELIVERY: ${truckPart}${destPart}${ratePart}`);
+
+      // Line 2: Lab Quality Analysis (GCV with delta, Sulphur, Moisture, Ash, VM)
+      const labParts: string[] = [];
+      if (d.labActualGcv) {
+        const delta = d.targetGcv ? d.labActualGcv - d.targetGcv : null;
+        const deltaStr = delta !== null ? ` (${delta >= 0 ? '+' : ''}${delta})` : '';
+        labParts.push(`GCV: ${d.labActualGcv} kcal${deltaStr}`);
+      } else if (d.targetGcv) {
+        labParts.push(`Target GCV: ${d.targetGcv} kcal`);
+      }
+      if (d.labSulphur) labParts.push(`S: ${d.labSulphur}%`);
+      if (d.labMoisture) labParts.push(`Moist: ${d.labMoisture}%`);
+      if (d.labAsh) labParts.push(`Ash: ${d.labAsh}%`);
+      if (d.labVm) labParts.push(`VM: ${d.labVm}%`);
+      lines.push(`LAB SPECS: ${labParts.length > 0 ? labParts.join('  •  ') : 'Standard Specifications Verified'}`);
+
+      // Line 3: Commercial & Rate Adjustments
+      const adjParts: string[] = [];
+      if (d.manualPremium) adjParts.push(`Bonus: +Rs.${d.manualPremium}/t`);
+      if (d.manualDeduction) adjParts.push(`GCV Ded: -Rs.${d.manualDeduction}/t`);
+      if (s.taxDeduction) adjParts.push(`Tax: -Rs.${s.taxDeduction.toFixed(2)}/t`);
+      if (d.commissionPerTon) adjParts.push(`Comm: -Rs.${d.commissionPerTon}/t`);
+      lines.push(`RATE AUDIT: ${adjParts.length > 0 ? adjParts.join('  •  ') : 'Standard Settlement Rate'}`);
+
+      // Line 4: Sourcing, Transit Loss & Delivery Notes
+      const logParts: string[] = [];
+      if (transit.totalLoadedWeight > 0 && Math.abs(transit.diff) >= 0.01) {
+        logParts.push(`Transit: ${transit.diff < 0 ? '-' : '+'}${Math.abs(transit.diff).toFixed(2)}t (${transit.lossPercentage.toFixed(1)}%)`);
+      }
+      if (sourcesStr) {
+        logParts.push(`Mines: ${sourcesStr}`);
+      }
+      if (d.notes) {
+        logParts.push(`Note: ${d.notes}`);
+      }
+      lines.push(`LOGISTICS: ${logParts.length > 0 ? logParts.join('  •  ') : 'Verified & Cleared'}`);
 
       tableRows.push([
         (idx + 1).toString(),
         d.date || '-',
-        `Coal Delivery - Truck ${d.truckNumber || 'N/A'}\n${(d.labReceivedWeight || 0).toFixed(2)}t @ Rs.${Math.round(s.payableRate)}/t`,
+        lines.join('\n'),
         po?.poNumber || '-',
         (d.labReceivedWeight || 0).toFixed(2),
         invoiced.toLocaleString('en-PK'),
@@ -362,10 +437,16 @@ async function exportPartyStatementPdf(options: ExportDispatchesPdfOptions & { s
         runningBal += amount;
       }
 
+      const pLines: string[] = [
+        `PAYMENT ${isReceived ? 'CREDIT / RECEIVED' : 'DEBIT / OUTFLOW'} (${p.mode.toUpperCase()})`,
+        `Voucher / Ref: ${p.referenceNote || 'Direct Settlement'}`,
+        `Txn ID: #${(p.id || '').slice(0, 10).toUpperCase()}`
+      ];
+
       tableRows.push([
         (idx + 1).toString(),
         p.date || '-',
-        `${isReceived ? 'Payment Received' : 'Payment Outflow'} (${p.mode.toUpperCase()})\nRef: ${p.referenceNote || 'Direct Settlement'}`,
+        pLines.join('\n'),
         (p.id || '').slice(0, 8).toUpperCase(),
         '-',
         !isReceived ? amount.toLocaleString('en-PK') : '-',
@@ -396,7 +477,7 @@ async function exportPartyStatementPdf(options: ExportDispatchesPdfOptions & { s
       [
         '#',
         'Date',
-        'Particulars & Description',
+        'Particulars & Detailed Description',
         'Ref / PO',
         'Weight (t)',
         'Invoiced (Rs)',
@@ -422,30 +503,64 @@ async function exportPartyStatementPdf(options: ExportDispatchesPdfOptions & { s
       cellPadding: 3.5,
     },
     bodyStyles: {
-      fontSize: 8,
+      fontSize: 7.2,
       textColor: [51, 65, 85],
-      cellPadding: 2.5,
+      cellPadding: { top: 3.2, bottom: 3.2, left: 2.5, right: 2.5 },
     },
     columnStyles: {
-      0: { cellWidth: 8, halign: 'center' },
-      1: { cellWidth: 20 },
-      2: { cellWidth: 54 },
-      3: { cellWidth: 20 },
-      4: { cellWidth: 18, halign: 'right' },
-      5: { cellWidth: 21, halign: 'right' },
-      6: { cellWidth: 21, halign: 'right' },
-      7: { cellWidth: 20, halign: 'right', fontStyle: 'bold' },
+      0: { cellWidth: 8, halign: 'center', valign: 'middle' },
+      1: { cellWidth: 20, valign: 'middle' },
+      2: { cellWidth: 64, valign: 'top' },
+      3: { cellWidth: 16, halign: 'center', valign: 'middle' },
+      4: { cellWidth: 16, halign: 'right', valign: 'middle' },
+      5: { cellWidth: 19, halign: 'right', valign: 'middle' },
+      6: { cellWidth: 19, halign: 'right', valign: 'middle' },
+      7: { cellWidth: 20, halign: 'right', valign: 'middle' },
     },
     didParseCell: (data) => {
       if (data.section === 'body') {
+        const rowIndex = data.row.index;
+        const isEven = rowIndex % 2 === 0;
         const rawArr = Array.isArray(data.row.raw) ? (data.row.raw as any[]) : null;
-        const isPayment = rawArr && String(rawArr[2] || '').includes('Payment');
+        const descText = rawArr ? String(rawArr[2] || '') : '';
+        const isPayment = descText.includes('PAYMENT CREDIT') || descText.includes('PAYMENT DEBIT');
+
         if (isPayment) {
-          data.cell.styles.fillColor = [240, 253, 244]; // emerald-50
-          if (data.column.index === 6) {
+          const isReceived = descText.includes('PAYMENT CREDIT');
+          data.cell.styles.fillColor = isReceived ? [240, 253, 244] : [255, 241, 242]; // emerald-50 or rose-50
+          if (data.column.index === 6 && isReceived) {
             data.cell.styles.textColor = [5, 150, 105]; // emerald-600
             data.cell.styles.fontStyle = 'bold';
+          } else if (data.column.index === 5 && !isReceived) {
+            data.cell.styles.textColor = [220, 38, 38]; // rose-600
+            data.cell.styles.fontStyle = 'bold';
           }
+        } else {
+          // Alternating colors for dispatches
+          // Even entry: Pure Crisp White [255, 255, 255]
+          // Odd entry: Soft Cool Slate-100 Tint [241, 245, 249]
+          data.cell.styles.fillColor = isEven ? [255, 255, 255] : [241, 245, 249];
+        }
+
+        // Prominent border between entries so where each entry starts and ends is immediately clear
+        data.cell.styles.lineWidth = { top: 0, right: 0.15, bottom: 0.75, left: 0.15 };
+        data.cell.styles.lineColor = [203, 213, 225]; // slate-300
+
+        // Column typography
+        if (data.column.index === 0) {
+          data.cell.styles.fontStyle = 'bold';
+          data.cell.styles.textColor = [71, 85, 105];
+        } else if (data.column.index === 1) {
+          data.cell.styles.fontStyle = 'bold';
+          data.cell.styles.textColor = [15, 23, 42];
+        } else if (data.column.index === 2) {
+          data.cell.styles.textColor = [30, 41, 59];
+        } else if (data.column.index === 4) {
+          data.cell.styles.fontStyle = 'bold';
+          data.cell.styles.textColor = [15, 23, 42];
+        } else if (data.column.index === 7) {
+          data.cell.styles.fontStyle = 'bold';
+          data.cell.styles.textColor = [15, 23, 42];
         }
       }
     },
@@ -457,6 +572,84 @@ async function exportPartyStatementPdf(options: ExportDispatchesPdfOptions & { s
       doc.text(pageStr, pageWidth / 2, pageHeight - 8, { align: 'center' });
     },
   });
+
+  // --- Official Authorized Signature Section on Last Page ---
+  doc.setPage(doc.getNumberOfPages());
+  const finalY = (doc as any).lastAutoTable?.finalY || 140;
+
+  // Ensure adequate vertical clearance for signature block (needs ~35mm)
+  let sigY: number;
+  if (finalY + 36 > pageHeight - 15) {
+    doc.addPage();
+    doc.setPage(doc.getNumberOfPages());
+    sigY = 24;
+  } else {
+    sigY = finalY + 8;
+  }
+
+  const sigWidth = 55;
+  const sigBoxHeight = 18;
+  const sigX = pageWidth - margin - sigWidth;
+
+  // Left-aligned courtesy & system note
+  doc.setFont('helvetica', 'italic');
+  doc.setFontSize(8.5);
+  doc.setTextColor(100, 116, 139);
+  doc.text('Thank you for conducting business with us.', margin, sigY + 14);
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(7);
+  doc.setTextColor(148, 163, 184);
+  doc.text('Official Account Statement • Computer generated electronic record', margin, sigY + 18.5);
+
+  // Right-aligned Authorized Signatory Block
+  if (settings.signatureUrl && settings.signatureUrl.trim().length > 0) {
+    // 1. Signature card container
+    doc.setFillColor(248, 250, 252);
+    doc.setDrawColor(226, 232, 240);
+    doc.setLineWidth(0.3);
+    doc.roundedRect(sigX, sigY, sigWidth, sigBoxHeight, 2, 2, 'FD');
+
+    // 2. Embedded signature image
+    try {
+      const isPng = !settings.signatureUrl.includes('image/jpeg');
+      doc.addImage(settings.signatureUrl, isPng ? 'PNG' : 'JPEG', sigX + 2, sigY + 1, sigWidth - 4, sigBoxHeight - 2, undefined, 'FAST');
+    } catch (err) {
+      console.warn('Failed to embed signature in Statement PDF:', err);
+    }
+
+    // 3. Signature line
+    doc.setDrawColor(71, 85, 105);
+    doc.setLineWidth(0.5);
+    doc.line(sigX, sigY + sigBoxHeight + 2, sigX + sigWidth, sigY + sigBoxHeight + 2);
+
+    // 4. Signatory / Trader Name
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(9);
+    doc.setTextColor(15, 23, 42);
+    doc.text((settings.userName || 'Authorized Signatory').toUpperCase(), sigX + sigWidth / 2, sigY + sigBoxHeight + 6.5, { align: 'center' });
+
+    // 5. Signatory title
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7.5);
+    doc.setTextColor(100, 116, 139);
+    doc.text('Authorized Signatory', sigX + sigWidth / 2, sigY + sigBoxHeight + 10, { align: 'center' });
+  } else {
+    // Placeholder line for manual sign/stamp if signature image not yet configured
+    doc.setDrawColor(148, 163, 184);
+    doc.setLineWidth(0.5);
+    doc.line(sigX, sigY + 16, sigX + sigWidth, sigY + 16);
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(9);
+    doc.setTextColor(15, 23, 42);
+    doc.text((settings.userName || 'Authorized Signatory').toUpperCase(), sigX + sigWidth / 2, sigY + 20.5, { align: 'center' });
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7.5);
+    doc.setTextColor(100, 116, 139);
+    doc.text('Authorized Signatory', sigX + sigWidth / 2, sigY + 24, { align: 'center' });
+  }
 
   const pdfDataUri = doc.output('datauristring');
   const safeName = partyName.replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -499,10 +692,21 @@ async function exportFleetAuditPdf(options: ExportDispatchesPdfOptions & { setti
   const margin = 14;
 
   // Header: Business Information
+  let headerTextX = margin;
+  if (settings.logoUrl && settings.logoUrl.startsWith('data:image')) {
+    try {
+      const isPng = settings.logoUrl.includes('image/png');
+      doc.addImage(settings.logoUrl, isPng ? 'PNG' : 'JPEG', margin, 9, 14, 14);
+      headerTextX = margin + 17;
+    } catch {
+      // ignore if image format unsupported
+    }
+  }
+
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(16);
   doc.setTextColor(15, 23, 42); // slate-900
-  doc.text((settings.businessName || 'AWAN COAL LOGISTICS').toUpperCase(), margin, 16);
+  doc.text((settings.businessName || 'AWAN COAL LOGISTICS').toUpperCase(), headerTextX, 16);
 
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(9);
@@ -515,7 +719,7 @@ async function exportFleetAuditPdf(options: ExportDispatchesPdfOptions & { setti
     .filter(Boolean)
     .join('  •  ');
   if (subline) {
-    doc.text(subline, margin, 21);
+    doc.text(subline, headerTextX, 21);
   }
 
   // Report Title & Meta
@@ -596,7 +800,7 @@ async function exportFleetAuditPdf(options: ExportDispatchesPdfOptions & { setti
 
     // Line 1: Primary logistics & commercial settlement numbers
     const row1 = [
-      { content: (index + 1).toString(), rowSpan: 2 },
+      { content: (index + 1).toString(), rowSpan: 3 },
       d.date || '-',
       d.truckNumber || '-',
       party?.name || d.factoryName || '-',
@@ -609,7 +813,7 @@ async function exportFleetAuditPdf(options: ExportDispatchesPdfOptions & { setti
       `${s.netProfit >= 0 ? '+' : ''}${Math.round(s.netProfit).toLocaleString('en-PK')}`,
     ];
 
-    // Line 2: Lab specifications, adjustments & sourcing audit
+    // Line 2: Lab specifications & quality audit
     const labSpecsList = [
       `Target: ${d.targetGcv ? d.targetGcv + ' kcal' : '-'}`,
       `Actual Lab: ${d.labActualGcv ? d.labActualGcv + ' kcal' : '-'} ${gcvDeltaStr}`.trim(),
@@ -622,8 +826,9 @@ async function exportFleetAuditPdf(options: ExportDispatchesPdfOptions & { setti
         : null,
     ].filter(Boolean);
 
-    const labText = `LAB QUALITY: ${labSpecsList.join('  •  ')}`;
+    const labText = `LAB QUALITY & ANALYSIS: ${labSpecsList.join('  •  ')}`;
 
+    // Line 3: Commercial adjustments, pricing audit & sourcing
     const adjList = [
       d.manualDeduction ? `GCV Ded: -Rs.${d.manualDeduction}/t` : null,
       d.manualPremium ? `Bonus: +Rs.${d.manualPremium}/t` : null,
@@ -631,7 +836,7 @@ async function exportFleetAuditPdf(options: ExportDispatchesPdfOptions & { setti
       d.commissionPerTon ? `Comm: -Rs.${d.commissionPerTon}/t` : null,
     ].filter(Boolean);
 
-    const adjText = adjList.length > 0 ? `RATE AUDIT: ${adjList.join('  •  ')}` : 'RATE AUDIT: Standard Settlement Rate';
+    const adjText = adjList.length > 0 ? `RATE AUDIT: ${adjList.join('  •  ')}` : 'RATE AUDIT: Standard Settlement';
 
     const notesSnippet = d.notes ? `Note: ${d.notes}` : '';
     const sourcingText = [
@@ -643,12 +848,14 @@ async function exportFleetAuditPdf(options: ExportDispatchesPdfOptions & { setti
       .join('  •  ');
 
     const row2 = [
-      { content: labText, colSpan: 4 },
-      { content: adjText, colSpan: 3 },
-      { content: `SOURCING: ${sourcingText}`, colSpan: 3 },
+      { content: labText, colSpan: 10 },
     ];
 
-    tableRows.push(row1, row2);
+    const row3 = [
+      { content: `${adjText}   |   SOURCING & LOGISTICS: ${sourcingText}`, colSpan: 10 },
+    ];
+
+    tableRows.push(row1, row2, row3);
   });
 
   // Add Grand Totals footer row
@@ -713,23 +920,17 @@ async function exportFleetAuditPdf(options: ExportDispatchesPdfOptions & { setti
     didParseCell: (data) => {
       if (data.section === 'body') {
         const rowIndex = data.row.index;
-        const entryIndex = Math.floor(rowIndex / 2);
-        const isLine2 = rowIndex % 2 === 1;
+        const entryIndex = Math.floor(rowIndex / 3);
+        const subRow = rowIndex % 3;
         const isEvenEntry = entryIndex % 2 === 0;
 
         const line1Bg: [number, number, number] = isEvenEntry ? [255, 255, 255] : [241, 245, 249];
-        const line2Bg: [number, number, number] = isEvenEntry ? [248, 250, 252] : [234, 240, 246];
+        const line2Bg: [number, number, number] = isEvenEntry ? [250, 252, 255] : [236, 241, 246];
+        const line3Bg: [number, number, number] = isEvenEntry ? [246, 249, 254] : [232, 237, 243];
 
-        data.cell.styles.fillColor = isLine2 ? line2Bg : line1Bg;
+        data.cell.styles.fillColor = subRow === 0 ? line1Bg : subRow === 1 ? line2Bg : line3Bg;
 
-        if (isLine2) {
-          data.cell.styles.fontSize = 7;
-          data.cell.styles.textColor = [71, 85, 105];
-          data.cell.styles.fontStyle = 'normal';
-          data.cell.styles.cellPadding = { top: 1.5, bottom: 2.2, left: 3, right: 3 };
-          data.cell.styles.lineWidth = { top: 0, right: 0, bottom: 0.6, left: 0 };
-          data.cell.styles.lineColor = [203, 213, 225];
-        } else {
+        if (subRow === 0) {
           data.cell.styles.fontSize = 8;
           data.cell.styles.cellPadding = { top: 2.2, bottom: 1.5, left: 2.5, right: 2.5 };
           data.cell.styles.lineWidth = { top: 0, right: 0, bottom: 0.15, left: 0 };
@@ -750,11 +951,26 @@ async function exportFleetAuditPdf(options: ExportDispatchesPdfOptions & { setti
               data.cell.styles.fontStyle = 'bold';
             }
           }
+        } else if (subRow === 1) {
+          data.cell.styles.fontSize = 7;
+          data.cell.styles.textColor = [51, 65, 85];
+          data.cell.styles.fontStyle = 'normal';
+          data.cell.styles.cellPadding = { top: 1.2, bottom: 1.2, left: 3, right: 3 };
+          data.cell.styles.lineWidth = { top: 0, right: 0, bottom: 0.15, left: 0 };
+          data.cell.styles.lineColor = [226, 232, 240];
+        } else {
+          data.cell.styles.fontSize = 7;
+          data.cell.styles.textColor = [71, 85, 105];
+          data.cell.styles.fontStyle = 'normal';
+          data.cell.styles.cellPadding = { top: 1.2, bottom: 2.2, left: 3, right: 3 };
+          // Bold bottom dividing border on the last line of the entry!
+          data.cell.styles.lineWidth = { top: 0, right: 0, bottom: 0.8, left: 0 };
+          data.cell.styles.lineColor = [148, 163, 184];
         }
 
         if (data.column.index === 0) {
-          data.cell.styles.lineWidth = { top: 0, right: 0, bottom: 0.6, left: 0 };
-          data.cell.styles.lineColor = [203, 213, 225];
+          data.cell.styles.lineWidth = { top: 0, right: 0.2, bottom: 0.8, left: 0 };
+          data.cell.styles.lineColor = [148, 163, 184];
           data.cell.styles.valign = 'middle';
           data.cell.styles.halign = 'center';
           data.cell.styles.fontStyle = 'bold';
@@ -784,6 +1000,77 @@ async function exportFleetAuditPdf(options: ExportDispatchesPdfOptions & { setti
       doc.text(str, pageWidth / 2, pageHeight - 8, { align: 'center' });
     },
   });
+
+  // --- Official Authorized Signature Section on Last Page ---
+  doc.setPage(doc.getNumberOfPages());
+  const finalY = (doc as any).lastAutoTable?.finalY || 140;
+
+  let sigY: number;
+  if (finalY + 36 > pageHeight - 15) {
+    doc.addPage();
+    doc.setPage(doc.getNumberOfPages());
+    sigY = 22;
+  } else {
+    sigY = finalY + 7;
+  }
+
+  const sigWidth = 55;
+  const sigBoxHeight = 18;
+  const sigX = pageWidth - margin - sigWidth;
+
+  // Left-aligned courtesy & system note
+  doc.setFont('helvetica', 'italic');
+  doc.setFontSize(8.5);
+  doc.setTextColor(100, 116, 139);
+  doc.text('Thank you for conducting business with us.', margin, sigY + 14);
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(7);
+  doc.setTextColor(148, 163, 184);
+  doc.text(`Official Dispatch Ledger Audit • ${settings.businessName || 'Awan Coal Logistics'}`, margin, sigY + 18.5);
+
+  // Right-aligned Authorized Signatory Block
+  if (settings.signatureUrl && settings.signatureUrl.trim().length > 0) {
+    doc.setFillColor(248, 250, 252);
+    doc.setDrawColor(226, 232, 240);
+    doc.setLineWidth(0.3);
+    doc.roundedRect(sigX, sigY, sigWidth, sigBoxHeight, 2, 2, 'FD');
+
+    try {
+      const isPng = !settings.signatureUrl.includes('image/jpeg');
+      doc.addImage(settings.signatureUrl, isPng ? 'PNG' : 'JPEG', sigX + 2, sigY + 1, sigWidth - 4, sigBoxHeight - 2, undefined, 'FAST');
+    } catch (err) {
+      console.warn('Failed to embed signature in Fleet Ledger PDF:', err);
+    }
+
+    doc.setDrawColor(71, 85, 105);
+    doc.setLineWidth(0.5);
+    doc.line(sigX, sigY + sigBoxHeight + 2, sigX + sigWidth, sigY + sigBoxHeight + 2);
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(9);
+    doc.setTextColor(15, 23, 42);
+    doc.text((settings.userName || 'Authorized Signatory').toUpperCase(), sigX + sigWidth / 2, sigY + sigBoxHeight + 6.5, { align: 'center' });
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7.5);
+    doc.setTextColor(100, 116, 139);
+    doc.text('Authorized Signatory', sigX + sigWidth / 2, sigY + sigBoxHeight + 10, { align: 'center' });
+  } else {
+    doc.setDrawColor(148, 163, 184);
+    doc.setLineWidth(0.5);
+    doc.line(sigX, sigY + 16, sigX + sigWidth, sigY + 16);
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(9);
+    doc.setTextColor(15, 23, 42);
+    doc.text((settings.userName || 'Authorized Signatory').toUpperCase(), sigX + sigWidth / 2, sigY + 20.5, { align: 'center' });
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7.5);
+    doc.setTextColor(100, 116, 139);
+    doc.text('Authorized Signatory', sigX + sigWidth / 2, sigY + 24, { align: 'center' });
+  }
 
   const pdfDataUri = doc.output('datauristring');
   const safeName = (partyName || 'All_Dispatches').replace(/[^a-zA-Z0-9_-]/g, '_');

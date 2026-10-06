@@ -1,0 +1,98 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users/{userId}/ledger
+    // Document ID: 'backup' (or individual ledger snapshot documents)
+    // Fields:
+    //   - version: string (optional, data schema version)
+    //   - exportDate: string (optional, ISO date string)
+    //   - parties: list of map (party profiles)
+    //   - dispatches: list of map (dispatch records)
+    //   - payments: list of map (payment transactions)
+    //   - pos: list of map (purchase orders)
+    //   - settings: map (business and app configurations)
+    //   - lastCloudSync: string (optional, ISO timestamp)
+    //   - updatedAt: timestamp (optional, server timestamp)
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+
+    // Check if the user is authenticated with Firebase Auth
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Check if the requesting user owns the resource by matching user ID
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // Validate backup payload structure to ensure data integrity
+    function isValidBackupPayload(data) {
+      return (!('parties' in data) || data.parties is list) &&
+             (!('dispatches' in data) || data.dispatches is list) &&
+             (!('payments' in data) || data.payments is list) &&
+             (!('pos' in data) || data.pos is list) &&
+             (!('settings' in data) || data.settings is map);
+    }
+
+    // ===============================================================
+    // Collection Rules
+    // ===============================================================
+
+    // Strictly isolate data per authenticated Google user
+    match /users/{userId} {
+      // Allow user to read and manage their top-level record
+      allow read, write: if isOwner(userId);
+
+      // Granular subcollections for high performance & scalability
+      match /parties/{partyId} {
+        allow read, write: if isOwner(userId);
+      }
+
+      match /dispatches/{dispatchId} {
+        allow read, write: if isOwner(userId);
+      }
+
+      match /payments/{paymentId} {
+        allow read, write: if isOwner(userId);
+      }
+
+      match /pos/{poId} {
+        allow read, write: if isOwner(userId);
+      }
+
+      match /settings/{settingId} {
+        allow read, write: if isOwner(userId);
+      }
+
+      match /meta/{metaId} {
+        allow read, write: if isOwner(userId);
+      }
+
+      // Legacy single-document backup path (for backward compatibility & migration)
+      match /ledger/{document} {
+        allow read, write: if isOwner(userId);
+      }
+
+      // Catch-all for any additional subcollections
+      match /{allChildren=**} {
+        allow read, write: if isOwner(userId);
+      }
+    }
+
+    // Default Deny: All other unmapped paths are completely locked down
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

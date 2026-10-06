@@ -1,7 +1,8 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef, type CSSProperties } from 'react';
 import { Outlet, NavLink, useLocation, useNavigate } from 'react-router-dom';
-import { getSettings, saveSettings, resetToDemoData } from '../lib/db';
+import { getSettings, saveSettings } from '../lib/db';
 import type { AppSettings } from '../types';
+import { useRefraction } from '../hooks/useRefraction';
 import { Capacitor } from '@capacitor/core';
 import { StatusBar } from '@capacitor/status-bar';
 import { App as CapApp } from '@capacitor/app';
@@ -16,7 +17,6 @@ import {
   Moon,
   Smartphone,
   Maximize2,
-  RotateCcw,
   Check,
   Volume2,
   VolumeX,
@@ -31,6 +31,8 @@ const ACCENT_PRESETS = [
   { id: 'crimson', label: 'Ruby', color: '#F43F5E', className: 'theme-crimson' }
 ];
 
+const GLASS_RADIUS = 28; // single source of truth: used by CSS and by the refraction map
+
 export default function Layout() {
   const isNative = Capacitor.isNativePlatform();
   const [settings, setSettings] = useState<AppSettings | null>(null);
@@ -39,6 +41,10 @@ export default function Layout() {
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [activeAccent, setActiveAccent] = useState(() => localStorage.getItem('coal_accent_theme') || 'blue');
   const [soundEnabled, setSoundEnabled] = useState(() => localStorage.getItem('coal_sound_enabled') !== 'false');
+
+  const liquidGlass = true;
+  const navRef = useRef<HTMLElement>(null);
+  useRefraction(navRef, liquidGlass, { radius: GLASS_RADIUS });
 
   const location = useLocation();
   const navigate = useNavigate();
@@ -97,13 +103,27 @@ export default function Layout() {
     });
 
     return () => {
-      listenerPromise.then(handle => handle.remove()).catch(() => {});
+      listenerPromise.then(handle => handle.remove()).catch(() => { });
     };
   }, [navigate]);
 
-  // Load settings
+  // Load settings & sync with updates
   useEffect(() => {
     getSettings().then(setSettings);
+
+    const onSettingsChanged = (e: Event) => {
+      const customEvent = e as CustomEvent<AppSettings>;
+      if (customEvent.detail) {
+        setSettings(customEvent.detail);
+      } else {
+        getSettings().then(setSettings);
+      }
+    };
+
+    window.addEventListener('app_settings_changed', onSettingsChanged);
+    return () => {
+      window.removeEventListener('app_settings_changed', onSettingsChanged);
+    };
   }, [location.pathname]);
 
   // Apply theme accent class to root
@@ -117,16 +137,37 @@ export default function Layout() {
     }
   }, [activeAccent]);
 
-  // Handle dark mode class and native status bar styling
+  // Handle dark mode class and native status bar styling with system theme support
   useEffect(() => {
-    if (settings?.theme === 'dark') {
-      document.documentElement.classList.add('dark');
-    } else {
-      document.documentElement.classList.remove('dark');
-    }
+    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+
+    const applyTheme = () => {
+      const mode = settings?.theme || 'light';
+      const isDark = mode === 'system' ? mediaQuery.matches : mode === 'dark';
+      if (isDark) {
+        document.documentElement.classList.add('dark');
+      } else {
+        document.documentElement.classList.remove('dark');
+      }
+    };
+
+    applyTheme();
+
+    const handleMediaChange = () => {
+      if (settings?.theme === 'system') {
+        applyTheme();
+      }
+    };
+
+    mediaQuery.addEventListener('change', handleMediaChange);
+
     if (Capacitor.isNativePlatform()) {
       StatusBar.hide().catch(() => { });
     }
+
+    return () => {
+      mediaQuery.removeEventListener('change', handleMediaChange);
+    };
   }, [settings?.theme]);
 
   // Live Status Bar Time
@@ -145,12 +186,16 @@ export default function Layout() {
 
   const toggleTheme = async () => {
     if (!settings) return;
-    const newTheme: 'light' | 'dark' = settings.theme === 'dark' ? 'light' : 'dark';
-    const updated: AppSettings = { ...settings, theme: newTheme };
+    const currentTheme = settings.theme || 'light';
+    const nextTheme: 'light' | 'dark' | 'system' =
+      currentTheme === 'light' ? 'dark' : currentTheme === 'dark' ? 'system' : 'light';
+    const updated: AppSettings = { ...settings, theme: nextTheme };
     setSettings(updated);
     await saveSettings(updated);
     playPopSound();
-    showToast(`Switched to ${newTheme === 'dark' ? 'Dark' : 'Light'} Mode`);
+    const label =
+      nextTheme === 'system' ? 'System Theme' : nextTheme === 'dark' ? 'Dark Mode' : 'Light Mode';
+    showToast(`Switched to ${label}`);
   };
 
   const cycleAccent = () => {
@@ -168,17 +213,6 @@ export default function Layout() {
     localStorage.setItem('coal_sound_enabled', String(nextVal));
     if (nextVal) playSuccessSound();
     showToast(nextVal ? 'Sound Feedback Enabled 🔔' : 'Sound Muted 🔕');
-  };
-
-  const handleResetDemo = async () => {
-    if (confirm('Reset database with authentic industrial sample data?')) {
-      await resetToDemoData();
-      playSuccessSound();
-      showToast('Sample data reloaded successfully!');
-      setTimeout(() => {
-        window.location.reload();
-      }, 500);
-    }
   };
 
   const showToast = (msg: string) => {
@@ -214,14 +248,22 @@ export default function Layout() {
           <button
             onClick={toggleTheme}
             className="sim-pill-btn"
-            title="Toggle Dark/Light Mode"
+            title="Cycle Theme (Light / Dark / System)"
           >
-            {settings?.theme === 'dark' ? (
-              <Sun style={{ width: 14, height: 14, color: '#FFD60A' }} />
-            ) : (
+            {settings?.theme === 'system' ? (
+              <Smartphone style={{ width: 14, height: 14, color: '#30B0C7' }} />
+            ) : settings?.theme === 'dark' ? (
               <Moon style={{ width: 14, height: 14, color: '#0A84FF' }} />
+            ) : (
+              <Sun style={{ width: 14, height: 14, color: '#FFD60A' }} />
             )}
-            <span>{settings?.theme === 'dark' ? 'Light Mode' : 'Dark Mode'}</span>
+            <span>
+              {settings?.theme === 'system'
+                ? 'System'
+                : settings?.theme === 'dark'
+                  ? 'Dark'
+                  : 'Light'}
+            </span>
           </button>
 
           <div style={{ width: 1, height: 16, background: 'rgba(255,255,255,0.15)' }} />
@@ -250,17 +292,6 @@ export default function Layout() {
               <VolumeX style={{ width: 14, height: 14, color: 'var(--label-tertiary)' }} />
             )}
             <span>{soundEnabled ? 'Sound On' : 'Muted'}</span>
-          </button>
-
-          <div style={{ width: 1, height: 16, background: 'rgba(255,255,255,0.15)' }} />
-
-          <button
-            onClick={handleResetDemo}
-            className="sim-pill-btn"
-            title="Load sample industrial parties & dispatches"
-          >
-            <RotateCcw style={{ width: 13, height: 13 }} />
-            <span>Reset Data</span>
           </button>
         </aside>
       )}
@@ -331,7 +362,7 @@ export default function Layout() {
             zIndex: 99,
             background: 'rgba(28, 28, 30, 0.92)',
             color: '#FFFFFF',
-            padding: '10px 16px',
+            padding: '10px 20px',
             borderRadius: 20,
             fontSize: 14,
             fontWeight: 500,
@@ -354,8 +385,13 @@ export default function Layout() {
           <Outlet context={{ settings }} />
         </main>
 
-        {/* ── Apple iOS Bottom Tab Bar (Solid Floating 4px Dock) ── */}
-        <nav aria-label="Main Navigation" className="ios-tabbar">
+        {/* ── Apple iOS Bottom Tab Bar (Solid Floating 4px Dock / Liquid Glass) ── */}
+        <nav
+          ref={navRef}
+          aria-label="Main Navigation"
+          className={`ios-tabbar${liquidGlass ? ' glass' : ''}`}
+          style={{ '--glass-radius': `${GLASS_RADIUS}px` } as CSSProperties}
+        >
           {/* Tab 1: Summary */}
           <NavLink
             to="/"

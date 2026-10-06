@@ -4,6 +4,7 @@ import IOSDatePicker from '../components/IOSDatePicker';
 import {
   getParty,
   getDispatches,
+  deleteDispatch,
   getPartyPayments,
   savePayment,
   deletePayment,
@@ -11,10 +12,12 @@ import {
   savePurchaseOrder,
   deletePurchaseOrder,
   saveParty,
-  getSettings
+  getSettings,
+  cleanNumber
 } from '../lib/db';
 import type { Party, Dispatch, Payment, PurchaseOrder, AppSettings } from '../types';
 import { calculateSettlement, calculatePartyBalance } from '../utils/calculations';
+import { useLedgerListener } from '../hooks/useLedgerListener';
 import { Capacitor } from '@capacitor/core';
 import { Share } from '@capacitor/share';
 import { v4 as uuidv4 } from 'uuid';
@@ -27,21 +30,20 @@ import {
   Coins,
   FileText,
   Edit2,
-  Calculator,
   Trash2,
   Check,
   Copy,
-  Loader2,
-  Image,
-  MessageSquare
+  Loader2
 } from 'lucide-react';
 import PartyModalSheet from '../components/PartyModalSheet';
 import FloatingField from '../components/FloatingField';
 import { triggerConfetti, playSuccessSound, playPopSound, playCashChime } from '../utils/delight';
-import { exportDispatchesPdf, exportDispatchesExcel, shareReceiptImage, sharePaymentImage } from '../utils/exportSharing';
-import { DispatchReceipt } from '../components/DispatchReceipt';
+import { exportDispatchesPdf, exportDispatchesExcel, sharePaymentImage } from '../utils/exportSharing';
+import DispatchPreviewModal from '../components/DispatchPreviewModal';
 import { PaymentReceipt } from '../components/PaymentReceipt';
 import PartyGlyph from '../components/PartyGlyph';
+import IOSConfirmModal from '../components/IOSConfirmModal';
+import NumericInput from '../components/NumericInput';
 
 export default function PartyLedger() {
   const { partyId } = useParams<{ partyId: string }>();
@@ -65,7 +67,6 @@ export default function PartyLedger() {
 
   // Share Statement Sheet state
   const [isShareSheetOpen, setIsShareSheetOpen] = useState(false);
-  const [isDispatchShareSheetOpen, setIsDispatchShareSheetOpen] = useState(false);
 
   // Add/Edit Payment Modal state
   const [isAddingPayment, setIsAddingPayment] = useState(false);
@@ -110,9 +111,7 @@ export default function PartyLedger() {
   const [previewPayment, setPreviewPayment] = useState<Payment | null>(null);
   const [previewPO, setPreviewPO] = useState<PurchaseOrder | null>(null);
   const [settings, setSettings] = useState<AppSettings | undefined>(undefined);
-  const [isSharingDispatch, setIsSharingDispatch] = useState(false);
   const [isSharingPayment, setIsSharingPayment] = useState(false);
-  const receiptRef = useRef<HTMLDivElement>(null);
   const paymentReceiptRef = useRef<HTMLDivElement>(null);
 
   // Edit Party Modal state
@@ -160,80 +159,11 @@ export default function PartyLedger() {
     };
   }, [partyId]);
 
-  const handleShareDispatchImage = async () => {
-    if (!previewDispatch || !receiptRef.current) return;
-    setIsSharingDispatch(true);
-    try {
-      await shareReceiptImage(receiptRef.current, previewDispatch, party || undefined);
-      playSuccessSound();
-      showToast('Settlement receipt shared successfully!');
-    } catch (err: any) {
-      console.error('Share dispatch receipt error:', err);
-      showToast('Failed to share receipt image.');
-    } finally {
-      setIsSharingDispatch(false);
-    }
-  };
+  useLedgerListener(() => {
+    refreshLedger();
+  });
 
-  const handleShareDispatchWhatsApp = useCallback(async () => {
-    if (!previewDispatch) return;
 
-    const settlement = calculateSettlement(previewDispatch);
-    const poObj = pos.find((p) => p.id === previewDispatch.poId);
-
-    const text = `*${(settings?.businessName || 'AWAN COAL LOGISTICS').toUpperCase()}*
-*OFFICIAL SETTLEMENT SLIP*
-----------------------------------------
-*Truck No:* ${previewDispatch.truckNumber}
-*Date:* ${previewDispatch.date}
-*Party:* ${party?.name || 'Factory Client'}
-${poObj ? `*PO Number:* ${poObj.poNumber}\n` : ''}*Received Weight:* ${previewDispatch.labReceivedWeight || 0} Tons
-
-*LAB ANALYSIS:*
-• Target GCV: ${previewDispatch.targetGcv || 'N/A'} kcal/kg
-• Actual GCV: ${previewDispatch.labActualGcv || 'N/A'} kcal/kg
-• Ash / Moisture / Sulphur: ${previewDispatch.labAsh || 0}% / ${previewDispatch.labMoisture || 0}% / ${previewDispatch.labSulphur || 0}%
-
-*RATE & SETTLEMENT CALCULATION:*
-• Base Agreement Rate: Rs. ${previewDispatch.baseRate.toFixed(2)}/ton
-• GCV Deduction: - Rs. ${settlement.gcvDeduction.toFixed(2)}/ton
-${previewDispatch.manualPremium ? `• Premium: + Rs. ${previewDispatch.manualPremium.toFixed(2)}/ton\n` : ''}• Adjusted Rate: Rs. ${settlement.adjustedRate.toFixed(2)}/ton
-• Tax Deduction: - Rs. ${settlement.taxDeduction.toFixed(2)}/ton
-${previewDispatch.commissionPerTon ? `• Commission: - Rs. ${previewDispatch.commissionPerTon.toFixed(2)}/ton\n` : ''}----------------------------------------
-*PAYABLE RATE:* Rs. ${settlement.payableRate.toFixed(2)} / ton
-*TOTAL PAYABLE:* Rs. ${Math.round(settlement.totalRevenue).toLocaleString('en-PK')}
-----------------------------------------
-${previewDispatch.notes ? `*Remarks:* ${previewDispatch.notes}\n\n` : ''}✓ E-Verified Dispatch Voucher`;
-
-    try {
-      if (Capacitor.isNativePlatform()) {
-        await Share.share({
-          title: `Dispatch Settlement - ${previewDispatch.truckNumber}`,
-          text,
-          dialogTitle: 'Share Settlement Slip',
-        });
-        playSuccessSound();
-        showToast('Settlement slip shared!');
-        return;
-      } else if (navigator.share) {
-        await navigator.share({
-          title: `Dispatch Settlement - ${previewDispatch.truckNumber}`,
-          text,
-        });
-        playSuccessSound();
-        showToast('Settlement slip shared!');
-        return;
-      }
-    } catch {
-      // Ignored if cancelled
-    }
-
-    if (navigator.clipboard) {
-      await navigator.clipboard.writeText(text);
-      playPopSound();
-      showToast('Settlement slip text copied to clipboard!');
-    }
-  }, [previewDispatch, party, pos, settings]);
 
   const handleSharePaymentVoucherImage = async (pay: Payment) => {
     if (!paymentReceiptRef.current) return;
@@ -253,7 +183,7 @@ ${previewDispatch.notes ? `*Remarks:* ${previewDispatch.notes}\n\n` : ''}✓ E-V
   const handleSavePayment = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (!partyId) return;
-    const amt = parseFloat(paymentForm.amount);
+    const amt = cleanNumber(paymentForm.amount);
     if (!amt || amt <= 0) {
       alert('Please enter a valid payment amount.');
       return;
@@ -285,14 +215,16 @@ ${previewDispatch.notes ? `*Remarks:* ${previewDispatch.notes}\n\n` : ''}✓ E-V
     refreshLedger();
   };
 
-  const handleDeletePayment = async (e: React.MouseEvent, id: string) => {
+  const [deleteTarget, setDeleteTarget] = useState<{
+    type: 'payment' | 'po' | 'dispatch';
+    id: string;
+    label?: string;
+  } | null>(null);
+
+  const handleDeletePayment = (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
-    if (confirm('Delete this payment entry?')) {
-      await deletePayment(id);
-      setPreviewPayment(null);
-      refreshLedger();
-      showToast('Payment entry deleted');
-    }
+    playPopSound();
+    setDeleteTarget({ type: 'payment', id });
   };
 
   const handleSavePO = async (e?: React.FormEvent) => {
@@ -324,14 +256,32 @@ ${previewDispatch.notes ? `*Remarks:* ${previewDispatch.notes}\n\n` : ''}✓ E-V
     showToast(poForm.id ? 'Purchase Order updated!' : 'Purchase Order created!');
   };
 
-  const handleDeletePO = async (e: React.MouseEvent, id: string) => {
+  const handleDeletePO = (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
-    if (confirm('Delete this Purchase Order? Related dispatches will remain in the database.')) {
-      await deletePurchaseOrder(id);
+    playPopSound();
+    const targetPo = pos.find((p) => p.id === id);
+    setDeleteTarget({ type: 'po', id, label: targetPo?.poNumber });
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!deleteTarget) return;
+    if (deleteTarget.type === 'payment') {
+      await deletePayment(deleteTarget.id);
+      setPreviewPayment(null);
+      refreshLedger();
+      showToast('Payment entry deleted');
+    } else if (deleteTarget.type === 'po') {
+      await deletePurchaseOrder(deleteTarget.id);
       setPreviewPO(null);
       refreshLedger();
       showToast('Purchase Order deleted');
+    } else if (deleteTarget.type === 'dispatch') {
+      await deleteDispatch(deleteTarget.id);
+      setPreviewDispatch(null);
+      refreshLedger();
+      showToast('Dispatch record deleted');
     }
+    setDeleteTarget(null);
   };
 
   const openNewPO = () => {
@@ -756,19 +706,31 @@ Current Ledger Balance: Rs. ${Math.abs(outstandingBalance).toLocaleString('en-PK
       </div>
 
       {/* ── Transaction History Filter Segment ── */}
-      <div style={{ padding: '0 16px 14px', overflowX: 'auto', display: 'flex', scrollbarWidth: 'none' }}>
-        <div className="ios-segmented" style={{ minWidth: 'min-content' }}>
-          <button className={`ios-segmented-item ${ledgerFilter === 'all' ? 'active' : ''}`} onClick={() => { playPopSound(); setLedgerFilter('all'); }}>
-            All ({combinedLedger.length})
+      <div style={{ padding: '0 16px 14px' }}>
+        <div className="ios-segmented" style={{ width: '100%' }}>
+          <button
+            className={`ios-segmented-item ${ledgerFilter === 'all' ? 'active' : ''}`}
+            onClick={() => { playPopSound(); setLedgerFilter('all'); }}
+          >
+            All
           </button>
-          <button className={`ios-segmented-item ${ledgerFilter === 'pos' ? 'active' : ''}`} onClick={() => { playPopSound(); setLedgerFilter('pos'); }}>
-            POs ({pos.length})
+          <button
+            className={`ios-segmented-item ${ledgerFilter === 'pos' ? 'active' : ''}`}
+            onClick={() => { playPopSound(); setLedgerFilter('pos'); }}
+          >
+            POs
           </button>
-          <button className={`ios-segmented-item ${ledgerFilter === 'dispatches' ? 'active' : ''}`} onClick={() => { playPopSound(); setLedgerFilter('dispatches'); }}>
-            Dispatches ({dispatches.length})
+          <button
+            className={`ios-segmented-item ${ledgerFilter === 'dispatches' ? 'active' : ''}`}
+            onClick={() => { playPopSound(); setLedgerFilter('dispatches'); }}
+          >
+            Dispatches
           </button>
-          <button className={`ios-segmented-item ${ledgerFilter === 'payments' ? 'active' : ''}`} onClick={() => { playPopSound(); setLedgerFilter('payments'); }}>
-            Payments ({payments.length})
+          <button
+            className={`ios-segmented-item ${ledgerFilter === 'payments' ? 'active' : ''}`}
+            onClick={() => { playPopSound(); setLedgerFilter('payments'); }}
+          >
+            Payments
           </button>
         </div>
       </div>
@@ -811,7 +773,32 @@ Current Ledger Balance: Rs. ${Math.abs(outstandingBalance).toLocaleString('en-PK
                         <span style={{ fontSize: 12, fontWeight: 600, color: isProfit ? 'var(--ios-green)' : 'var(--ios-red)' }} className="tabular-nums">{isProfit ? '+' : ''}Rs. {Math.round(settlement.netProfit).toLocaleString('en-PK')} profit</span>
                       </div>
                     </div>
-                    <ChevronRight className="ios-chevron" strokeWidth={2.5} />
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 2, flexShrink: 0 }}>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          playPopSound();
+                          setDeleteTarget({ type: 'dispatch', id: d.id, label: d.truckNumber });
+                        }}
+                        style={{
+                          background: 'none',
+                          border: 'none',
+                          padding: '6px 8px',
+                          color: 'var(--label-tertiary)',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          borderRadius: 8,
+                        }}
+                        title="Delete Dispatch"
+                        aria-label="Delete Dispatch"
+                      >
+                        <Trash2 style={{ width: 16, height: 16 }} />
+                      </button>
+                      <ChevronRight className="ios-chevron" strokeWidth={2.5} />
+                    </div>
                     <div className="ios-separator with-glyph" />
                   </div>
                 );
@@ -850,7 +837,32 @@ Current Ledger Balance: Rs. ${Math.abs(outstandingBalance).toLocaleString('en-PK
                         <span style={{ fontSize: 11, fontWeight: 600, color: isReceived ? 'white' : 'white', background: isReceived ? 'var(--ios-green)' : 'var(--ios-orange)', padding: '1px 6px', borderRadius: 4 }}>{isReceived ? 'RECEIVED' : 'PAID'}</span>
                       </div>
                     </div>
-                    <ChevronRight className="ios-chevron" strokeWidth={2.5} />
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 2, flexShrink: 0 }}>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          playPopSound();
+                          setDeleteTarget({ type: 'payment', id: pay.id, label: `Rs. ${Math.round(pay.amount).toLocaleString('en-PK')}` });
+                        }}
+                        style={{
+                          background: 'none',
+                          border: 'none',
+                          padding: '6px 8px',
+                          color: 'var(--label-tertiary)',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          borderRadius: 8,
+                        }}
+                        title="Delete Payment"
+                        aria-label="Delete Payment"
+                      >
+                        <Trash2 style={{ width: 16, height: 16 }} />
+                      </button>
+                      <ChevronRight className="ios-chevron" strokeWidth={2.5} />
+                    </div>
                     <div className="ios-separator with-glyph" />
                   </div>
                 );
@@ -896,7 +908,32 @@ Current Ledger Balance: Rs. ${Math.abs(outstandingBalance).toLocaleString('en-PK
                         </div>
                       )}
                     </div>
-                    <ChevronRight className="ios-chevron" strokeWidth={2.5} />
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 2, flexShrink: 0 }}>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          playPopSound();
+                          setDeleteTarget({ type: 'po', id: po.id, label: po.poNumber });
+                        }}
+                        style={{
+                          background: 'none',
+                          border: 'none',
+                          padding: '6px 8px',
+                          color: 'var(--label-tertiary)',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          borderRadius: 8,
+                        }}
+                        title="Delete Purchase Order"
+                        aria-label="Delete Purchase Order"
+                      >
+                        <Trash2 style={{ width: 16, height: 16 }} />
+                      </button>
+                      <ChevronRight className="ios-chevron" strokeWidth={2.5} />
+                    </div>
                     <div className="ios-separator with-glyph" />
                   </div>
                 );
@@ -925,7 +962,7 @@ Current Ledger Balance: Rs. ${Math.abs(outstandingBalance).toLocaleString('en-PK
               </span>
               <button
                 onClick={() => handleSavePayment()}
-                disabled={!paymentForm.amount || parseFloat(paymentForm.amount) <= 0}
+                disabled={!paymentForm.amount || cleanNumber(paymentForm.amount) <= 0}
                 className="ios-nav-action"
                 style={{ fontWeight: 600 }}
               >
@@ -963,12 +1000,11 @@ Current Ledger Balance: Rs. ${Math.abs(outstandingBalance).toLocaleString('en-PK
                     <span style={{ fontSize: 17, color: 'var(--label-primary)' }}>Amount (PKR) *</span>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                       <span style={{ fontSize: 17, color: 'var(--label-secondary)' }}>Rs.</span>
-                      <input
+                      <NumericInput
                         required
-                        type="number"
                         placeholder="0"
                         value={paymentForm.amount}
-                        onChange={(e) => setPaymentForm({ ...paymentForm, amount: e.target.value })}
+                        onChange={(val) => setPaymentForm({ ...paymentForm, amount: val })}
                         style={{ border: 'none', background: 'transparent', fontSize: 20, fontWeight: 600, textAlign: 'right', color: 'var(--label-primary)', outline: 'none', maxWidth: 160 }}
                         className="tabular-nums"
                         autoFocus
@@ -1052,351 +1088,21 @@ Current Ledger Balance: Rs. ${Math.abs(outstandingBalance).toLocaleString('en-PK
         }}
       />
 
-      {/* ── PREVIEW: Dispatch ── */}
-      {previewDispatch && (
-        <>
-          <div className="ios-modal-backdrop" onClick={() => { setPreviewDispatch(null); setIsDispatchShareSheetOpen(false); }} />
-          <div className="ios-bottom-sheet" style={{ background: 'var(--bg-grouped)', borderTopLeftRadius: 24, borderTopRightRadius: 24, height: '90vh', display: 'flex', flexDirection: 'column' }}>
-            <div className="ios-sheet-handle" />
-            <div className="ios-sheet-header" style={{ borderBottom: '0.5px solid var(--separator)', padding: '10px 16px 12px', background: 'var(--bg-grouped)', flexShrink: 0 }}>
-              <button onClick={() => { setPreviewDispatch(null); setIsDispatchShareSheetOpen(false); }} className="ios-nav-action" style={{ fontWeight: 400 }}>Close</button>
-              <span style={{ fontSize: 17, fontWeight: 700 }}>Dispatch Preview</span>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                <button
-                  type="button"
-                  onClick={() => setIsDispatchShareSheetOpen(true)}
-                  disabled={isSharingDispatch}
-                  className="ios-nav-action"
-                  title="Share Receipt"
-                  style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
-                >
-                  {isSharingDispatch ? (
-                    <Loader2 style={{ width: 17, height: 17 }} className="animate-spin" />
-                  ) : (
-                    <Share2 style={{ width: 18, height: 18 }} strokeWidth={2.3} />
-                  )}
-                </button>
-                <button onClick={() => navigate(`/parties/${partyId}/dispatch/${previewDispatch.id}`)} className="ios-nav-action" style={{ fontWeight: 600 }}>Edit</button>
-              </div>
-            </div>
+      {/* ── Global Dispatch Preview Modal ── */}
+      <DispatchPreviewModal
+        dispatch={previewDispatch}
+        onClose={() => setPreviewDispatch(null)}
+        party={party || undefined}
+        pos={pos}
+        settings={settings}
+        showParty={false}
+        onDelete={(d) => {
+          playPopSound();
+          setDeleteTarget({ type: 'dispatch', id: d.id, label: d.truckNumber });
+        }}
+      />
 
-            <div className="ios-sheet-body" style={{ flex: 1, overflowY: 'auto', padding: '16px 0 40px', background: 'var(--bg-grouped)' }}>
 
-              {/* Prominent Share Action */}
-              <div style={{ padding: '0 16px', marginBottom: 14 }}>
-                <button
-                  type="button"
-                  onClick={() => setIsDispatchShareSheetOpen(true)}
-                  disabled={isSharingDispatch}
-                  className="ios-btn ios-btn-primary"
-                  style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
-                >
-                  {isSharingDispatch ? (
-                    <Loader2 style={{ width: 18, height: 18 }} className="animate-spin" />
-                  ) : (
-                    <Share2 style={{ width: 18, height: 18 }} strokeWidth={2.4} />
-                  )}
-                  <span>Share Settlement Receipt</span>
-                </button>
-              </div>
-
-              {/* Top Banner */}
-              <div style={{ padding: '0 16px', marginBottom: 20 }}>
-                <div style={{ background: 'var(--fill-secondary)', padding: 16, borderRadius: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <div>
-                    <div style={{ fontSize: 13, color: 'var(--label-secondary)', textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 600 }}>Truck Number</div>
-                    <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--label-primary)', marginTop: 2 }}>{previewDispatch.truckNumber}</div>
-                    <div style={{ fontSize: 14, color: 'var(--label-secondary)', marginTop: 4 }}>Date: {previewDispatch.date}</div>
-                  </div>
-                  <div style={{ textAlign: 'right' }}>
-                    <div style={{ fontSize: 13, color: 'var(--label-secondary)', textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 600 }}>Net Profit</div>
-                    <div style={{ fontSize: 20, fontWeight: 700, color: calculateSettlement(previewDispatch).netProfit >= 0 ? 'var(--ios-green)' : 'var(--ios-red)', marginTop: 2 }} className="tabular-nums">
-                      {calculateSettlement(previewDispatch).netProfit >= 0 ? '+' : ''}Rs. {Math.round(calculateSettlement(previewDispatch).netProfit).toLocaleString('en-PK')}
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="ios-group">
-                <div className="ios-group-title">Contract & Lab Results</div>
-                <div className="ios-card-grouped" style={{ padding: '12px 16px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8, fontSize: 15 }}>
-                    <span style={{ color: 'var(--label-secondary)' }}>Target GCV</span>
-                    <span className="tabular-nums" style={{ fontWeight: 500 }}>{previewDispatch.targetGcv || 'N/A'} kcal/kg</span>
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8, fontSize: 15 }}>
-                    <span style={{ color: 'var(--label-secondary)' }}>Actual GCV</span>
-                    <span className="tabular-nums" style={{ fontWeight: 500 }}>{previewDispatch.labActualGcv || 'N/A'} kcal/kg</span>
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8, fontSize: 15 }}>
-                    <span style={{ color: 'var(--label-secondary)' }}>Ash / Moisture / Sulphur</span>
-                    <span className="tabular-nums" style={{ fontWeight: 500 }}>{previewDispatch.labAsh || 0}% / {previewDispatch.labMoisture || 0}% / {previewDispatch.labSulphur || 0}%</span>
-                  </div>
-                  <div className="ios-separator" style={{ margin: '12px 0' }} />
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15 }}>
-                    <span style={{ color: 'var(--label-secondary)' }}>Received Weight</span>
-                    <span className="tabular-nums" style={{ fontWeight: 600, color: 'var(--ios-blue)' }}>{previewDispatch.labReceivedWeight || 0} t</span>
-                  </div>
-                </div>
-              </div>
-
-              <div className="ios-group">
-                <div className="ios-group-title">Coal Blending Sources</div>
-                <div className="ios-card-grouped">
-                  {previewDispatch.coalInputs.map((input, idx) => (
-                    <div key={input.id}>
-                      <div style={{ padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <div>
-                          <div style={{ fontSize: 15, fontWeight: 500, color: 'var(--label-primary)' }}>{input.sourceName || 'Unknown Source'}</div>
-                          <div style={{ fontSize: 13, color: 'var(--label-secondary)', marginTop: 2 }}>Purchase: Rs. {input.purchaseRate}/t</div>
-                        </div>
-                        <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--label-primary)' }}>
-                          {input.weight} t
-                        </div>
-                      </div>
-                      {idx < previewDispatch.coalInputs.length - 1 && <div className="ios-separator" />}
-                    </div>
-                  ))}
-                  {(!previewDispatch.coalInputs || previewDispatch.coalInputs.length === 0) && (
-                    <div style={{ padding: '12px 16px', color: 'var(--label-tertiary)', fontSize: 15, textAlign: 'center' }}>
-                      No coal inputs recorded.
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {(() => {
-                const settlement = calculateSettlement(previewDispatch);
-                const isProfit = settlement.netProfit >= 0;
-                return (
-                  <div className="ios-group">
-                    <div className="ios-group-title" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                      <Calculator size={16} /> Official Settlement Breakdown
-                    </div>
-                    <div className="ios-card-grouped" style={{ padding: '16px' }}>
-
-                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 8 }}>
-                        <span style={{ color: 'var(--label-secondary)' }}>Base Agreement Rate</span>
-                        <span style={{ fontWeight: 600 }} className="tabular-nums">Rs. {previewDispatch.baseRate.toFixed(2)}</span>
-                      </div>
-
-                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 8, color: 'var(--ios-red)' }}>
-                        <span>- Manual Deduction</span>
-                        <span className="tabular-nums">- Rs. {settlement.gcvDeduction.toFixed(2)}</span>
-                      </div>
-
-                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 8, color: 'var(--ios-green)' }}>
-                        <span>+ Manual Premium</span>
-                        <span className="tabular-nums">+ Rs. {(previewDispatch.manualPremium || 0).toFixed(2)}</span>
-                      </div>
-
-                      <div style={{ height: 0.5, background: 'var(--separator)', margin: '10px 0' }} />
-
-                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 8 }}>
-                        <span style={{ fontWeight: 600 }}>Adjusted Rate</span>
-                        <span style={{ fontWeight: 600 }} className="tabular-nums">Rs. {settlement.adjustedRate.toFixed(2)}</span>
-                      </div>
-
-                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 8, color: 'var(--ios-red)' }}>
-                        <span>- Tax Deduction</span>
-                        <span className="tabular-nums">- Rs. {settlement.taxDeduction.toFixed(2)}</span>
-                      </div>
-
-                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 8 }}>
-                        <span style={{ color: 'var(--label-secondary)' }}>Net Rate</span>
-                        <span className="tabular-nums">Rs. {settlement.netRate.toFixed(2)}</span>
-                      </div>
-
-                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 8, color: 'var(--ios-red)' }}>
-                        <span>- Commission</span>
-                        <span className="tabular-nums">- Rs. {(previewDispatch.commissionPerTon || 0).toFixed(2)}</span>
-                      </div>
-
-                      <div style={{ height: 0.5, background: 'var(--separator)', margin: '10px 0' }} />
-
-                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 16, marginBottom: 12 }}>
-                        <span style={{ fontWeight: 700, color: 'var(--ios-blue)' }}>Payable Rate (per ton)</span>
-                        <span style={{ fontWeight: 700, color: 'var(--ios-blue)' }} className="tabular-nums">
-                          Rs. {settlement.payableRate.toFixed(2)}
-                        </span>
-                      </div>
-
-                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, color: 'var(--label-secondary)', marginBottom: 6 }}>
-                        <span>Total Revenue ({previewDispatch.labReceivedWeight || 0} t × Rs. {settlement.payableRate.toFixed(2)})</span>
-                        <span className="tabular-nums">Rs. {Math.round(settlement.totalRevenue).toLocaleString('en-PK')}</span>
-                      </div>
-
-                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, color: 'var(--label-secondary)', marginBottom: 12 }}>
-                        <span>Total Cost (Coal + Overheads)</span>
-                        <span className="tabular-nums">Rs. {Math.round(settlement.totalCost).toLocaleString('en-PK')}</span>
-                      </div>
-
-                      <div style={{
-                        padding: '12px 14px',
-                        borderRadius: 10,
-                        background: isProfit ? 'var(--ios-green)' : 'var(--ios-red)',
-                        display: 'flex',
-                        justifyContent: 'space-between',
-                        alignItems: 'center'
-                      }}>
-                        <span style={{ fontSize: 16, fontWeight: 700, color: isProfit ? 'white' : 'white' }}>
-                          Final Net Profit
-                        </span>
-                        <span style={{ fontSize: 20, fontWeight: 800, color: isProfit ? 'white' : 'white' }} className="tabular-nums">
-                          {isProfit ? '+' : ''}Rs. {Math.round(settlement.netProfit).toLocaleString('en-PK')}
-                        </span>
-                      </div>
-
-                    </div>
-                  </div>
-                );
-              })()}
-
-              <div style={{ padding: '0 16px', marginTop: 10 }}>
-                <button
-                  onClick={() => navigate(`/parties/${partyId}/dispatch/${previewDispatch.id}`)}
-                  className="ios-btn ios-btn-primary"
-                  style={{ width: '100%', padding: 16, fontSize: 16, borderRadius: 14, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
-                >
-                  <Edit2 size={18} /> Edit Full Entry
-                </button>
-              </div>
-
-            </div>
-          </div>
-        </>
-      )}
-
-      {/* ── Apple iOS Action Sheet for Dispatch Sharing ── */}
-      {isDispatchShareSheetOpen && previewDispatch && (
-        <>
-          <div
-            className="ios-modal-backdrop"
-            onClick={() => setIsDispatchShareSheetOpen(false)}
-            style={{ zIndex: 100000 }}
-          />
-          <div
-            style={{
-              position: 'fixed',
-              left: 0,
-              right: 0,
-              bottom: 0,
-              zIndex: 100001,
-              padding: '0 12px calc(14px + env(safe-area-inset-bottom, 14px))',
-              maxWidth: 480,
-              margin: '0 auto',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 8,
-              animation: 'slideUp 0.22s cubic-bezier(0.16, 1, 0.3, 1)'
-            }}
-          >
-            {/* Action Sheet Group 1: Options */}
-            <div
-              style={{
-                background: 'var(--bg-card)',
-                borderRadius: 14,
-                overflow: 'hidden',
-                border: '0.5px solid var(--separator)',
-                boxShadow: 'var(--shadow-elevated)'
-              }}
-            >
-              {/* Action Sheet Header */}
-              <div
-                style={{
-                  padding: '14px 16px 12px',
-                  textAlign: 'center',
-                  borderBottom: '0.5px solid var(--separator)',
-                  background: 'var(--fill-quaternary)'
-                }}
-              >
-                <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--label-secondary)', textTransform: 'uppercase', letterSpacing: 0.6 }}>
-                  Share Dispatch Receipt
-                </div>
-                <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--label-primary)', marginTop: 2 }}>
-                  {previewDispatch.truckNumber} · {previewDispatch.date}
-                </div>
-              </div>
-
-              {/* Option 1: Share as Image */}
-              <button
-                type="button"
-                onClick={() => {
-                  setIsDispatchShareSheetOpen(false);
-                  handleShareDispatchImage();
-                }}
-                style={{
-                  width: '100%',
-                  padding: '16px 20px',
-                  background: 'transparent',
-                  border: 'none',
-                  borderBottom: '0.5px solid var(--separator)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: 10,
-                  fontSize: 17,
-                  fontWeight: 500,
-                  color: 'var(--ios-blue)',
-                  cursor: 'pointer'
-                }}
-              >
-                <Image style={{ width: 20, height: 20 }} strokeWidth={2.2} />
-                <span>Share as Picture (Official Receipt)</span>
-              </button>
-
-              {/* Option 2: Share Detailed WhatsApp Message */}
-              <button
-                type="button"
-                onClick={() => {
-                  setIsDispatchShareSheetOpen(false);
-                  handleShareDispatchWhatsApp();
-                }}
-                style={{
-                  width: '100%',
-                  padding: '16px 20px',
-                  background: 'transparent',
-                  border: 'none',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: 10,
-                  fontSize: 17,
-                  fontWeight: 500,
-                  color: 'var(--ios-green)',
-                  cursor: 'pointer'
-                }}
-              >
-                <MessageSquare style={{ width: 20, height: 20 }} strokeWidth={2.2} />
-                <span>Detailed WhatsApp Message</span>
-              </button>
-            </div>
-
-            {/* Action Sheet Group 2: Cancel */}
-            <button
-              type="button"
-              onClick={() => setIsDispatchShareSheetOpen(false)}
-              style={{
-                width: '100%',
-                height: 56,
-                background: 'var(--bg-card)',
-                borderRadius: 14,
-                border: '0.5px solid var(--separator)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                fontSize: 18,
-                fontWeight: 600,
-                color: 'var(--ios-blue)',
-                cursor: 'pointer',
-                boxShadow: 'var(--shadow-card)'
-              }}
-            >
-              Cancel
-            </button>
-          </div>
-        </>
-      )}
 
       {/* ── PREVIEW: Payment ── */}
       {previewPayment && (
@@ -1756,6 +1462,8 @@ Current Ledger Balance: Rs. ${Math.abs(outstandingBalance).toLocaleString('en-PK
               <button
                 onClick={async () => {
                   try {
+                    const freshSettings = await getSettings();
+                    setSettings(freshSettings);
                     await exportDispatchesPdf({
                       party: party || undefined,
                       partyName: party.name,
@@ -1764,7 +1472,7 @@ Current Ledger Balance: Rs. ${Math.abs(outstandingBalance).toLocaleString('en-PK
                       payments,
                       parties: party ? [party] : [],
                       pos,
-                      settings: settings || undefined,
+                      settings: freshSettings,
                     });
                     playSuccessSound();
                     setIsShareSheetOpen(false);
@@ -1829,28 +1537,7 @@ Current Ledger Balance: Rs. ${Math.abs(outstandingBalance).toLocaleString('en-PK
         </>
       )}
 
-      {/* Hidden Off-Screen Component for High-Quality Image Receipt Generation */}
-      {previewDispatch && (
-        <div
-          style={{
-            position: 'fixed',
-            left: -9999,
-            top: 0,
-            opacity: 1,
-            pointerEvents: 'none',
-            zIndex: -999,
-          }}
-          aria-hidden="true"
-        >
-          <DispatchReceipt
-            ref={receiptRef}
-            dispatch={previewDispatch}
-            party={party || undefined}
-            po={pos.find((p) => p.id === previewDispatch.poId)}
-            settings={settings}
-          />
-        </div>
-      )}
+
 
       {/* Off-screen Payment Receipt for HTML2Canvas */}
       {previewPayment && (
@@ -1874,6 +1561,31 @@ Current Ledger Balance: Rs. ${Math.abs(outstandingBalance).toLocaleString('en-PK
           />
         </div>
       )}
+
+      {/* ── iOS Liquid Glass Confirmation Modal ── */}
+      <IOSConfirmModal
+        isOpen={Boolean(deleteTarget)}
+        title={
+          deleteTarget?.type === 'dispatch'
+            ? 'Delete Dispatch Record?'
+            : deleteTarget?.type === 'payment'
+            ? 'Delete Payment Entry?'
+            : 'Delete Purchase Order?'
+        }
+        message={
+          deleteTarget?.type === 'dispatch'
+            ? `Are you sure you want to delete dispatch record${deleteTarget?.label ? ` for truck ${deleteTarget.label}` : ''}? This action cannot be undone.`
+            : deleteTarget?.type === 'payment'
+            ? 'Are you sure you want to delete this payment entry? The ledger balance will be automatically updated.'
+            : `Are you sure you want to delete Purchase Order ${deleteTarget?.label || ''}? Related dispatches will remain in the database.`
+        }
+        confirmText="Delete"
+        cancelText="Cancel"
+        destructive
+        countdownSeconds={2}
+        onConfirm={handleConfirmDelete}
+        onCancel={() => setDeleteTarget(null)}
+      />
 
     </div>
   );

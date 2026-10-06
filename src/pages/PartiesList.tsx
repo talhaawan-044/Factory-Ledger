@@ -3,6 +3,7 @@ import { getParties, saveParty, deleteParty, getDispatches, getPayments } from '
 import type { Party, Dispatch, Payment } from '../types';
 import { calculatePartyBalance } from '../utils/calculations';
 import { playPopSound, triggerConfetti } from '../utils/delight';
+import { useLedgerListener } from '../hooks/useLedgerListener';
 import { v4 as uuidv4 } from 'uuid';
 import {
   UserPlus,
@@ -19,6 +20,7 @@ import {
 import { useNavigate } from 'react-router-dom';
 import PartyModalSheet from '../components/PartyModalSheet';
 import PartyGlyph from '../components/PartyGlyph';
+import IOSConfirmModal from '../components/IOSConfirmModal';
 
 export default function PartiesList() {
   const [parties, setParties] = useState<Party[]>([]);
@@ -57,17 +59,28 @@ export default function PartiesList() {
     };
   }, []);
 
+  useLedgerListener(() => {
+    refreshData();
+  });
+
+  const [partyToDelete, setPartyToDelete] = useState<Party | null>(null);
+
   const handleViewModeChange = (mode: 'list' | 'grid') => {
     setViewMode(mode);
     localStorage.setItem('parties_view_mode', mode);
   };
 
-  const handleDelete = async (e: React.MouseEvent, id: string) => {
+  const handleDelete = (e: React.MouseEvent, party: Party) => {
     e.stopPropagation();
-    if (confirm('Delete this party? All related records will be unlinked.')) {
-      await deleteParty(id);
-      refreshData();
-    }
+    playPopSound();
+    setPartyToDelete(party);
+  };
+
+  const handleConfirmDeleteParty = async () => {
+    if (!partyToDelete) return;
+    await deleteParty(partyToDelete.id);
+    setPartyToDelete(null);
+    refreshData();
   };
 
   // Filter parties by search and category
@@ -332,7 +345,7 @@ export default function PartiesList() {
                         {/* Top Actions: Delete + Chevron */}
                         <div style={{ display: 'flex', alignItems: 'center', gap: 2, flexShrink: 0, marginTop: -2 }}>
                           <button
-                            onClick={(e) => handleDelete(e, party.id)}
+                            onClick={(e) => handleDelete(e, party)}
                             style={{
                               background: 'none',
                               border: 'none',
@@ -615,11 +628,11 @@ export default function PartiesList() {
                             <span className="pulse-dot green" /> Settled
                           </span>
                         ) : outstandingBalance > 0 ? (
-                          <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--ios-orange)', display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }} className="tabular-nums">
+                          <span style={{ fontSize: 11, fontWeight: 700, color: 'white', background: 'var(--ios-orange)', padding: '3px 9px', borderRadius: 7, display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }} className="tabular-nums">
                             <span className="pulse-dot orange" /> Due:&nbsp;Rs.&nbsp;{outstandingBalance.toLocaleString('en-PK')}
                           </span>
                         ) : outstandingBalance < 0 ? (
-                          <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--ios-blue)', display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }} className="tabular-nums">
+                          <span style={{ fontSize: 11, fontWeight: 700, color: 'white', background: 'var(--ios-blue)', padding: '3px 9px', borderRadius: 7, display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }} className="tabular-nums">
                             <span className="pulse-dot blue" /> Adv:&nbsp;Rs.&nbsp;{Math.abs(outstandingBalance).toLocaleString('en-PK')}
                           </span>
                         ) : (
@@ -654,6 +667,19 @@ export default function PartiesList() {
           setIsAdding(false);
           refreshData();
         }}
+      />
+
+      {/* ── iOS Liquid Glass Delete Confirmation Modal ── */}
+      <IOSConfirmModal
+        isOpen={Boolean(partyToDelete)}
+        title="Delete Party?"
+        message={`Are you sure you want to delete "${partyToDelete?.name}"? All related dispatches and ledger records will be unlinked.`}
+        confirmText="Delete Party"
+        cancelText="Cancel"
+        destructive
+        countdownSeconds={2}
+        onConfirm={handleConfirmDeleteParty}
+        onCancel={() => setPartyToDelete(null)}
       />
     </div>
   );

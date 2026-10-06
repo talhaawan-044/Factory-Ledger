@@ -3,6 +3,7 @@ import { Calculator, Share2, Copy, Check, Truck, Info } from 'lucide-react';
 import { playPopSound, playSuccessSound } from '../utils/delight';
 import { Share } from '@capacitor/share';
 import { Capacitor } from '@capacitor/core';
+import NumericInput from './NumericInput';
 
 interface DealEstimatorModalProps {
   isOpen: boolean;
@@ -379,11 +380,9 @@ function DealEstimatorContent({ onClose }: { onClose: () => void }) {
                 <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Mine loading scale weight</div>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <input
-                  type="number"
-                  step="0.01"
+                <NumericInput
                   value={tons || ''}
-                  onChange={e => setTons(parseFloat(e.target.value) || 0)}
+                  onChange={val => setTons(parseFloat(val) || 0)}
                   style={{
                     width: 90,
                     textAlign: 'right',
@@ -407,10 +406,9 @@ function DealEstimatorContent({ onClose }: { onClose: () => void }) {
                 <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Mine / source rate (per ton)</div>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <input
-                  type="number"
+                <NumericInput
                   value={purchaseRate || ''}
-                  onChange={e => setPurchaseRate(parseFloat(e.target.value) || 0)}
+                  onChange={val => setPurchaseRate(parseFloat(val) || 0)}
                   style={{
                     width: 100,
                     textAlign: 'right',
@@ -433,7 +431,7 @@ function DealEstimatorContent({ onClose }: { onClose: () => void }) {
                 <div>
                   <div style={{ fontSize: 15, fontWeight: 500, color: 'var(--text-main)' }}>Transport</div>
                   <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-                    {freightMode === 'total' ? 'Flat truck carriage fare' : 'Carriage rate per ton'}
+                    {freightMode === 'total' ? 'Transport Fare' : 'Carriage rate per ton'}
                   </div>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -475,10 +473,9 @@ function DealEstimatorContent({ onClose }: { onClose: () => void }) {
 
                   {/* Input field */}
                   <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                    <input
-                      type="number"
+                    <NumericInput
                       value={freightValue || ''}
-                      onChange={e => setFreightValue(parseFloat(e.target.value) || 0)}
+                      onChange={val => setFreightValue(parseFloat(val) || 0)}
                       style={{
                         width: 100,
                         textAlign: 'right',
@@ -513,7 +510,7 @@ function DealEstimatorContent({ onClose }: { onClose: () => void }) {
                 <div>
                   <div style={{ fontSize: 15, fontWeight: 500, color: 'var(--text-main)' }}>Kanta / Bilty</div>
                   <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-                    {miscMode === 'total' ? 'Weighbridge & slip total' : 'Misc fees per ton'}
+                    {miscMode === 'total' ? 'Miscellaneous' : 'Misc fees per ton'}
                   </div>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -555,10 +552,9 @@ function DealEstimatorContent({ onClose }: { onClose: () => void }) {
 
                   {/* Input field */}
                   <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                    <input
-                      type="number"
+                    <NumericInput
                       value={miscValue || ''}
-                      onChange={e => setMiscValue(parseFloat(e.target.value) || 0)}
+                      onChange={val => setMiscValue(parseFloat(val) || 0)}
                       style={{
                         width: 100,
                         textAlign: 'right',
@@ -594,10 +590,9 @@ function DealEstimatorContent({ onClose }: { onClose: () => void }) {
                 <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Mill contract rate (per ton)</div>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <input
-                  type="number"
+                <NumericInput
                   value={sellingRate || ''}
-                  onChange={e => setSellingRate(parseFloat(e.target.value) || 0)}
+                  onChange={val => setSellingRate(parseFloat(val) || 0)}
                   style={{
                     width: 100,
                     textAlign: 'right',
@@ -642,13 +637,9 @@ function DealEstimatorContent({ onClose }: { onClose: () => void }) {
                   </div>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <input
-                    type="number"
-                    step="0.1"
-                    min="0"
-                    max="10"
+                  <NumericInput
                     value={shortagePercent === 0 ? '0' : shortagePercent || ''}
-                    onChange={e => setShortagePercent(parseFloat(e.target.value) || 0)}
+                    onChange={val => setShortagePercent(parseFloat(val) || 0)}
                     style={{
                       width: 70,
                       textAlign: 'right',
@@ -726,7 +717,7 @@ function DealEstimatorContent({ onClose }: { onClose: () => void }) {
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 14 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-secondary)' }}>
-                <span>Coal Sourcing ({calc.loadedTons.toFixed(2)}t @ Rs. {calc.buyRate.toLocaleString()}):</span>
+                <span>Coal ({calc.loadedTons.toFixed(2)}t @ Rs. {calc.buyRate.toLocaleString()}):</span>
                 <span style={{ fontWeight: 600, color: 'var(--text-main)' }}>Rs. {Math.round(calc.coalCost).toLocaleString()}</span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-secondary)' }}>
@@ -752,7 +743,7 @@ function DealEstimatorContent({ onClose }: { onClose: () => void }) {
 
               {/* Total Cost Line */}
               <div style={{ display: 'flex', justifyContent: 'space-between', paddingTop: 6, borderTop: '1px dashed var(--separator)' }}>
-                <span style={{ fontWeight: 600, color: 'var(--text-main)' }}>Total Investment / Cost:</span>
+                <span style={{ fontWeight: 600, color: 'var(--text-main)' }}>Total Cost:</span>
                 <span style={{ fontWeight: 700, color: 'var(--ios-red)' }}>
                   Rs. {Math.round(calc.totalCost).toLocaleString()}
                   <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-secondary)', marginLeft: 4 }}>
@@ -762,10 +753,13 @@ function DealEstimatorContent({ onClose }: { onClose: () => void }) {
               </div>
 
               {/* Gross Billed */}
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ fontWeight: 600, color: 'var(--text-main)' }}>
-                  Factory Gross Billed ({calc.billedTons.toFixed(2)}t @ Rs. {calc.sellRate.toLocaleString()}):
-                </span>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div style={{ display: 'flex', flexDirection: 'column' }}>
+                  <span style={{ fontWeight: 600, color: 'var(--text-main)' }}>Factory Gross Billed</span>
+                  <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-secondary)', marginTop: 1 }}>
+                    ({calc.billedTons.toFixed(2)}t @ Rs. {calc.sellRate.toLocaleString()})
+                  </span>
+                </div>
                 <span style={{ fontWeight: 700, color: 'var(--ios-blue)' }}>Rs. {Math.round(calc.totalRevenue).toLocaleString()}</span>
               </div>
 

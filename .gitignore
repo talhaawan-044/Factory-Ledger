@@ -14,6 +14,7 @@ vite.config.ts.timestamp*
 # Environment & Secrets (Personal / Sensitive)
 .env
 .env.*
+!.env.example
 *.env
 *.pem
 *.key
@@ -78,11 +79,17 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
+firebase-debug.log*
+firestore-debug.log*
+ui-debug.log*
+
+# Firebase
+.firebase/
 
 # Linters & caches
 .eslintcache
 .oxlintcache
-
+.firestore.ts
 # Editor & OS files
 .vscode/*
 !.vscode/extensions.json

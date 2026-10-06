@@ -28,18 +28,43 @@ export interface PartyBalanceResult {
   paymentsCount: number;
 }
 
+function cleanNum(val: any, fallback = 0): number {
+  if (typeof val === 'number') {
+    return isNaN(val) || !isFinite(val) ? fallback : val;
+  }
+  if (val === null || val === undefined || val === '') {
+    return fallback;
+  }
+  const str = String(val).replace(/,/g, '').trim();
+  if (str === '') return fallback;
+  const p = Number(str);
+  return isNaN(p) || !isFinite(p) ? fallback : p;
+}
+
 export function calculateSettlement(dispatch: Dispatch): SettlementResult {
-  const {
-    baseRate = 0,
-    labReceivedWeight = 0,
-    overheads = { loading: 0, freight: 0, crush: 0, royalty: 0, other: 0 },
-    coalInputs = [],
-    manualDeduction = 0,
-    manualPremium = 0,
-    manualTax = 0,
-    taxMethod = 'manual',
-    commissionPerTon = 0,
-  } = dispatch;
+  if (!dispatch) {
+    return {
+      gcvDeduction: 0,
+      sulphurDeduction: 0,
+      adjustedRate: 0,
+      taxDeduction: 0,
+      netRate: 0,
+      payableRate: 0,
+      totalRevenue: 0,
+      totalCost: 0,
+      netProfit: 0,
+      taxMethod: 'manual',
+    };
+  }
+
+  const baseRate = cleanNum(dispatch.baseRate);
+  const labReceivedWeight = cleanNum(dispatch.labReceivedWeight);
+  const manualDeduction = cleanNum(dispatch.manualDeduction);
+  const manualPremium = cleanNum(dispatch.manualPremium);
+  const manualTax = cleanNum(dispatch.manualTax);
+  const commissionPerTon = cleanNum(dispatch.commissionPerTon);
+  const overheads = dispatch.overheads || ({} as any);
+  const coalInputs = Array.isArray(dispatch.coalInputs) ? dispatch.coalInputs : [];
 
   // 1. Calculate Adjusted Rate: Base Rate - Manual Deduction + Manual Premium
   const adjustedRate = baseRate - manualDeduction + manualPremium;
@@ -47,11 +72,11 @@ export function calculateSettlement(dispatch: Dispatch): SettlementResult {
   // 2. Determine Tax Deduction:
   //    - If taxMethod === 'manual', use the manualTax value provided by the user.
   //    - If taxMethod === 'formula_18_5', automatically calculate it using this exact formula: (Adjusted Rate * 1.18) * 0.05
-  const activeTaxMethod: TaxMethod = taxMethod || 'manual';
+  const activeTaxMethod: TaxMethod = dispatch.taxMethod || 'manual';
   const taxDeduction =
     activeTaxMethod === 'formula_18_5'
       ? (adjustedRate * 1.18) * 0.05
-      : (manualTax || 0);
+      : manualTax;
 
   // 3. Calculate Payable Rate: Adjusted Rate - Tax Deduction - Commission
   const payableRate = adjustedRate - taxDeduction - commissionPerTon;
@@ -60,8 +85,8 @@ export function calculateSettlement(dispatch: Dispatch): SettlementResult {
   const totalRevenue = payableRate * labReceivedWeight;
 
   // Total Cost: Sum of (Coal Recipe Weights × Buy Prices) + Sum of Expenses (Loading, Transport, Crushing, Royalty, Other)
-  const totalCoalCost = coalInputs.reduce((sum, input) => sum + ((input.weight || 0) * (input.purchaseRate || 0)), 0);
-  const totalOverheads = (overheads.loading || 0) + (overheads.freight || 0) + (overheads.crush || 0) + (overheads.royalty || 0) + (overheads.other || 0);
+  const totalCoalCost = coalInputs.reduce((sum, input) => sum + (cleanNum(input?.weight) * cleanNum(input?.purchaseRate)), 0);
+  const totalOverheads = cleanNum(overheads.loading) + cleanNum(overheads.freight) + cleanNum(overheads.crush) + cleanNum(overheads.royalty) + cleanNum(overheads.other);
   
   const totalCost = totalCoalCost + totalOverheads;
 
@@ -71,13 +96,13 @@ export function calculateSettlement(dispatch: Dispatch): SettlementResult {
   return {
     gcvDeduction: manualDeduction, 
     sulphurDeduction: 0,
-    adjustedRate,
-    taxDeduction,
-    netRate: payableRate + commissionPerTon,
-    payableRate,
-    totalRevenue,
-    totalCost,
-    netProfit,
+    adjustedRate: cleanNum(adjustedRate),
+    taxDeduction: cleanNum(taxDeduction),
+    netRate: cleanNum(payableRate + commissionPerTon),
+    payableRate: cleanNum(payableRate),
+    totalRevenue: cleanNum(totalRevenue),
+    totalCost: cleanNum(totalCost),
+    netProfit: cleanNum(netProfit),
     taxMethod: activeTaxMethod,
   };
 }
@@ -93,17 +118,20 @@ export function calculateSettlement(dispatch: Dispatch): SettlementResult {
  * Outstanding Balance = Total Billed - Net Received.
  */
 export function calculatePartyBalance(dispatches: Dispatch[], payments: Payment[]): PartyBalanceResult {
-  const totalBilled = dispatches.reduce((sum, d) => sum + calculateSettlement(d).totalRevenue, 0);
-  const totalProfit = dispatches.reduce((sum, d) => sum + calculateSettlement(d).netProfit, 0);
-  const totalTons = dispatches.reduce((sum, d) => sum + (d.labReceivedWeight || 0), 0);
+  const safeDispatches = Array.isArray(dispatches) ? dispatches : [];
+  const safePayments = Array.isArray(payments) ? payments : [];
 
-  const totalPaymentsReceived = payments
-    .filter((p) => p.type === 'received')
-    .reduce((sum, p) => sum + (p.amount || 0), 0);
+  const totalBilled = safeDispatches.reduce((sum, d) => sum + cleanNum(calculateSettlement(d).totalRevenue), 0);
+  const totalProfit = safeDispatches.reduce((sum, d) => sum + cleanNum(calculateSettlement(d).netProfit), 0);
+  const totalTons = safeDispatches.reduce((sum, d) => sum + cleanNum(d?.labReceivedWeight), 0);
 
-  const totalPaymentsPaid = payments
-    .filter((p) => p.type === 'paid')
-    .reduce((sum, p) => sum + (p.amount || 0), 0);
+  const totalPaymentsReceived = safePayments
+    .filter((p) => (p.type === 'received' || (p as any).paymentType === 'received'))
+    .reduce((sum, p) => sum + cleanNum(p.amount), 0);
+
+  const totalPaymentsPaid = safePayments
+    .filter((p) => (p.type === 'paid' || (p as any).paymentType === 'paid'))
+    .reduce((sum, p) => sum + cleanNum(p.amount), 0);
 
   const netPaymentsReceived = totalPaymentsReceived - totalPaymentsPaid;
   const outstandingBalance = Math.round(totalBilled - netPaymentsReceived);

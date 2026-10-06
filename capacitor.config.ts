@@ -1,7 +1,7 @@
 import type { CapacitorConfig } from '@capacitor/cli';
 
 const config: CapacitorConfig = {
-  appId: 'com.coalledger.app',
+  appId: 'com.factoryledger.app',
   appName: 'Factory Ledger',
   webDir: 'dist',
   backgroundColor: '#0E0E10',
@@ -10,6 +10,10 @@ const config: CapacitorConfig = {
       overlaysWebView: false,
       backgroundColor: '#0E0E10',
       style: 'DARK'
+    },
+    FirebaseAuthentication: {
+      skipNativeAuth: false,
+      providers: ['google.com'],
     }
   }
 };

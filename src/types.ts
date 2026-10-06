@@ -23,6 +23,7 @@ export interface PurchaseOrder {
   totalTons?: number;
   notes?: string;
   createdAt: number;
+  updatedAt?: number;
   isActive: boolean;
 }
 
@@ -62,6 +63,7 @@ export interface Party {
   phone: string;
   address: string;
   createdAt: number;
+  updatedAt?: number;
 }
 
 export interface Payment {
@@ -73,6 +75,7 @@ export interface Payment {
   mode: 'bank' | 'cash' | 'cheque' | 'online';
   referenceNote?: string;
   createdAt: number;
+  updatedAt?: number;
 }
 
 export interface AppSettings {
@@ -80,8 +83,11 @@ export interface AppSettings {
   businessName: string;
   phoneNumber: string;
   logoUrl: string;
-  theme: 'light' | 'dark';
+  signatureUrl?: string;
+  theme: 'light' | 'dark' | 'system';
   currency?: string;
   companyAddress?: string;
   ntnNumber?: string;
+  updatedAt?: number;
 }
+

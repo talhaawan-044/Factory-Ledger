@@ -20,7 +20,8 @@ import { getDispatch, saveDispatch, deleteDispatch, getParties, getPartyPurchase
 import { calculateSettlement } from '../utils/calculations';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import IOSDatePicker from '../components/IOSDatePicker';
-import { triggerConfetti, playSuccessSound } from '../utils/delight';
+import IOSConfirmModal from '../components/IOSConfirmModal';
+import { triggerConfetti, playSuccessSound, playPopSound } from '../utils/delight';
 
 const defaultOverheads = {
   loading: 0,
@@ -76,6 +77,7 @@ export default function DispatchForm() {
   const [pos, setPos] = useState<PurchaseOrder[]>([]);
   const [allDispatches, setAllDispatches] = useState<Dispatch[]>([]);
   const [isLoading, setIsLoading] = useState(() => dispatchId !== 'new');
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -86,7 +88,7 @@ export default function DispatchForm() {
       if (active) setAllDispatches(d);
     });
 
-    const currentPartyId = partyId || dispatch?.partyId;
+    const currentPartyId = partyId;
     if (currentPartyId) {
       getPartyPurchaseOrders(currentPartyId).then((orders) => {
         if (active) setPos(orders);
@@ -95,21 +97,33 @@ export default function DispatchForm() {
 
     if (dispatchId && dispatchId !== 'new') {
       getDispatch(dispatchId).then((data) => {
-        if (active && data) {
-          setDispatch(data);
-          if (data.partyId) {
-            getPartyPurchaseOrders(data.partyId).then((orders) => {
+        if (!active) return;
+        if (data) {
+          const cleanDispatch: Omit<Dispatch, 'createdAt' | 'updatedAt'> = {
+            ...emptyDispatch,
+            ...data,
+            coalInputs: Array.isArray(data.coalInputs) && data.coalInputs.length > 0
+              ? data.coalInputs
+              : [{ id: uuidv4(), sourceName: '', weight: 0, purchaseRate: 0 }],
+            overheads: { ...defaultOverheads, ...(data.overheads || {}) },
+          };
+          setDispatch(cleanDispatch);
+          if (cleanDispatch.partyId) {
+            getPartyPurchaseOrders(cleanDispatch.partyId).then((orders) => {
               if (active) setPos(orders);
             });
           }
-          setIsLoading(false);
         }
+        setIsLoading(false);
       });
+    } else {
+      setIsLoading(false);
     }
+
     return () => {
       active = false;
     };
-  }, [dispatchId, partyId, dispatch?.partyId]);
+  }, [dispatchId, partyId]);
 
   if (isLoading || !dispatch) {
     return (
@@ -124,8 +138,9 @@ export default function DispatchForm() {
   const isProfit = settlement.netProfit >= 0;
 
   // Blend metrics
-  const totalInputWeight = dispatch.coalInputs.reduce((s, i) => s + (i.weight || 0), 0);
-  const totalCoalCost = dispatch.coalInputs.reduce((s, i) => s + (i.weight || 0) * (i.purchaseRate || 0), 0);
+  const coalInputsList = dispatch.coalInputs || [];
+  const totalInputWeight = coalInputsList.reduce((s, i) => s + (i.weight || 0), 0);
+  const totalCoalCost = coalInputsList.reduce((s, i) => s + (i.weight || 0) * (i.purchaseRate || 0), 0);
   const avgCoalPurchaseRate = totalInputWeight > 0 ? totalCoalCost / totalInputWeight : 0;
   const transitWeightDiff = (dispatch.labReceivedWeight || 0) - totalInputWeight;
 
@@ -168,12 +183,16 @@ export default function DispatchForm() {
     navigate(`/parties/${dispatch.partyId || partyId}`);
   };
 
-  const handleDelete = async () => {
+  const handleDelete = () => {
+    playPopSound();
+    setShowDeleteConfirm(true);
+  };
+
+  const handleConfirmDelete = async () => {
     if (dispatchId && dispatchId !== 'new') {
-      if (confirm('Are you sure you want to delete this dispatch record?')) {
-        await deleteDispatch(dispatchId);
-        navigate(`/parties/${dispatch.partyId || partyId}`);
-      }
+      await deleteDispatch(dispatchId);
+      setShowDeleteConfirm(false);
+      navigate(`/parties/${dispatch.partyId || partyId}`);
     }
   };
 
@@ -758,7 +777,7 @@ export default function DispatchForm() {
                   gap: 6
                 }}
               >
-                ⚡ Autofill Weighbridge Weight = Loaded Weight ({totalInputWeight.toFixed(2)}t)
+                Autofill Weighbridge Weight = Loaded Weight ({totalInputWeight.toFixed(2)}t)
               </button>
             </div>
           )}
@@ -879,7 +898,7 @@ export default function DispatchForm() {
                     gap: 6
                   }}
                 >
-                  ⚡ Auto Pro-Rata GCV Deduction: Rs. {proRataDeduction}/t
+                  Auto Pro-Rata GCV Deduction: Rs. {proRataDeduction}/t
                 </button>
               )}
               {proRataPremium > 0 && (
@@ -900,7 +919,7 @@ export default function DispatchForm() {
                     gap: 6
                   }}
                 >
-                  ⚡ Auto Pro-Rata GCV Premium: Rs. {proRataPremium}/t
+                  Auto Pro-Rata GCV Premium: Rs. {proRataPremium}/t
                 </button>
               )}
             </div>
@@ -1154,6 +1173,19 @@ export default function DispatchForm() {
           </button>
         )}
       </div>
+
+      {/* ── iOS Liquid Glass Confirmation Modal ── */}
+      <IOSConfirmModal
+        isOpen={showDeleteConfirm}
+        title="Delete Dispatch Record?"
+        message={`Are you sure you want to delete this dispatch record${dispatch.truckNumber ? ` for truck ${dispatch.truckNumber}` : ''}? This action cannot be undone.`}
+        confirmText="Delete"
+        cancelText="Cancel"
+        destructive
+        countdownSeconds={2}
+        onConfirm={handleConfirmDelete}
+        onCancel={() => setShowDeleteConfirm(false)}
+      />
     </div>
   );
 }

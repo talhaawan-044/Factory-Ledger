@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, type CSSProperties } from 'react';
 import { format, addMonths, subMonths, startOfMonth, endOfMonth, startOfWeek, endOfWeek, eachDayOfInterval, isSameMonth, isSameDay, isToday } from 'date-fns';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
+import { useRefraction } from '../hooks/useRefraction';
 
 interface Props {
   label: string;
@@ -28,6 +29,10 @@ function parseLocalDate(dateStr?: string): Date {
 export default function IOSDatePicker({ label, value, onChange, style, inputStyle, floating = false }: Props) {
   const [isOpen, setIsOpen] = useState(false);
   const [currentMonth, setCurrentMonth] = useState(() => (value ? parseLocalDate(value) : new Date()));
+
+  const sheetRef = useRef<HTMLDivElement>(null);
+  const GLASS_RADIUS = 28;
+  useRefraction(sheetRef, isOpen, { radius: GLASS_RADIUS, blur: 12, saturate: 1.5 });
 
   const handleOpen = () => {
     if (value) {
@@ -103,29 +108,87 @@ export default function IOSDatePicker({ label, value, onChange, style, inputStyl
 
       {isOpen && (
         <>
-          <div className="ios-modal-backdrop" onClick={() => setIsOpen(false)} style={{ zIndex: 99998 }} />
-          <div className="ios-bottom-sheet" style={{ zIndex: 99999, maxHeight: '85vh', height: 'auto', background: 'var(--bg-grouped)' }}>
-            <div className="ios-sheet-handle" />
-            <div className="ios-sheet-header" style={{ borderBottom: 'none', paddingBottom: 0, background: 'var(--bg-grouped)' }}>
-              <button onClick={(e) => { e.stopPropagation(); setIsOpen(false); }} style={{ background: 'transparent', border: 'none', color: 'var(--ios-blue)', fontSize: 17, fontWeight: 400, cursor: 'pointer', padding: 0 }}>
+          <div
+            className="ios-modal-backdrop"
+            onClick={() => setIsOpen(false)}
+            style={{
+              zIndex: 99998,
+              background: 'rgba(0, 0, 0, 0.35)',
+              backdropFilter: 'blur(4px)',
+              WebkitBackdropFilter: 'blur(4px)'
+            }}
+          />
+          <div
+            ref={sheetRef}
+            className="ios-datepicker-sheet glass"
+            style={{
+              '--glass-radius': `${GLASS_RADIUS}px`,
+              zIndex: 99999
+            } as CSSProperties}
+          >
+            <div className="ios-sheet-handle" style={{ background: 'var(--label-quaternary)', opacity: 0.6 }} />
+            <div className="ios-sheet-header" style={{ borderBottom: 'none', padding: '6px 20px 0', background: 'transparent' }}>
+              <button
+                onClick={(e) => { e.stopPropagation(); setIsOpen(false); }}
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  color: 'var(--ios-blue)',
+                  fontSize: 17,
+                  fontWeight: 500,
+                  cursor: 'pointer',
+                  padding: '4px 0'
+                }}
+              >
                 Cancel
               </button>
               <span style={{ fontSize: 17, fontWeight: 600, color: 'var(--label-primary)' }}>Select Date</span>
-              <div style={{ width: 50 }} />
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleDateClick(new Date());
+                }}
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  color: 'var(--ios-blue)',
+                  fontSize: 16,
+                  fontWeight: 500,
+                  cursor: 'pointer',
+                  padding: '4px 0'
+                }}
+              >
+                Today
+              </button>
             </div>
             
-            <div className="ios-sheet-body" style={{ padding: '10px 20px 40px', background: 'var(--bg-grouped)' }}>
+            <div className="ios-sheet-body" style={{ padding: '10px 16px 24px', background: 'transparent' }}>
               {/* Calendar Card */}
-              <div style={{ background: 'var(--bg-card)', borderRadius: 18, padding: '16px', boxShadow: 'var(--shadow-card)', border: '0.5px solid var(--separator)' }}>
+              <div
+                className="ios-datepicker-calendar-card"
+                style={{
+                  borderRadius: 20,
+                  padding: '16px',
+                  boxShadow: '0 4px 16px rgba(0, 0, 0, 0.04)',
+                }}
+              >
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
                   <span style={{ fontSize: 17, fontWeight: 600, color: 'var(--label-primary)' }}>
                     {format(currentMonth, 'MMMM yyyy')}
                   </span>
                   <div style={{ display: 'flex', gap: 8 }}>
-                    <button onClick={(e) => { e.stopPropagation(); prevMonth(); }} style={{ background: 'var(--fill-tertiary)', border: 'none', borderRadius: '50%', width: 32, height: 32, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--ios-blue)', cursor: 'pointer' }}>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); prevMonth(); }}
+                      className="ios-datepicker-nav-btn"
+                      aria-label="Previous Month"
+                    >
                       <ChevronLeft size={20} />
                     </button>
-                    <button onClick={(e) => { e.stopPropagation(); nextMonth(); }} style={{ background: 'var(--fill-tertiary)', border: 'none', borderRadius: '50%', width: 32, height: 32, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--ios-blue)', cursor: 'pointer' }}>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); nextMonth(); }}
+                      className="ios-datepicker-nav-btn"
+                      aria-label="Next Month"
+                    >
                       <ChevronRight size={20} />
                     </button>
                   </div>
@@ -158,12 +221,13 @@ export default function IOSDatePicker({ label, value, onChange, style, inputStyl
                             display: 'flex',
                             alignItems: 'center',
                             justifyContent: 'center',
-                            fontSize: 17,
+                            fontSize: 16,
                             fontWeight: isSelected ? 600 : 400,
                             cursor: 'pointer',
-                            background: isSelected ? 'var(--ios-blue)' : 'transparent',
+                            background: isSelected ? 'var(--ios-blue)' : (isDayToday && !isSelected ? 'var(--fill-tertiary)' : 'transparent'),
                             color: isSelected ? '#FFF' : (!isCurrentMonth ? 'var(--label-quaternary)' : (isDayToday ? 'var(--ios-blue)' : 'var(--label-primary)')),
                             border: 'none',
+                            transition: 'all 0.15s ease'
                           }}
                         >
                           {format(day, 'd')}

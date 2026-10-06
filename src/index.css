@@ -116,8 +116,8 @@
   --bg-primary: #090A0F;
   --bg-secondary: #12141C;
   --bg-tertiary: #1A1D27;
-  --bg-grouped: #0D0E15;
-  --bg-card: rgba(22, 24, 34, 0.88);
+  --bg-grouped: #000000;
+  --bg-card: #18181A;
   --bg-card-secondary: #181A24;
   --bg-elevated: #1F2230;
 
@@ -1427,4 +1427,325 @@ body:has(textarea:focus) .ios-tabbar {
 .ios-cell:active {
   background-color: var(--fill-tertiary);
   transform: scale(0.995);
+}
+
+/* ── Liquid Glass (opt-in via .glass) ── */
+@supports ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+  nav.ios-tabbar.glass {
+    --glass-tint: rgba(250, 250, 250, 0.40);
+    --glass-ink: rgba(0, 0, 0, 0.62);
+    --glass-pill: rgba(255, 255, 255, 0.55);
+    --glass-rim-hi: rgba(255, 255, 255, 0.95);
+    --glass-rim-lo: rgba(255, 255, 255, 0.35);
+
+    border-radius: var(--glass-radius, 28px) !important;
+    background: var(--glass-tint) !important;
+    border: 0;
+    /* CSS fallback; on Chromium the hook overrides this inline with the refraction filter */
+    -webkit-backdrop-filter: blur(8px) saturate(1.5);
+    backdrop-filter: blur(8px) saturate(1.5);
+    box-shadow:
+      0 10px 30px rgba(0, 0, 0, 0.14),
+      0 2px 6px rgba(0, 0, 0, 0.06),
+      inset 0 1px 0 rgba(255, 255, 255, 0.35);
+  }
+
+  .dark nav.ios-tabbar.glass {
+    --glass-tint: rgba(18, 18, 18, 0.40);
+    --glass-ink: rgba(255, 255, 255, 0.72);
+    --glass-pill: rgba(0, 0, 0, 0.38);
+    --glass-rim-hi: rgba(255, 255, 255, 0.55);
+    --glass-rim-lo: rgba(255, 255, 255, 0.18);
+    box-shadow:
+      0 12px 34px rgba(0, 0, 0, 0.55),
+      0 2px 6px rgba(0, 0, 0, 0.35),
+      inset 0 1px 0 rgba(255, 255, 255, 0.10);
+  }
+
+  /* Directional rim highlight (bright top-left and bottom-right, like Highlight.Default) */
+  nav.ios-tabbar.glass::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    padding: 1px;
+    border-radius: inherit;
+    pointer-events: none;
+    z-index: 1;
+    background: linear-gradient(135deg,
+        var(--glass-rim-hi) 0%,
+        transparent 28%,
+        transparent 72%,
+        var(--glass-rim-lo) 100%);
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    mask-composite: exclude;
+  }
+
+  nav.ios-tabbar.glass .ios-tab-item {
+    color: var(--glass-ink);
+    border-radius: 22px !important;
+  }
+
+  nav.ios-tabbar.glass .ios-tab-item.active {
+    color: var(--accent-primary);
+    background: var(--glass-pill);
+    border-radius: 22px !important;
+  }
+
+  nav.ios-tabbar.glass .ios-tab-item.active .ios-tab-icon {
+    color: var(--accent-primary);
+  }
+
+  nav.ios-tabbar.glass .ios-tab-item.active::after {
+    display: none;
+    /* the pill replaces the little underline */
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  nav.ios-tabbar.glass {
+    background: #FFFFFF !important;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none !important;
+  }
+
+  .dark nav.ios-tabbar.glass {
+    background: #181A24 !important;
+  }
+}
+
+/* ── Liquid Glass Datepicker Sheet ── */
+.ios-datepicker-sheet {
+  position: fixed;
+  bottom: max(calc(env(safe-area-inset-bottom, 0px) + 16px), 16px);
+  left: 14px;
+  right: 14px;
+  max-width: 380px;
+  margin: 0 auto;
+  border-radius: var(--glass-radius, 28px);
+  background: var(--bg-grouped);
+  border: 1px solid var(--separator);
+  box-shadow: var(--shadow-sheet);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: slideUp 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+  z-index: 99999;
+}
+
+@supports ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+  .ios-datepicker-sheet.glass {
+    --glass-tint: rgba(250, 250, 250, 0.62);
+    --glass-ink: rgba(0, 0, 0, 0.85);
+    --glass-inner: rgba(255, 255, 255, 0.52);
+    --glass-inner-border: rgba(255, 255, 255, 0.7);
+    --glass-rim-hi: rgba(255, 255, 255, 0.95);
+    --glass-rim-lo: rgba(255, 255, 255, 0.35);
+
+    border-radius: var(--glass-radius, 28px) !important;
+    background: var(--glass-tint) !important;
+    border: 0;
+    -webkit-backdrop-filter: blur(12px) saturate(1.5);
+    backdrop-filter: blur(12px) saturate(1.5);
+    box-shadow:
+      0 20px 50px rgba(0, 0, 0, 0.22),
+      0 4px 14px rgba(0, 0, 0, 0.08),
+      inset 0 1px 0 rgba(255, 255, 255, 0.55);
+  }
+
+  .dark .ios-datepicker-sheet.glass {
+    --glass-tint: rgba(20, 22, 32, 0.65);
+    --glass-ink: rgba(255, 255, 255, 0.9);
+    --glass-inner: rgba(255, 255, 255, 0.06);
+    --glass-inner-border: rgba(255, 255, 255, 0.12);
+    --glass-rim-hi: rgba(255, 255, 255, 0.55);
+    --glass-rim-lo: rgba(255, 255, 255, 0.18);
+    box-shadow:
+      0 24px 56px rgba(0, 0, 0, 0.7),
+      0 6px 18px rgba(0, 0, 0, 0.4),
+      inset 0 1px 0 rgba(255, 255, 255, 0.14);
+  }
+
+  /* Directional rim highlight */
+  .ios-datepicker-sheet.glass::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    padding: 1px;
+    border-radius: inherit;
+    pointer-events: none;
+    z-index: 10;
+    background: linear-gradient(135deg,
+        var(--glass-rim-hi) 0%,
+        transparent 28%,
+        transparent 72%,
+        var(--glass-rim-lo) 100%);
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    mask-composite: exclude;
+  }
+}
+
+.ios-datepicker-calendar-card {
+  background: var(--glass-inner, var(--bg-card));
+  border: 0.5px solid var(--glass-inner-border, var(--separator));
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  transition: all 0.2s ease;
+}
+
+.ios-datepicker-nav-btn {
+  background: var(--fill-secondary);
+  border: none;
+  border-radius: 50%;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ios-blue);
+  cursor: pointer;
+  transition: transform 0.15s ease, background 0.15s ease;
+}
+
+.ios-datepicker-nav-btn:active {
+  transform: scale(0.9);
+  background: var(--fill-tertiary);
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .ios-datepicker-sheet.glass {
+    background: var(--bg-grouped) !important;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none !important;
+  }
+}
+
+/* ── Liquid Glass iOS Confirmation Dialog ── */
+.ios-confirm-dialog {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(316px, calc(100vw - 44px));
+  max-width: 320px;
+  border-radius: var(--glass-radius, 24px);
+  background: var(--bg-card);
+  border: 1px solid var(--separator);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.28);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  z-index: 99999;
+  animation: iosAlertPopIn 0.24s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes iosAlertPopIn {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(1.08);
+  }
+
+  100% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+
+@supports ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+  .ios-confirm-dialog.glass {
+    --glass-tint: rgba(250, 250, 250, 0.68);
+    --glass-ink: rgba(0, 0, 0, 0.88);
+    --glass-rim-hi: rgba(255, 255, 255, 0.95);
+    --glass-rim-lo: rgba(255, 255, 255, 0.35);
+
+    border-radius: var(--glass-radius, 24px) !important;
+    background: var(--glass-tint) !important;
+    border: 0;
+    -webkit-backdrop-filter: blur(14px) saturate(1.5);
+    backdrop-filter: blur(14px) saturate(1.5);
+    box-shadow:
+      0 24px 60px rgba(0, 0, 0, 0.24),
+      0 4px 16px rgba(0, 0, 0, 0.08),
+      inset 0 1px 0 rgba(255, 255, 255, 0.65);
+  }
+
+  .dark .ios-confirm-dialog.glass {
+    --glass-tint: rgba(22, 24, 34, 0.72);
+    --glass-ink: rgba(255, 255, 255, 0.92);
+    --glass-rim-hi: rgba(255, 255, 255, 0.55);
+    --glass-rim-lo: rgba(255, 255, 255, 0.16);
+    box-shadow:
+      0 28px 64px rgba(0, 0, 0, 0.75),
+      0 8px 24px rgba(0, 0, 0, 0.45),
+      inset 0 1px 0 rgba(255, 255, 255, 0.14);
+  }
+
+  /* Directional rim highlight */
+  .ios-confirm-dialog.glass::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    padding: 1px;
+    border-radius: inherit;
+    pointer-events: none;
+    z-index: 10;
+    background: linear-gradient(135deg,
+        var(--glass-rim-hi) 0%,
+        transparent 28%,
+        transparent 72%,
+        var(--glass-rim-lo) 100%);
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    mask-composite: exclude;
+  }
+}
+
+.ios-confirm-action {
+  width: 100%;
+  height: 48px;
+  background: transparent;
+  border: none;
+  border-top: 0.5px solid var(--separator);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-family: inherit;
+  font-size: 16.5px;
+  transition: background 0.15s ease, opacity 0.2s ease, transform 0.1s ease;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.ios-confirm-action:active:not(:disabled) {
+  background: var(--fill-tertiary);
+  transform: scale(0.99);
+}
+
+.ios-confirm-action.is-destructive {
+  color: var(--ios-red);
+  font-weight: 600;
+}
+
+.ios-confirm-action.is-destructive:disabled {
+  color: var(--label-tertiary);
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.ios-confirm-action.is-cancel {
+  color: var(--ios-blue);
+  font-weight: 500;
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .ios-confirm-dialog.glass {
+    background: var(--bg-grouped) !important;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none !important;
+  }
 }
