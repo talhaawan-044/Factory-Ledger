@@ -2,7 +2,7 @@ import type { CapacitorConfig } from '@capacitor/cli';
 
 const config: CapacitorConfig = {
   appId: 'com.coalledger.app',
-  appName: 'Coal Ledger',
+  appName: 'Factory Ledger',
   webDir: 'dist',
   backgroundColor: '#0E0E10',
   plugins: {

@@ -1,4 +1,4 @@
-import type { Dispatch, Payment } from "../types";
+import type { Dispatch, Payment, TaxMethod } from "../types";
 
 export interface SettlementResult {
   gcvDeduction: number;
@@ -10,6 +10,7 @@ export interface SettlementResult {
   totalRevenue: number;
   totalCost: number;
   netProfit: number;
+  taxMethod?: TaxMethod;
 }
 
 export interface PartyBalanceResult {
@@ -36,11 +37,24 @@ export function calculateSettlement(dispatch: Dispatch): SettlementResult {
     manualDeduction = 0,
     manualPremium = 0,
     manualTax = 0,
+    taxMethod = 'manual',
     commissionPerTon = 0,
   } = dispatch;
 
-  // Final Payable Rate: Base Rate - Manual Deduction/t + Manual Premium/t - Manual Tax/t - Commission/t
-  const payableRate = baseRate - manualDeduction + manualPremium - manualTax - commissionPerTon;
+  // 1. Calculate Adjusted Rate: Base Rate - Manual Deduction + Manual Premium
+  const adjustedRate = baseRate - manualDeduction + manualPremium;
+
+  // 2. Determine Tax Deduction:
+  //    - If taxMethod === 'manual', use the manualTax value provided by the user.
+  //    - If taxMethod === 'formula_18_5', automatically calculate it using this exact formula: (Adjusted Rate * 1.18) * 0.05
+  const activeTaxMethod: TaxMethod = taxMethod || 'manual';
+  const taxDeduction =
+    activeTaxMethod === 'formula_18_5'
+      ? (adjustedRate * 1.18) * 0.05
+      : (manualTax || 0);
+
+  // 3. Calculate Payable Rate: Adjusted Rate - Tax Deduction - Commission
+  const payableRate = adjustedRate - taxDeduction - commissionPerTon;
 
   // Total Revenue: Final Payable Rate × Received Weight
   const totalRevenue = payableRate * labReceivedWeight;
@@ -57,13 +71,14 @@ export function calculateSettlement(dispatch: Dispatch): SettlementResult {
   return {
     gcvDeduction: manualDeduction, 
     sulphurDeduction: 0,
-    adjustedRate: baseRate - manualDeduction + manualPremium,
-    taxDeduction: manualTax,
+    adjustedRate,
+    taxDeduction,
     netRate: payableRate + commissionPerTon,
     payableRate,
     totalRevenue,
     totalCost,
-    netProfit
+    netProfit,
+    taxMethod: activeTaxMethod,
   };
 }
 

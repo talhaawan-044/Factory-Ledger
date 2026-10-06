@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import PartyModalSheet from '../components/PartyModalSheet';
+import PartyGlyph from '../components/PartyGlyph';
 
 export default function PartiesList() {
   const [parties, setParties] = useState<Party[]>([]);
@@ -272,8 +273,6 @@ export default function PartiesList() {
                 const outstandingBalance = balanceResult.outstandingBalance;
                 const isCleared = balanceResult.isCleared;
 
-                const hue = (party.name.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0) * 19) % 360;
-
                 return (
                   <div
                     key={party.id}
@@ -290,27 +289,14 @@ export default function PartiesList() {
                       cursor: 'pointer'
                     }}
                   >
-                    {/* Modern Hex Monogram Avatar */}
-                    <div
-                      style={{
-                        width: 48,
-                        height: 48,
-                        borderRadius: 16,
-                        background: `hsl(${hue}, 65%, 45%)`,
-                        color: '#FFFFFF',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        fontWeight: 700,
-                        fontSize: 18,
-                        flexShrink: 0,
-                        marginRight: 14,
-                        marginTop: 2,
-                        boxShadow: '0 2px 8px rgba(0,0,0,0.08)'
-                      }}
-                    >
-                      {party.name.charAt(0).toUpperCase()}
-                    </div>
+                    {/* Authentic Apple iOS Business Glyph */}
+                    <PartyGlyph
+                      name={party.name}
+                      size={42}
+                      borderRadius={11}
+                      iconSize={20}
+                      style={{ marginRight: 13, marginTop: 2 }}
+                    />
 
                     {/* Party Information */}
                     <div style={{ flex: 1, minWidth: 0, paddingRight: 4 }}>
@@ -372,8 +358,8 @@ export default function PartiesList() {
                           <span style={{
                             fontSize: 12,
                             fontWeight: 700,
-                            color: 'var(--ios-green)',
-                            background: 'var(--tint-green)',
+                            color: 'white',
+                            background: 'var(--ios-green)',
                             padding: '3px 9px',
                             borderRadius: 7,
                             display: 'inline-flex',
@@ -388,8 +374,8 @@ export default function PartiesList() {
                           <span style={{
                             fontSize: 12,
                             fontWeight: 700,
-                            color: 'var(--ios-orange)',
-                            background: 'var(--tint-orange)',
+                            color: 'white',
+                            background: 'var(--ios-orange)',
                             padding: '3px 9px',
                             borderRadius: 7,
                             display: 'inline-flex',
@@ -404,8 +390,8 @@ export default function PartiesList() {
                           <span style={{
                             fontSize: 12,
                             fontWeight: 700,
-                            color: 'var(--ios-blue)',
-                            background: 'var(--tint-blue)',
+                            color: 'white',
+                            background: 'var(--ios-blue)',
                             padding: '3px 9px',
                             borderRadius: 7,
                             display: 'inline-flex',
@@ -442,8 +428,8 @@ export default function PartiesList() {
                               gap: 4,
                               fontSize: 11.5,
                               fontWeight: 600,
-                              color: 'var(--ios-green)',
-                              background: 'var(--tint-green)',
+                              color: 'white',
+                              background: 'var(--ios-green)',
                               padding: '3px 9px',
                               borderRadius: 7,
                               textDecoration: 'none',
@@ -464,8 +450,8 @@ export default function PartiesList() {
                           style={{
                             fontSize: 11,
                             fontWeight: 600,
-                            color: 'var(--accent-primary)',
-                            background: 'var(--accent-tint)',
+                            color: 'white',
+                            background: 'black',
                             padding: '2px 8px',
                             borderRadius: 6,
                             whiteSpace: 'nowrap',
@@ -480,8 +466,8 @@ export default function PartiesList() {
                             style={{
                               fontSize: 11,
                               fontWeight: 600,
-                              color: 'var(--ios-green)',
-                              background: 'var(--tint-green)',
+                              color: 'white',
+                              background: 'var(--ios-green)',
                               padding: '2px 8px',
                               borderRadius: 6,
                               whiteSpace: 'nowrap',
@@ -495,7 +481,7 @@ export default function PartiesList() {
                       </div>
                     </div>
 
-                    {i < filteredParties.length - 1 && <div className="ios-separator with-glyph" style={{ left: 76 }} />}
+                    {i < filteredParties.length - 1 && <div className="ios-separator with-glyph" style={{ left: 71 }} />}
                   </div>
                 );
               })
@@ -522,8 +508,6 @@ export default function PartiesList() {
                 const outstandingBalance = balanceResult.outstandingBalance;
                 const isCleared = balanceResult.isCleared;
 
-                const hue = (party.name.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0) * 19) % 360;
-
                 return (
                   <div
                     key={party.id}
@@ -549,25 +533,14 @@ export default function PartiesList() {
                     className="ios-metric-widget"
                   >
                     <div>
-                      {/* Top Header: Monogram & Call */}
+                      {/* Top Header: Business Glyph & Call */}
                       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-                        <div
-                          style={{
-                            width: 38,
-                            height: 38,
-                            borderRadius: 12,
-                            background: `hsl(${hue}, 65%, 45%)`,
-                            color: '#FFFFFF',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            fontWeight: 700,
-                            fontSize: 16,
-                            boxShadow: 'none'
-                          }}
-                        >
-                          {party.name.charAt(0).toUpperCase()}
-                        </div>
+                        <PartyGlyph
+                          name={party.name}
+                          size={36}
+                          borderRadius={10}
+                          iconSize={18}
+                        />
 
                         {party.phone && (
                           <a
@@ -577,8 +550,8 @@ export default function PartiesList() {
                               width: 28,
                               height: 28,
                               borderRadius: '50%',
-                              background: 'var(--tint-green)',
-                              color: 'var(--ios-green)',
+                              background: 'var(--ios-green)',
+                              color: 'white',
                               display: 'flex',
                               alignItems: 'center',
                               justifyContent: 'center',

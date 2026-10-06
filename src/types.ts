@@ -47,10 +47,13 @@ export interface Dispatch {
   manualDeduction?: number;
   manualPremium?: number;
   manualTax?: number;
+  taxMethod?: TaxMethod;
   notes?: string;
   createdAt: number;
   updatedAt: number;
 }
+
+export type TaxMethod = 'manual' | 'formula_18_5';
 
 export interface Party {
   id: string;

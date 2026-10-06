@@ -8,6 +8,8 @@ dist/
 dist-ssr/
 build/
 *.local
+*.tsbuildinfo
+vite.config.ts.timestamp*
 
 # Environment & Secrets (Personal / Sensitive)
 .env
@@ -24,15 +26,24 @@ credentials/
 google-services.json
 GoogleService-Info.plist
 
-# Personal files & Screenshots
-user_screenshot.jpg
+# Personal files & Media/Screenshots
+user_screenshot.*
 *.jpg
 *.jpeg
+*.webm
+*.mp4
 screenshots/
 captures/
 Ai-always-read-this/
 .agents/
 scratch/
+
+# Python cache & virtual environments
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
 
 # Android & Native build artifacts
 android/local.properties
@@ -41,7 +52,7 @@ android/.gradle/
 android/.kotlin/
 android/build/
 android/app/build/
-android/capacitor-cordova-android-plugins/build/
+android/capacitor-cordova-android-plugins/
 *.apk
 *.aab
 *.dex
@@ -51,11 +62,13 @@ android/capacitor-cordova-android-plugins/build/
 *.hprof
 .externalNativeBuild/
 .cxx/
+android/captures/
 
 # Capacitor copied/generated assets
 android/app/src/main/assets/public/
 android/app/src/main/assets/capacitor.config.json
 android/app/src/main/assets/capacitor.plugins.json
+android/app/src/main/res/xml/config.xml
 
 # Logs
 logs
@@ -65,6 +78,10 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
+
+# Linters & caches
+.eslintcache
+.oxlintcache
 
 # Editor & OS files
 .vscode/*
@@ -80,3 +97,5 @@ Thumbs.db
 *.swo
 *.swp
 *~
+*.orig
+*.bak

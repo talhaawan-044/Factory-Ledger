@@ -31,7 +31,9 @@ import {
   Trash2,
   Check,
   Copy,
-  Loader2
+  Loader2,
+  Image,
+  MessageSquare
 } from 'lucide-react';
 import PartyModalSheet from '../components/PartyModalSheet';
 import FloatingField from '../components/FloatingField';
@@ -39,6 +41,7 @@ import { triggerConfetti, playSuccessSound, playPopSound, playCashChime } from '
 import { exportDispatchesPdf, exportDispatchesExcel, shareReceiptImage, sharePaymentImage } from '../utils/exportSharing';
 import { DispatchReceipt } from '../components/DispatchReceipt';
 import { PaymentReceipt } from '../components/PaymentReceipt';
+import PartyGlyph from '../components/PartyGlyph';
 
 export default function PartyLedger() {
   const { partyId } = useParams<{ partyId: string }>();
@@ -62,6 +65,7 @@ export default function PartyLedger() {
 
   // Share Statement Sheet state
   const [isShareSheetOpen, setIsShareSheetOpen] = useState(false);
+  const [isDispatchShareSheetOpen, setIsDispatchShareSheetOpen] = useState(false);
 
   // Add/Edit Payment Modal state
   const [isAddingPayment, setIsAddingPayment] = useState(false);
@@ -170,6 +174,66 @@ export default function PartyLedger() {
       setIsSharingDispatch(false);
     }
   };
+
+  const handleShareDispatchWhatsApp = useCallback(async () => {
+    if (!previewDispatch) return;
+
+    const settlement = calculateSettlement(previewDispatch);
+    const poObj = pos.find((p) => p.id === previewDispatch.poId);
+
+    const text = `*${(settings?.businessName || 'AWAN COAL LOGISTICS').toUpperCase()}*
+*OFFICIAL SETTLEMENT SLIP*
+----------------------------------------
+*Truck No:* ${previewDispatch.truckNumber}
+*Date:* ${previewDispatch.date}
+*Party:* ${party?.name || 'Factory Client'}
+${poObj ? `*PO Number:* ${poObj.poNumber}\n` : ''}*Received Weight:* ${previewDispatch.labReceivedWeight || 0} Tons
+
+*LAB ANALYSIS:*
+• Target GCV: ${previewDispatch.targetGcv || 'N/A'} kcal/kg
+• Actual GCV: ${previewDispatch.labActualGcv || 'N/A'} kcal/kg
+• Ash / Moisture / Sulphur: ${previewDispatch.labAsh || 0}% / ${previewDispatch.labMoisture || 0}% / ${previewDispatch.labSulphur || 0}%
+
+*RATE & SETTLEMENT CALCULATION:*
+• Base Agreement Rate: Rs. ${previewDispatch.baseRate.toFixed(2)}/ton
+• GCV Deduction: - Rs. ${settlement.gcvDeduction.toFixed(2)}/ton
+${previewDispatch.manualPremium ? `• Premium: + Rs. ${previewDispatch.manualPremium.toFixed(2)}/ton\n` : ''}• Adjusted Rate: Rs. ${settlement.adjustedRate.toFixed(2)}/ton
+• Tax Deduction: - Rs. ${settlement.taxDeduction.toFixed(2)}/ton
+${previewDispatch.commissionPerTon ? `• Commission: - Rs. ${previewDispatch.commissionPerTon.toFixed(2)}/ton\n` : ''}----------------------------------------
+*PAYABLE RATE:* Rs. ${settlement.payableRate.toFixed(2)} / ton
+*TOTAL PAYABLE:* Rs. ${Math.round(settlement.totalRevenue).toLocaleString('en-PK')}
+----------------------------------------
+${previewDispatch.notes ? `*Remarks:* ${previewDispatch.notes}\n\n` : ''}✓ E-Verified Dispatch Voucher`;
+
+    try {
+      if (Capacitor.isNativePlatform()) {
+        await Share.share({
+          title: `Dispatch Settlement - ${previewDispatch.truckNumber}`,
+          text,
+          dialogTitle: 'Share Settlement Slip',
+        });
+        playSuccessSound();
+        showToast('Settlement slip shared!');
+        return;
+      } else if (navigator.share) {
+        await navigator.share({
+          title: `Dispatch Settlement - ${previewDispatch.truckNumber}`,
+          text,
+        });
+        playSuccessSound();
+        showToast('Settlement slip shared!');
+        return;
+      }
+    } catch {
+      // Ignored if cancelled
+    }
+
+    if (navigator.clipboard) {
+      await navigator.clipboard.writeText(text);
+      playPopSound();
+      showToast('Settlement slip text copied to clipboard!');
+    }
+  }, [previewDispatch, party, pos, settings]);
 
   const handleSharePaymentVoucherImage = async (pay: Payment) => {
     if (!paymentReceiptRef.current) return;
@@ -493,8 +557,6 @@ Current Ledger Balance: Rs. ${Math.abs(outstandingBalance).toLocaleString('en-PK
     );
   }
 
-  const hue = (party.name.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0) * 19) % 360;
-
   return (
     <div className="ios-fade-in" style={{ paddingBottom: 32 }}>
       {/* ── Toast Notification ── */}
@@ -541,16 +603,7 @@ Current Ledger Balance: Rs. ${Math.abs(outstandingBalance).toLocaleString('en-PK
 
       {/* ── Factory Profile & Action Buttons ── */}
       <div style={{ padding: '16px 20px', display: 'flex', gap: 16, alignItems: 'center' }}>
-        <div
-          style={{
-            width: 64, height: 64, borderRadius: '50%',
-            background: `hsl(${hue}, 70%, 90%)`, color: `hsl(${hue}, 75%, 35%)`,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            fontWeight: 700, fontSize: 24, boxShadow: '0 2px 8px rgba(0,0,0,0.08)'
-          }}
-        >
-          {party.name.charAt(0).toUpperCase()}
-        </div>
+        <PartyGlyph name={party.name} size={58} borderRadius={16} iconSize={28} />
         <div style={{ flex: 1 }}>
           <h1 style={{ fontSize: 22, fontWeight: 700, color: 'var(--label-primary)', margin: 0 }}>
             {party.name}
@@ -667,8 +720,8 @@ Current Ledger Balance: Rs. ${Math.abs(outstandingBalance).toLocaleString('en-PK
               {outstandingBalance > 0
                 ? 'Payable by Factory to Trader'
                 : outstandingBalance < 0
-                ? 'Advance Deposit Available'
-                : 'All shipments and payments balanced'}
+                  ? 'Advance Deposit Available'
+                  : 'All shipments and payments balanced'}
             </div>
           </div>
 
@@ -789,12 +842,12 @@ Current Ledger Balance: Rs. ${Math.abs(outstandingBalance).toLocaleString('en-PK
                     </div>
                     <div style={{ flex: 1, minWidth: 0, paddingRight: 8 }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-                        <span style={{ fontSize: 16, fontWeight: 600, color: 'var(--label-primary)' }}>{isReceived ? 'Payment Received' : 'Payment Made'}</span>
+                        <span style={{ fontSize: 16, fontWeight: 600, color: 'var(--label-primary)' }}>{isReceived ? 'Payment Rcvd' : 'Payment Made'}</span>
                         <span style={{ fontSize: 16, fontWeight: 700, color: isReceived ? 'var(--ios-green)' : 'var(--label-primary)' }} className="tabular-nums">{isReceived ? '-' : '+'}Rs. {Math.round(pay.amount).toLocaleString('en-PK')}</span>
                       </div>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 2 }}>
                         <span style={{ fontSize: 13, color: 'var(--label-secondary)' }}>{pay.mode.toUpperCase()}{pay.referenceNote ? ` · ${pay.referenceNote}` : ''}</span>
-                        <span style={{ fontSize: 11, fontWeight: 600, color: isReceived ? 'var(--ios-green)' : 'var(--ios-orange)', background: isReceived ? 'var(--tint-green)' : 'var(--tint-orange)', padding: '1px 6px', borderRadius: 4 }}>{isReceived ? 'RECEIVED' : 'PAID'}</span>
+                        <span style={{ fontSize: 11, fontWeight: 600, color: isReceived ? 'white' : 'white', background: isReceived ? 'var(--ios-green)' : 'var(--ios-orange)', padding: '1px 6px', borderRadius: 4 }}>{isReceived ? 'RECEIVED' : 'PAID'}</span>
                       </div>
                     </div>
                     <ChevronRight className="ios-chevron" strokeWidth={2.5} />
@@ -817,7 +870,7 @@ Current Ledger Balance: Rs. ${Math.abs(outstandingBalance).toLocaleString('en-PK
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                           <span style={{ fontSize: 16, fontWeight: 600, color: 'var(--label-primary)' }}>{po.poNumber}</span>
-                          <span style={{ fontSize: 10, fontWeight: 700, padding: '1px 6px', borderRadius: 4, background: po.isActive ? 'var(--tint-green)' : 'var(--fill-primary)', color: po.isActive ? 'var(--ios-green)' : 'var(--label-tertiary)' }}>
+                          <span style={{ fontSize: 10, fontWeight: 700, padding: '1px 6px', borderRadius: 4, background: po.isActive ? 'var(--ios-green)' : 'var(--fill-secondary)', color: po.isActive ? 'white' : 'var(--label-tertiary)' }}>
                             {po.isActive ? 'ACTIVE' : 'FULFILLED'}
                           </span>
                         </div>
@@ -1002,19 +1055,19 @@ Current Ledger Balance: Rs. ${Math.abs(outstandingBalance).toLocaleString('en-PK
       {/* ── PREVIEW: Dispatch ── */}
       {previewDispatch && (
         <>
-          <div className="ios-modal-backdrop" onClick={() => setPreviewDispatch(null)} />
+          <div className="ios-modal-backdrop" onClick={() => { setPreviewDispatch(null); setIsDispatchShareSheetOpen(false); }} />
           <div className="ios-bottom-sheet" style={{ background: 'var(--bg-grouped)', borderTopLeftRadius: 24, borderTopRightRadius: 24, height: '90vh', display: 'flex', flexDirection: 'column' }}>
             <div className="ios-sheet-handle" />
             <div className="ios-sheet-header" style={{ borderBottom: '0.5px solid var(--separator)', padding: '10px 16px 12px', background: 'var(--bg-grouped)', flexShrink: 0 }}>
-              <button onClick={() => setPreviewDispatch(null)} className="ios-nav-action" style={{ fontWeight: 400 }}>Close</button>
+              <button onClick={() => { setPreviewDispatch(null); setIsDispatchShareSheetOpen(false); }} className="ios-nav-action" style={{ fontWeight: 400 }}>Close</button>
               <span style={{ fontSize: 17, fontWeight: 700 }}>Dispatch Preview</span>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                 <button
                   type="button"
-                  onClick={handleShareDispatchImage}
+                  onClick={() => setIsDispatchShareSheetOpen(true)}
                   disabled={isSharingDispatch}
                   className="ios-nav-action"
-                  title="Share Receipt as Picture"
+                  title="Share Receipt"
                   style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
                 >
                   {isSharingDispatch ? (
@@ -1026,14 +1079,14 @@ Current Ledger Balance: Rs. ${Math.abs(outstandingBalance).toLocaleString('en-PK
                 <button onClick={() => navigate(`/parties/${partyId}/dispatch/${previewDispatch.id}`)} className="ios-nav-action" style={{ fontWeight: 600 }}>Edit</button>
               </div>
             </div>
-            
+
             <div className="ios-sheet-body" style={{ flex: 1, overflowY: 'auto', padding: '16px 0 40px', background: 'var(--bg-grouped)' }}>
-              
-              {/* Prominent Share Picture Receipt Action */}
+
+              {/* Prominent Share Action */}
               <div style={{ padding: '0 16px', marginBottom: 14 }}>
                 <button
                   type="button"
-                  onClick={handleShareDispatchImage}
+                  onClick={() => setIsDispatchShareSheetOpen(true)}
                   disabled={isSharingDispatch}
                   className="ios-btn ios-btn-primary"
                   style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
@@ -1043,7 +1096,7 @@ Current Ledger Balance: Rs. ${Math.abs(outstandingBalance).toLocaleString('en-PK
                   ) : (
                     <Share2 style={{ width: 18, height: 18 }} strokeWidth={2.4} />
                   )}
-                  <span>Share Settlement Receipt (Picture)</span>
+                  <span>Share Settlement Receipt</span>
                 </button>
               </div>
 
@@ -1105,9 +1158,9 @@ Current Ledger Balance: Rs. ${Math.abs(outstandingBalance).toLocaleString('en-PK
                     </div>
                   ))}
                   {(!previewDispatch.coalInputs || previewDispatch.coalInputs.length === 0) && (
-                     <div style={{ padding: '12px 16px', color: 'var(--label-tertiary)', fontSize: 15, textAlign: 'center' }}>
-                       No coal inputs recorded.
-                     </div>
+                    <div style={{ padding: '12px 16px', color: 'var(--label-tertiary)', fontSize: 15, textAlign: 'center' }}>
+                      No coal inputs recorded.
+                    </div>
                   )}
                 </div>
               </div>
@@ -1181,15 +1234,15 @@ Current Ledger Balance: Rs. ${Math.abs(outstandingBalance).toLocaleString('en-PK
                       <div style={{
                         padding: '12px 14px',
                         borderRadius: 10,
-                        background: isProfit ? 'var(--tint-green)' : 'var(--tint-red)',
+                        background: isProfit ? 'var(--ios-green)' : 'var(--ios-red)',
                         display: 'flex',
                         justifyContent: 'space-between',
                         alignItems: 'center'
                       }}>
-                        <span style={{ fontSize: 16, fontWeight: 700, color: isProfit ? 'var(--ios-green)' : 'var(--ios-red)' }}>
+                        <span style={{ fontSize: 16, fontWeight: 700, color: isProfit ? 'white' : 'white' }}>
                           Final Net Profit
                         </span>
-                        <span style={{ fontSize: 20, fontWeight: 800, color: isProfit ? 'var(--ios-green)' : 'var(--ios-red)' }} className="tabular-nums">
+                        <span style={{ fontSize: 20, fontWeight: 800, color: isProfit ? 'white' : 'white' }} className="tabular-nums">
                           {isProfit ? '+' : ''}Rs. {Math.round(settlement.netProfit).toLocaleString('en-PK')}
                         </span>
                       </div>
@@ -1210,6 +1263,137 @@ Current Ledger Balance: Rs. ${Math.abs(outstandingBalance).toLocaleString('en-PK
               </div>
 
             </div>
+          </div>
+        </>
+      )}
+
+      {/* ── Apple iOS Action Sheet for Dispatch Sharing ── */}
+      {isDispatchShareSheetOpen && previewDispatch && (
+        <>
+          <div
+            className="ios-modal-backdrop"
+            onClick={() => setIsDispatchShareSheetOpen(false)}
+            style={{ zIndex: 100000 }}
+          />
+          <div
+            style={{
+              position: 'fixed',
+              left: 0,
+              right: 0,
+              bottom: 0,
+              zIndex: 100001,
+              padding: '0 12px calc(14px + env(safe-area-inset-bottom, 14px))',
+              maxWidth: 480,
+              margin: '0 auto',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 8,
+              animation: 'slideUp 0.22s cubic-bezier(0.16, 1, 0.3, 1)'
+            }}
+          >
+            {/* Action Sheet Group 1: Options */}
+            <div
+              style={{
+                background: 'var(--bg-card)',
+                borderRadius: 14,
+                overflow: 'hidden',
+                border: '0.5px solid var(--separator)',
+                boxShadow: 'var(--shadow-elevated)'
+              }}
+            >
+              {/* Action Sheet Header */}
+              <div
+                style={{
+                  padding: '14px 16px 12px',
+                  textAlign: 'center',
+                  borderBottom: '0.5px solid var(--separator)',
+                  background: 'var(--fill-quaternary)'
+                }}
+              >
+                <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--label-secondary)', textTransform: 'uppercase', letterSpacing: 0.6 }}>
+                  Share Dispatch Receipt
+                </div>
+                <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--label-primary)', marginTop: 2 }}>
+                  {previewDispatch.truckNumber} · {previewDispatch.date}
+                </div>
+              </div>
+
+              {/* Option 1: Share as Image */}
+              <button
+                type="button"
+                onClick={() => {
+                  setIsDispatchShareSheetOpen(false);
+                  handleShareDispatchImage();
+                }}
+                style={{
+                  width: '100%',
+                  padding: '16px 20px',
+                  background: 'transparent',
+                  border: 'none',
+                  borderBottom: '0.5px solid var(--separator)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 10,
+                  fontSize: 17,
+                  fontWeight: 500,
+                  color: 'var(--ios-blue)',
+                  cursor: 'pointer'
+                }}
+              >
+                <Image style={{ width: 20, height: 20 }} strokeWidth={2.2} />
+                <span>Share as Picture (Official Receipt)</span>
+              </button>
+
+              {/* Option 2: Share Detailed WhatsApp Message */}
+              <button
+                type="button"
+                onClick={() => {
+                  setIsDispatchShareSheetOpen(false);
+                  handleShareDispatchWhatsApp();
+                }}
+                style={{
+                  width: '100%',
+                  padding: '16px 20px',
+                  background: 'transparent',
+                  border: 'none',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 10,
+                  fontSize: 17,
+                  fontWeight: 500,
+                  color: 'var(--ios-green)',
+                  cursor: 'pointer'
+                }}
+              >
+                <MessageSquare style={{ width: 20, height: 20 }} strokeWidth={2.2} />
+                <span>Detailed WhatsApp Message</span>
+              </button>
+            </div>
+
+            {/* Action Sheet Group 2: Cancel */}
+            <button
+              type="button"
+              onClick={() => setIsDispatchShareSheetOpen(false)}
+              style={{
+                width: '100%',
+                height: 56,
+                background: 'var(--bg-card)',
+                borderRadius: 14,
+                border: '0.5px solid var(--separator)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontSize: 18,
+                fontWeight: 600,
+                color: 'var(--ios-blue)',
+                cursor: 'pointer',
+                boxShadow: 'var(--shadow-card)'
+              }}
+            >
+              Cancel
+            </button>
           </div>
         </>
       )}
@@ -1311,7 +1495,7 @@ Current Ledger Balance: Rs. ${Math.abs(outstandingBalance).toLocaleString('en-PK
                       <div style={{ background: 'var(--bg-card)', padding: 18, borderRadius: 18, border: '0.5px solid var(--separator)', boxShadow: 'var(--shadow-card)' }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                           <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--label-secondary)', letterSpacing: 0.5, textTransform: 'uppercase' }}>Purchase Order</span>
-                          <span style={{ fontSize: 11, fontWeight: 700, padding: '3px 8px', borderRadius: 6, background: previewPO.isActive ? 'var(--tint-green)' : 'var(--fill-primary)', color: previewPO.isActive ? 'var(--ios-green)' : 'var(--label-secondary)' }}>
+                          <span style={{ fontSize: 11, fontWeight: 700, padding: '3px 8px', borderRadius: 6, background: previewPO.isActive ? 'var(--ios-green)' : 'var(--fill-primary)', color: previewPO.isActive ? 'white' : 'var(--label-secondary)' }}>
                             {previewPO.isActive ? 'ACTIVE CONTRACT' : 'FULFILLED / CLOSED'}
                           </span>
                         </div>
@@ -1475,8 +1659,8 @@ Current Ledger Balance: Rs. ${Math.abs(outstandingBalance).toLocaleString('en-PK
                         fontSize: 13,
                         fontWeight: 700,
                         cursor: 'pointer',
-                        background: poForm.isActive ? 'var(--tint-green)' : 'var(--fill-primary)',
-                        color: poForm.isActive ? 'var(--ios-green)' : 'var(--label-secondary)'
+                        background: poForm.isActive ? 'var(--ios-green)' : 'var(--fill-primary)',
+                        color: poForm.isActive ? 'white' : 'var(--label-secondary)'
                       }}
                     >
                       {poForm.isActive ? 'Active Contract' : 'Fulfilled / Closed'}

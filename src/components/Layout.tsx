@@ -272,7 +272,7 @@ export default function Layout() {
         {!isNative && (
           <div className="dynamic-island">
             <div className="dynamic-island-sensor" />
-            <div style={{ fontSize: 10, color: '#fff', opacity: 0.6, fontWeight: 600 }}>COAL LEDGER</div>
+            <div style={{ fontSize: 10, color: '#fff', opacity: 0.6, fontWeight: 600 }}>FACTORY LEDGER</div>
             <div className="dynamic-island-cam" />
           </div>
         )}
@@ -350,11 +350,11 @@ export default function Layout() {
         )}
 
         {/* ── Main Scrollable iOS Viewport ── */}
-        <main className="ios-viewport">
+        <main className="ios-viewport pb-32">
           <Outlet context={{ settings }} />
         </main>
 
-        {/* ── Apple iOS Bottom Tab Bar (4 Pages Only) ── */}
+        {/* ── Apple iOS Bottom Tab Bar (Solid Floating 4px Dock) ── */}
         <nav aria-label="Main Navigation" className="ios-tabbar">
           {/* Tab 1: Summary */}
           <NavLink
@@ -363,25 +363,13 @@ export default function Layout() {
             className={`ios-tab-item ${isSummary ? 'active' : ''}`}
             end
           >
-            <div style={{
-              position: 'relative',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              padding: '3px 12px',
-              borderRadius: 14,
-              background: isSummary ? 'var(--accent-tint)' : 'transparent',
-              transition: 'background 0.2s ease'
-            }}>
+            <div className="ios-tab-pill">
               <LayoutDashboard
                 className="ios-tab-icon"
-                strokeWidth={isSummary ? 2.5 : 1.7}
-                style={{ color: isSummary ? 'var(--accent-primary)' : 'inherit' }}
+                strokeWidth={isSummary ? 2.4 : 1.7}
               />
             </div>
-            <span className="ios-tab-label" style={{ color: isSummary ? 'var(--accent-primary)' : 'inherit' }}>
-              Summary
-            </span>
+            <span className="ios-tab-label">Summary</span>
           </NavLink>
 
           {/* Tab 2: Parties */}
@@ -390,25 +378,13 @@ export default function Layout() {
             onClick={() => playPopSound()}
             className={`ios-tab-item ${isParties ? 'active' : ''}`}
           >
-            <div style={{
-              position: 'relative',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              padding: '3px 12px',
-              borderRadius: 14,
-              background: isParties ? 'var(--accent-tint)' : 'transparent',
-              transition: 'background 0.2s ease'
-            }}>
+            <div className="ios-tab-pill">
               <Building2
                 className="ios-tab-icon"
-                strokeWidth={isParties ? 2.5 : 1.7}
-                style={{ color: isParties ? 'var(--accent-primary)' : 'inherit' }}
+                strokeWidth={isParties ? 2.4 : 1.7}
               />
             </div>
-            <span className="ios-tab-label" style={{ color: isParties ? 'var(--accent-primary)' : 'inherit' }}>
-              Parties
-            </span>
+            <span className="ios-tab-label">Parties</span>
           </NavLink>
 
           {/* Tab 3: All Entries */}
@@ -417,25 +393,13 @@ export default function Layout() {
             onClick={() => playPopSound()}
             className={`ios-tab-item ${isEntries ? 'active' : ''}`}
           >
-            <div style={{
-              position: 'relative',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              padding: '3px 12px',
-              borderRadius: 14,
-              background: isEntries ? 'var(--accent-tint)' : 'transparent',
-              transition: 'background 0.2s ease'
-            }}>
+            <div className="ios-tab-pill">
               <FileSpreadsheet
                 className="ios-tab-icon"
-                strokeWidth={isEntries ? 2.5 : 1.7}
-                style={{ color: isEntries ? 'var(--accent-primary)' : 'inherit' }}
+                strokeWidth={isEntries ? 2.4 : 1.7}
               />
             </div>
-            <span className="ios-tab-label" style={{ color: isEntries ? 'var(--accent-primary)' : 'inherit' }}>
-              All Entries
-            </span>
+            <span className="ios-tab-label">All Entries</span>
           </NavLink>
 
           {/* Tab 4: Settings */}
@@ -444,30 +408,18 @@ export default function Layout() {
             onClick={() => playPopSound()}
             className={`ios-tab-item ${isSettings ? 'active' : ''}`}
           >
-            <div style={{
-              position: 'relative',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              padding: '3px 12px',
-              borderRadius: 14,
-              background: isSettings ? 'var(--accent-tint)' : 'transparent',
-              transition: 'background 0.2s ease'
-            }}>
+            <div className="ios-tab-pill">
               <SettingsIcon
                 className="ios-tab-icon"
-                strokeWidth={isSettings ? 2.5 : 1.7}
-                style={{ color: isSettings ? 'var(--accent-primary)' : 'inherit' }}
+                strokeWidth={isSettings ? 2.4 : 1.7}
               />
             </div>
-            <span className="ios-tab-label" style={{ color: isSettings ? 'var(--accent-primary)' : 'inherit' }}>
-              Settings
-            </span>
+            <span className="ios-tab-label">Settings</span>
           </NavLink>
-
-          {/* iOS Bottom Home Indicator */}
-          {!isNative && <div className="home-indicator" />}
         </nav>
+
+        {/* iOS Bottom Home Indicator (Desktop Simulator Frame) */}
+        {!isNative && <div className="home-indicator" />}
       </div>
     </div>
   );

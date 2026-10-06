@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react';
-import { Calculator, Share2, Copy, Check, Truck } from 'lucide-react';
+import { Calculator, Share2, Copy, Check, Truck, Info } from 'lucide-react';
 import { playPopSound, playSuccessSound } from '../utils/delight';
 import { Share } from '@capacitor/share';
 import { Capacitor } from '@capacitor/core';
@@ -17,35 +17,66 @@ export default function DealEstimatorModal({ isOpen, onClose }: DealEstimatorMod
 
 function DealEstimatorContent({ onClose }: { onClose: () => void }) {
   const [tons, setTons] = useState<number>(50);
+  // Purchase rate & selling rate are strictly per ton
   const [purchaseRate, setPurchaseRate] = useState<number>(18500);
-  const [freightRate, setFreightRate] = useState<number>(3200);
-  const [miscCostPerTon, setMiscCostPerTon] = useState<number>(200);
   const [sellingRate, setSellingRate] = useState<number>(23000);
-  const [shortagePercent, setShortagePercent] = useState<number>(0.5); // 0.5% default transit loss
+
+  // Freight: can be entered as Total Lump Sum (flat truck fare) or Per Ton
+  const [freightMode, setFreightMode] = useState<'total' | 'perTon'>('total');
+  const [freightValue, setFreightValue] = useState<number>(160000); // 160k flat truck fare
+
+  // Other / Misc / Kanta: can be entered as Total Lump Sum or Per Ton (default flat total)
+  const [miscMode, setMiscMode] = useState<'total' | 'perTon'>('total');
+  const [miscValue, setMiscValue] = useState<number>(3000); // 3k flat kanta/bilty
+
+  // Transit Loss: weighbridge shortage between mine loading scale and factory scale
+  // Default to 0% (standard / factory pays loading weight)
+  const [shortagePercent, setShortagePercent] = useState<number>(0);
+  const [showTransitLossExplainer, setShowTransitLossExplainer] = useState(false);
+
   const [copied, setCopied] = useState(false);
 
-  // Calculations
+  // Derived financial calculations
   const calc = useMemo(() => {
     const loadedTons = Math.max(0, Number(tons) || 0);
     const buyRate = Math.max(0, Number(purchaseRate) || 0);
-    const freight = Math.max(0, Number(freightRate) || 0);
-    const misc = Math.max(0, Number(miscCostPerTon) || 0);
     const sellRate = Math.max(0, Number(sellingRate) || 0);
     const shortagePct = Math.max(0, Number(shortagePercent) || 0);
 
+    // Freight calculations
+    let freightTotal = 0;
+    let freightPerTon = 0;
+    if (freightMode === 'total') {
+      freightTotal = Math.max(0, Number(freightValue) || 0);
+      freightPerTon = loadedTons > 0 ? freightTotal / loadedTons : 0;
+    } else {
+      freightPerTon = Math.max(0, Number(freightValue) || 0);
+      freightTotal = loadedTons * freightPerTon;
+    }
+
+    // Misc / Kanta calculations
+    let miscTotal = 0;
+    let miscPerTon = 0;
+    if (miscMode === 'total') {
+      miscTotal = Math.max(0, Number(miscValue) || 0);
+      miscPerTon = loadedTons > 0 ? miscTotal / loadedTons : 0;
+    } else {
+      miscPerTon = Math.max(0, Number(miscValue) || 0);
+      miscTotal = loadedTons * miscPerTon;
+    }
+
+    // Costs
+    const coalCost = loadedTons * buyRate;
+    const totalCost = coalCost + freightTotal + miscTotal;
+
+    // Weight and Revenue
     const shortageTons = (loadedTons * shortagePct) / 100;
     const billedTons = Math.max(0, loadedTons - shortageTons);
-
-    // Total Cost: Purchase is based on loaded tons; freight usually on loaded tons (or billed); misc on loaded
-    const coalCost = loadedTons * buyRate;
-    const freightCost = loadedTons * freight;
-    const miscCost = loadedTons * misc;
-    const totalCost = coalCost + freightCost + miscCost;
-
-    // Total Revenue: Factory pays on received/billed tons
     const totalRevenue = billedTons * sellRate;
-    const netProfit = totalRevenue - totalCost;
+    const shortageValueLost = shortageTons * sellRate; // Revenue lost due to weighbridge shortage
 
+    // Profits
+    const netProfit = totalRevenue - totalCost;
     const costPerLoadedTon = loadedTons > 0 ? totalCost / loadedTons : 0;
     const profitPerLoadedTon = loadedTons > 0 ? netProfit / loadedTons : 0;
     const marginPercent = totalRevenue > 0 ? (netProfit / totalRevenue) * 100 : 0;
@@ -55,9 +86,20 @@ function DealEstimatorContent({ onClose }: { onClose: () => void }) {
 
     return {
       loadedTons,
-      billedTons,
-      shortageTons,
+      buyRate,
+      sellRate,
+      freightMode,
+      freightTotal,
+      freightPerTon,
+      miscMode,
+      miscTotal,
+      miscPerTon,
+      coalCost,
       totalCost,
+      shortagePercent: shortagePct,
+      shortageTons,
+      shortageValueLost,
+      billedTons,
       totalRevenue,
       netProfit,
       costPerLoadedTon,
@@ -65,7 +107,30 @@ function DealEstimatorContent({ onClose }: { onClose: () => void }) {
       marginPercent,
       breakevenRate,
     };
-  }, [tons, purchaseRate, freightRate, miscCostPerTon, sellingRate, shortagePercent]);
+  }, [tons, purchaseRate, sellingRate, freightMode, freightValue, miscMode, miscValue, shortagePercent]);
+
+  // Mode toggling helpers (preserves entered cost seamlessly)
+  const handleFreightModeChange = (newMode: 'total' | 'perTon') => {
+    if (newMode === freightMode) return;
+    playPopSound();
+    if (newMode === 'perTon') {
+      setFreightValue(calc.loadedTons > 0 ? Math.round(calc.freightTotal / calc.loadedTons) : 0);
+    } else {
+      setFreightValue(Math.round(calc.freightPerTon * calc.loadedTons));
+    }
+    setFreightMode(newMode);
+  };
+
+  const handleMiscModeChange = (newMode: 'total' | 'perTon') => {
+    if (newMode === miscMode) return;
+    playPopSound();
+    if (newMode === 'perTon') {
+      setMiscValue(calc.loadedTons > 0 ? Math.round(calc.miscTotal / calc.loadedTons) : 0);
+    } else {
+      setMiscValue(Math.round(calc.miscPerTon * calc.loadedTons));
+    }
+    setMiscMode(newMode);
+  };
 
   const truckPresets = [
     { label: '10 Wheeler (35t)', tons: 35 },
@@ -74,17 +139,28 @@ function DealEstimatorContent({ onClose }: { onClose: () => void }) {
     { label: 'Super (65t)', tons: 65 },
   ];
 
-  const dealSummaryText = `*COAL DEAL ESTIMATE*\n` +
+  const transitLossPresets = [
+    { label: '0% None', value: 0 },
+    { label: '0.5% Normal', value: 0.5 },
+    { label: '1.0% High', value: 1.0 },
+    { label: '1.5% Extreme', value: 1.5 },
+  ];
+
+  const dealSummaryText = `*DEAL ESTIMATE (Factory Ledger)*\n` +
     `• Load Weight: ${calc.loadedTons.toFixed(2)} Tons\n` +
-    `• Buy Rate: Rs. ${purchaseRate.toLocaleString()}/ton\n` +
-    `• Freight: Rs. ${freightRate.toLocaleString()}/ton\n` +
-    (miscCostPerTon > 0 ? `• Misc/Kanta: Rs. ${miscCostPerTon.toLocaleString()}/ton\n` : '') +
-    `• Total Cost: Rs. ${Math.round(calc.costPerLoadedTon).toLocaleString()}/ton\n` +
-    `• Selling Rate: Rs. ${sellingRate.toLocaleString()}/ton\n` +
-    `• Shortage: ${shortagePercent}% (${calc.shortageTons.toFixed(2)} Tons)\n` +
+    `• Purchase Rate: Rs. ${calc.buyRate.toLocaleString()}/ton\n` +
+    `• Freight: Rs. ${Math.round(calc.freightTotal).toLocaleString()} (${freightMode === 'total' ? `Flat Total, ≈ Rs. ${Math.round(calc.freightPerTon).toLocaleString()}/ton` : `Rs. ${calc.freightPerTon.toLocaleString()}/ton`})\n` +
+    (calc.miscTotal > 0
+      ? `• Misc/Kanta: Rs. ${Math.round(calc.miscTotal).toLocaleString()} (${miscMode === 'total' ? `Flat Total, ≈ Rs. ${Math.round(calc.miscPerTon).toLocaleString()}/ton` : `Rs. ${calc.miscPerTon.toLocaleString()}/ton`})\n`
+      : '') +
+    `• Total Cost: Rs. ${Math.round(calc.totalCost).toLocaleString()} (Rs. ${Math.round(calc.costPerLoadedTon).toLocaleString()}/ton)\n` +
+    `• Factory Selling Rate: Rs. ${calc.sellRate.toLocaleString()}/ton\n` +
+    (calc.shortagePercent > 0
+      ? `• Transit Loss: ${calc.shortagePercent}% (-${calc.shortageTons.toFixed(2)}t shortage, Billed: ${calc.billedTons.toFixed(2)}t)\n`
+      : `• Transit Loss: 0% (Full ${calc.loadedTons.toFixed(2)}t Billed)\n`) +
     `────────────────────\n` +
-    `*Net Profit: Rs. ${Math.round(calc.profitPerLoadedTon).toLocaleString()}/ton*\n` +
-    `*Total Profit: Rs. ${Math.round(calc.netProfit).toLocaleString()}*\n` +
+    `*Net Profit: Rs. ${Math.round(calc.netProfit).toLocaleString()}*\n` +
+    `*Profit/Ton: Rs. ${Math.round(calc.profitPerLoadedTon).toLocaleString()}/ton (${calc.marginPercent.toFixed(1)}% margin)*\n` +
     `• Breakeven Rate: Rs. ${calc.breakevenRate.toLocaleString()}/ton\n` +
     `• Total Deal Value: Rs. ${Math.round(calc.totalRevenue).toLocaleString()}`;
 
@@ -132,7 +208,7 @@ function DealEstimatorContent({ onClose }: { onClose: () => void }) {
         className="ios-bottom-sheet"
         style={{
           zIndex: 99999,
-          maxHeight: '90vh',
+          maxHeight: '92vh',
           height: 'auto',
           background: 'var(--bg-grouped)',
           borderTopLeftRadius: 24,
@@ -219,7 +295,7 @@ function DealEstimatorContent({ onClose }: { onClose: () => void }) {
 
         {/* Modal Body */}
         <div style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: 16 }}>
-          {/* ── Key Results KPI Card (Solid Colors, Zero Gradient) ── */}
+          {/* ── Key Results KPI Card (Apple Flat Solid, No Gradient) ── */}
           <div
             style={{
               backgroundColor: isProfitable ? 'var(--ios-green)' : 'var(--ios-red)',
@@ -228,7 +304,7 @@ function DealEstimatorContent({ onClose }: { onClose: () => void }) {
               color: '#ffffff',
             }}
           >
-            <div style={{ fontSize: 13, textTransform: 'uppercase', letterSpacing: 0.5, opacity: 0.85, fontWeight: 600 }}>
+            <div style={{ fontSize: 13, textTransform: 'uppercase', letterSpacing: 0.5, opacity: 0.9, fontWeight: 600 }}>
               Projected Net Profit
             </div>
             <div style={{ fontSize: 32, fontWeight: 700, letterSpacing: -0.5, marginTop: 4 }}>
@@ -236,19 +312,19 @@ function DealEstimatorContent({ onClose }: { onClose: () => void }) {
             </div>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 12, paddingTop: 12, borderTop: '1px solid rgba(255, 255, 255, 0.2)' }}>
               <div>
-                <div style={{ fontSize: 11, opacity: 0.8 }}>Profit / Ton</div>
+                <div style={{ fontSize: 11, opacity: 0.85 }}>Profit / Ton</div>
                 <div style={{ fontSize: 16, fontWeight: 700 }}>
                   Rs. {Math.round(calc.profitPerLoadedTon).toLocaleString()}
                 </div>
               </div>
               <div>
-                <div style={{ fontSize: 11, opacity: 0.8 }}>Margin</div>
+                <div style={{ fontSize: 11, opacity: 0.85 }}>Margin</div>
                 <div style={{ fontSize: 16, fontWeight: 700 }}>
                   {calc.marginPercent.toFixed(1)}%
                 </div>
               </div>
               <div>
-                <div style={{ fontSize: 11, opacity: 0.8 }}>Breakeven Rate</div>
+                <div style={{ fontSize: 11, opacity: 0.85 }}>Breakeven Rate</div>
                 <div style={{ fontSize: 16, fontWeight: 700 }}>
                   Rs. {calc.breakevenRate.toLocaleString()}
                 </div>
@@ -256,7 +332,7 @@ function DealEstimatorContent({ onClose }: { onClose: () => void }) {
             </div>
           </div>
 
-          {/* ── Quick Truck Preset Chips ── */}
+          {/* ── Quick Truck Capacity Preset Chips ── */}
           <div>
             <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 }}>
               Truck Capacity Presets
@@ -295,11 +371,12 @@ function DealEstimatorContent({ onClose }: { onClose: () => void }) {
 
           {/* ── Input Parameters Form (Apple Inset Grouped) ── */}
           <div style={{ backgroundColor: 'var(--bg-card)', borderRadius: 16, border: '1px solid var(--separator)', overflow: 'hidden' }}>
-            {/* Weight Input */}
+
+            {/* 1. Load Weight */}
             <div style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid var(--separator)' }}>
               <div>
                 <div style={{ fontSize: 15, fontWeight: 500, color: 'var(--text-main)' }}>Load Weight</div>
-                <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Dispatch gross coal weight</div>
+                <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Mine loading scale weight</div>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 <input
@@ -323,11 +400,11 @@ function DealEstimatorContent({ onClose }: { onClose: () => void }) {
               </div>
             </div>
 
-            {/* Purchase Rate */}
+            {/* 2. Purchase Rate (strictly Rs/ton) */}
             <div style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid var(--separator)' }}>
               <div>
                 <div style={{ fontSize: 15, fontWeight: 500, color: 'var(--text-main)' }}>Purchase Rate</div>
-                <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Mine / source rate per ton</div>
+                <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Mine / source rate (per ton)</div>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 <input
@@ -346,69 +423,175 @@ function DealEstimatorContent({ onClose }: { onClose: () => void }) {
                     color: 'var(--text-main)',
                   }}
                 />
-                <span style={{ fontSize: 14, color: 'var(--text-secondary)' }}>Rs/t</span>
+                <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-secondary)' }}>Rs/ton</span>
               </div>
             </div>
 
-            {/* Freight Rate */}
-            <div style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid var(--separator)' }}>
-              <div>
-                <div style={{ fontSize: 15, fontWeight: 500, color: 'var(--text-main)' }}>Freight / Transport</div>
-                <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Truck carriage fare per ton</div>
+            {/* 3. Freight / Transport (Toggle: Total Rs vs Per Ton) */}
+            <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--separator)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div>
+                  <div style={{ fontSize: 15, fontWeight: 500, color: 'var(--text-main)' }}>Transport</div>
+                  <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                    {freightMode === 'total' ? 'Flat truck carriage fare' : 'Carriage rate per ton'}
+                  </div>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  {/* Segmented Mode Toggle */}
+                  <div style={{ display: 'inline-flex', padding: 2, background: 'var(--bg-grouped)', borderRadius: 8, border: '1px solid var(--separator)' }}>
+                    <button
+                      type="button"
+                      onClick={() => handleFreightModeChange('total')}
+                      style={{
+                        padding: '3px 8px',
+                        fontSize: 11,
+                        fontWeight: 600,
+                        borderRadius: 6,
+                        border: 'none',
+                        background: freightMode === 'total' ? 'var(--ios-blue)' : 'transparent',
+                        color: freightMode === 'total' ? '#ffffff' : 'var(--text-secondary)',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      Total Rs
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleFreightModeChange('perTon')}
+                      style={{
+                        padding: '3px 8px',
+                        fontSize: 11,
+                        fontWeight: 600,
+                        borderRadius: 6,
+                        border: 'none',
+                        background: freightMode === 'perTon' ? 'var(--ios-blue)' : 'transparent',
+                        color: freightMode === 'perTon' ? '#ffffff' : 'var(--text-secondary)',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      Rs/ton
+                    </button>
+                  </div>
+
+                  {/* Input field */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <input
+                      type="number"
+                      value={freightValue || ''}
+                      onChange={e => setFreightValue(parseFloat(e.target.value) || 0)}
+                      style={{
+                        width: 100,
+                        textAlign: 'right',
+                        fontSize: 16,
+                        fontWeight: 600,
+                        padding: '6px 8px',
+                        borderRadius: 8,
+                        border: '1px solid var(--separator)',
+                        backgroundColor: 'var(--bg-grouped)',
+                        color: 'var(--text-main)',
+                      }}
+                    />
+                    <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', minWidth: 38 }}>
+                      {freightMode === 'total' ? 'Rs' : 'Rs/t'}
+                    </span>
+                  </div>
+                </div>
               </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <input
-                  type="number"
-                  value={freightRate || ''}
-                  onChange={e => setFreightRate(parseFloat(e.target.value) || 0)}
-                  style={{
-                    width: 100,
-                    textAlign: 'right',
-                    fontSize: 16,
-                    fontWeight: 600,
-                    padding: '6px 8px',
-                    borderRadius: 8,
-                    border: '1px solid var(--separator)',
-                    backgroundColor: 'var(--bg-grouped)',
-                    color: 'var(--text-main)',
-                  }}
-                />
-                <span style={{ fontSize: 14, color: 'var(--text-secondary)' }}>Rs/t</span>
+              {/* Calculated Counterpart helper */}
+              <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 4 }}>
+                <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                  {freightMode === 'total'
+                    ? `≈ Rs. ${Math.round(calc.freightPerTon).toLocaleString()}/ton`
+                    : `≈ Rs. ${Math.round(calc.freightTotal).toLocaleString()} total`}
+                </span>
               </div>
             </div>
 
-            {/* Misc / Commission */}
-            <div style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid var(--separator)' }}>
-              <div>
-                <div style={{ fontSize: 15, fontWeight: 500, color: 'var(--text-main)' }}>Other / Kanta / Bilty</div>
-                <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Weighbridge & misc fee</div>
+            {/* 4. Other / Kanta / Bilty (Toggle: Total Rs vs Per Ton, default flat Total) */}
+            <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--separator)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div>
+                  <div style={{ fontSize: 15, fontWeight: 500, color: 'var(--text-main)' }}>Kanta / Bilty</div>
+                  <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                    {miscMode === 'total' ? 'Weighbridge & slip total' : 'Misc fees per ton'}
+                  </div>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  {/* Segmented Mode Toggle */}
+                  <div style={{ display: 'inline-flex', padding: 2, background: 'var(--bg-grouped)', borderRadius: 8, border: '1px solid var(--separator)' }}>
+                    <button
+                      type="button"
+                      onClick={() => handleMiscModeChange('total')}
+                      style={{
+                        padding: '3px 8px',
+                        fontSize: 11,
+                        fontWeight: 600,
+                        borderRadius: 6,
+                        border: 'none',
+                        background: miscMode === 'total' ? 'var(--ios-blue)' : 'transparent',
+                        color: miscMode === 'total' ? '#ffffff' : 'var(--text-secondary)',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      Total Rs
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleMiscModeChange('perTon')}
+                      style={{
+                        padding: '3px 8px',
+                        fontSize: 11,
+                        fontWeight: 600,
+                        borderRadius: 6,
+                        border: 'none',
+                        background: miscMode === 'perTon' ? 'var(--ios-blue)' : 'transparent',
+                        color: miscMode === 'perTon' ? '#ffffff' : 'var(--text-secondary)',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      Rs/ton
+                    </button>
+                  </div>
+
+                  {/* Input field */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <input
+                      type="number"
+                      value={miscValue || ''}
+                      onChange={e => setMiscValue(parseFloat(e.target.value) || 0)}
+                      style={{
+                        width: 100,
+                        textAlign: 'right',
+                        fontSize: 16,
+                        fontWeight: 600,
+                        padding: '6px 8px',
+                        borderRadius: 8,
+                        border: '1px solid var(--separator)',
+                        backgroundColor: 'var(--bg-grouped)',
+                        color: 'var(--text-main)',
+                      }}
+                    />
+                    <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', minWidth: 38 }}>
+                      {miscMode === 'total' ? 'Rs' : 'Rs/t'}
+                    </span>
+                  </div>
+                </div>
               </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <input
-                  type="number"
-                  value={miscCostPerTon || ''}
-                  onChange={e => setMiscCostPerTon(parseFloat(e.target.value) || 0)}
-                  style={{
-                    width: 100,
-                    textAlign: 'right',
-                    fontSize: 16,
-                    fontWeight: 600,
-                    padding: '6px 8px',
-                    borderRadius: 8,
-                    border: '1px solid var(--separator)',
-                    backgroundColor: 'var(--bg-grouped)',
-                    color: 'var(--text-main)',
-                  }}
-                />
-                <span style={{ fontSize: 14, color: 'var(--text-secondary)' }}>Rs/t</span>
+              {/* Calculated Counterpart helper */}
+              <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 4 }}>
+                <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                  {miscMode === 'total'
+                    ? `≈ Rs. ${Math.round(calc.miscPerTon).toLocaleString()}/ton`
+                    : `≈ Rs. ${Math.round(calc.miscTotal).toLocaleString()} total`}
+                </span>
               </div>
             </div>
 
-            {/* Selling Rate */}
+            {/* 5. Factory Selling Rate (strictly Rs/ton) */}
             <div style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid var(--separator)' }}>
               <div>
                 <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--ios-blue)' }}>Factory Selling Rate</div>
-                <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Contract billing price</div>
+                <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Mill contract rate (per ton)</div>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 <input
@@ -427,36 +610,112 @@ function DealEstimatorContent({ onClose }: { onClose: () => void }) {
                     color: 'var(--ios-blue)',
                   }}
                 />
-                <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--ios-blue)' }}>Rs/t</span>
+                <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--ios-blue)' }}>Rs/ton</span>
               </div>
             </div>
 
-            {/* Expected Transit Shortage */}
-            <div style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <div>
-                <div style={{ fontSize: 15, fontWeight: 500, color: 'var(--text-main)' }}>Transit Loss Allowance</div>
-                <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Weighbridge difference tolerance</div>
+            {/* 6. Transit Loss (Weighbridge Shortage) */}
+            <div style={{ padding: '12px 16px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span style={{ fontSize: 15, fontWeight: 500, color: 'var(--text-main)' }}>Transit Loss Allowance</span>
+                    <button
+                      type="button"
+                      onClick={() => setShowTransitLossExplainer(!showTransitLossExplainer)}
+                      style={{
+                        background: 'transparent',
+                        border: 'none',
+                        color: 'var(--ios-blue)',
+                        cursor: 'pointer',
+                        padding: 0,
+                        display: 'flex',
+                        alignItems: 'center',
+                      }}
+                      title="What is Transit Loss?"
+                    >
+                      <Info style={{ width: 15, height: 15 }} />
+                    </button>
+                  </div>
+                  <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                    {shortagePercent === 0 ? '0% — Full loaded weight paid by factory' : `Weighbridge shortage (${calc.shortageTons.toFixed(2)}t lost)`}
+                  </div>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <input
+                    type="number"
+                    step="0.1"
+                    min="0"
+                    max="10"
+                    value={shortagePercent === 0 ? '0' : shortagePercent || ''}
+                    onChange={e => setShortagePercent(parseFloat(e.target.value) || 0)}
+                    style={{
+                      width: 70,
+                      textAlign: 'right',
+                      fontSize: 16,
+                      fontWeight: 600,
+                      padding: '6px 8px',
+                      borderRadius: 8,
+                      border: '1px solid var(--separator)',
+                      backgroundColor: 'var(--bg-grouped)',
+                      color: 'var(--text-main)',
+                    }}
+                  />
+                  <span style={{ fontSize: 14, color: 'var(--text-secondary)' }}>%</span>
+                </div>
               </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <input
-                  type="number"
-                  step="0.1"
-                  value={shortagePercent || ''}
-                  onChange={e => setShortagePercent(parseFloat(e.target.value) || 0)}
+
+              {/* Transit Loss Quick Chips */}
+              <div style={{ display: 'flex', gap: 6, marginTop: 10 }}>
+                {transitLossPresets.map(preset => (
+                  <button
+                    key={preset.value}
+                    type="button"
+                    onClick={() => {
+                      playPopSound();
+                      setShortagePercent(preset.value);
+                    }}
+                    style={{
+                      padding: '4px 10px',
+                      fontSize: 12,
+                      fontWeight: shortagePercent === preset.value ? 600 : 400,
+                      borderRadius: 8,
+                      border: '1px solid var(--separator)',
+                      background: shortagePercent === preset.value ? 'var(--ios-blue)' : 'var(--bg-grouped)',
+                      color: shortagePercent === preset.value ? '#ffffff' : 'var(--text-main)',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Transit Loss Explainer Accordion Banner */}
+              {showTransitLossExplainer && (
+                <div
                   style={{
-                    width: 70,
-                    textAlign: 'right',
-                    fontSize: 16,
-                    fontWeight: 600,
-                    padding: '6px 8px',
-                    borderRadius: 8,
-                    border: '1px solid var(--separator)',
+                    marginTop: 10,
+                    padding: '10px 12px',
+                    borderRadius: 10,
                     backgroundColor: 'var(--bg-grouped)',
-                    color: 'var(--text-main)',
+                    border: '1px solid var(--separator)',
+                    fontSize: 12,
+                    lineHeight: 1.45,
+                    color: 'var(--text-secondary)',
                   }}
-                />
-                <span style={{ fontSize: 14, color: 'var(--text-secondary)' }}>%</span>
-              </div>
+                >
+                  <strong style={{ color: 'var(--text-main)' }}>What is Transit Loss? (کانٹا شارٹیج / وزن کی کمی):</strong>
+                  <p style={{ margin: '4px 0 0' }}>
+                    In coal logistics, trucks travel 2–4 days from loading mines to factories. Moisture evaporates under the sun, coal dust blows off in transit, and different weighbridges have slight calibration differences.
+                  </p>
+                  <p style={{ margin: '4px 0 0' }}>
+                    The factory weighs the truck upon arrival and pays <em>only for received weighbridge weight</em>.
+                    • If the factory pays based on <strong>Loading weight</strong>, keep this at <strong>0% (None)</strong>.
+                    • If the factory pays on <strong>Destination weighbridge</strong>, select <strong>0.5% or 1.0%</strong> to project actual billed profit.
+                  </p>
+                </div>
+              )}
             </div>
           </div>
 
@@ -467,27 +726,58 @@ function DealEstimatorContent({ onClose }: { onClose: () => void }) {
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 14 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-secondary)' }}>
-                <span>Coal Sourcing Cost:</span>
-                <span style={{ fontWeight: 600, color: 'var(--text-main)' }}>Rs. {Math.round(calc.loadedTons * purchaseRate).toLocaleString()}</span>
+                <span>Coal Sourcing ({calc.loadedTons.toFixed(2)}t @ Rs. {calc.buyRate.toLocaleString()}):</span>
+                <span style={{ fontWeight: 600, color: 'var(--text-main)' }}>Rs. {Math.round(calc.coalCost).toLocaleString()}</span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-secondary)' }}>
-                <span>Freight / Transport Cost:</span>
-                <span style={{ fontWeight: 600, color: 'var(--text-main)' }}>Rs. {Math.round(calc.loadedTons * freightRate).toLocaleString()}</span>
+                <span>Transport:</span>
+                <span style={{ fontWeight: 600, color: 'var(--text-main)' }}>
+                  Rs. {Math.round(calc.freightTotal).toLocaleString()}
+                  <span style={{ fontSize: 12, opacity: 0.75, marginLeft: 4 }}>
+                    ({freightMode === 'total' ? 'Lump Sum' : `@ Rs. ${calc.freightPerTon.toLocaleString()}/t`})
+                  </span>
+                </span>
               </div>
-              {miscCostPerTon > 0 && (
+              {calc.miscTotal > 0 && (
                 <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-secondary)' }}>
-                  <span>Misc Expenses:</span>
-                  <span style={{ fontWeight: 600, color: 'var(--text-main)' }}>Rs. {Math.round(calc.loadedTons * miscCostPerTon).toLocaleString()}</span>
+                  <span>Kanta / Bilty:</span>
+                  <span style={{ fontWeight: 600, color: 'var(--text-main)' }}>
+                    Rs. {Math.round(calc.miscTotal).toLocaleString()}
+                    <span style={{ fontSize: 12, opacity: 0.75, marginLeft: 4 }}>
+                      ({miscMode === 'total' ? 'Lump Sum' : `@ Rs. ${calc.miscPerTon.toLocaleString()}/t`})
+                    </span>
+                  </span>
                 </div>
               )}
+
+              {/* Total Cost Line */}
               <div style={{ display: 'flex', justifyContent: 'space-between', paddingTop: 6, borderTop: '1px dashed var(--separator)' }}>
                 <span style={{ fontWeight: 600, color: 'var(--text-main)' }}>Total Investment / Cost:</span>
-                <span style={{ fontWeight: 700, color: 'var(--ios-red)' }}>Rs. {Math.round(calc.totalCost).toLocaleString()}</span>
+                <span style={{ fontWeight: 700, color: 'var(--ios-red)' }}>
+                  Rs. {Math.round(calc.totalCost).toLocaleString()}
+                  <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-secondary)', marginLeft: 4 }}>
+                    (Rs. {Math.round(calc.costPerLoadedTon).toLocaleString()}/t)
+                  </span>
+                </span>
               </div>
+
+              {/* Gross Billed */}
               <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ fontWeight: 600, color: 'var(--text-main)' }}>Factory Gross Billed:</span>
+                <span style={{ fontWeight: 600, color: 'var(--text-main)' }}>
+                  Factory Gross Billed ({calc.billedTons.toFixed(2)}t @ Rs. {calc.sellRate.toLocaleString()}):
+                </span>
                 <span style={{ fontWeight: 700, color: 'var(--ios-blue)' }}>Rs. {Math.round(calc.totalRevenue).toLocaleString()}</span>
               </div>
+
+              {/* Shortage deduction note if shortage > 0 */}
+              {calc.shortagePercent > 0 && (
+                <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--ios-red)', fontSize: 12 }}>
+                  <span>↳ Transit Shortage ({calc.shortagePercent}% = -{calc.shortageTons.toFixed(2)} tons):</span>
+                  <span>-Rs. {Math.round(calc.shortageValueLost).toLocaleString()} lost</span>
+                </div>
+              )}
+
+              {/* Net Profit Margin */}
               <div style={{ display: 'flex', justifyContent: 'space-between', paddingTop: 6, borderTop: '1px solid var(--separator)', fontSize: 15 }}>
                 <span style={{ fontWeight: 700, color: isProfitable ? 'var(--ios-green)' : 'var(--ios-red)' }}>Net Profit Margin:</span>
                 <span style={{ fontWeight: 700, color: isProfitable ? 'var(--ios-green)' : 'var(--ios-red)' }}>

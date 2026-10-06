@@ -163,7 +163,7 @@ export default function Settings() {
         alert(`Restore Failed: ${result.message}`);
       }
     } catch {
-      alert('Failed to parse the backup file. Please ensure it is a valid JSON file exported from Coal Ledger.');
+      alert('Failed to parse the backup file. Please ensure it is a valid JSON file exported from Factory Ledger.');
     } finally {
       if (fileInputRef.current) {
         fileInputRef.current.value = '';
@@ -684,7 +684,7 @@ export default function Settings() {
               <Info style={{ width: 18, height: 18 }} />
             </div>
             <span className="ios-cell-label">Application</span>
-            <span className="ios-cell-value">Coal Ledger iOS</span>
+            <span className="ios-cell-value">Factory Ledger iOS</span>
             <div className="ios-separator with-glyph" />
           </div>
 

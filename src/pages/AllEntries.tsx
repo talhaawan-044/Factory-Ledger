@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useRef } from 'react';
+import { useEffect, useState, useMemo, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import IOSDatePicker from '../components/IOSDatePicker';
 import { getDispatches, getParties, getPurchaseOrders, getSettings } from '../lib/db';
@@ -13,12 +13,17 @@ import {
     Share2,
     Loader2,
     CheckCircle2,
-    ArrowUpRight
+    ArrowUpRight,
+    Edit2,
+    Image,
+    MessageSquare
 } from 'lucide-react';
 import { playPopSound, playSuccessSound, triggerConfetti } from '../utils/delight';
 import ExportLedgerDropdown from '../components/ExportLedgerDropdown';
 import { DispatchReceipt } from '../components/DispatchReceipt';
 import { shareReceiptImage } from '../utils/exportSharing';
+import { Capacitor } from '@capacitor/core';
+import { Share } from '@capacitor/share';
 
 export default function AllEntries() {
     const [dispatches, setDispatches] = useState<Dispatch[]>([]);
@@ -27,6 +32,7 @@ export default function AllEntries() {
     const [settings, setSettings] = useState<AppSettings | undefined>(undefined);
     const [loading, setLoading] = useState(true);
     const [previewDispatch, setPreviewDispatch] = useState<Dispatch | null>(null);
+    const [isDispatchShareSheetOpen, setIsDispatchShareSheetOpen] = useState(false);
     const [isSharingDispatch, setIsSharingDispatch] = useState(false);
     const [toastMsg, setToastMsg] = useState<string | null>(null);
     const receiptRef = useRef<HTMLDivElement>(null);
@@ -71,6 +77,67 @@ export default function AllEntries() {
             setIsSharingDispatch(false);
         }
     };
+
+    const handleShareDispatchWhatsApp = useCallback(async () => {
+        if (!previewDispatch) return;
+
+        const party = parties.find(p => p.id === previewDispatch.partyId);
+        const settlement = calculateSettlement(previewDispatch);
+        const poObj = pos.find((p) => p.id === previewDispatch.poId);
+
+        const text = `*${(settings?.businessName || 'AWAN COAL LOGISTICS').toUpperCase()}*
+*OFFICIAL SETTLEMENT SLIP*
+----------------------------------------
+*Truck No:* ${previewDispatch.truckNumber}
+*Date:* ${previewDispatch.date}
+*Party:* ${party?.name || previewDispatch.factoryName || 'Factory Client'}
+${poObj ? `*PO Number:* ${poObj.poNumber}\n` : ''}*Received Weight:* ${previewDispatch.labReceivedWeight || 0} Tons
+
+*LAB ANALYSIS:*
+• Target GCV: ${previewDispatch.targetGcv || 'N/A'} kcal/kg
+• Actual GCV: ${previewDispatch.labActualGcv || 'N/A'} kcal/kg
+• Ash / Moisture / Sulphur: ${previewDispatch.labAsh || 0}% / ${previewDispatch.labMoisture || 0}% / ${previewDispatch.labSulphur || 0}%
+
+*RATE & SETTLEMENT CALCULATION:*
+• Base Agreement Rate: Rs. ${previewDispatch.baseRate.toFixed(2)}/ton
+• GCV Deduction: - Rs. ${settlement.gcvDeduction.toFixed(2)}/ton
+${previewDispatch.manualPremium ? `• Premium: + Rs. ${previewDispatch.manualPremium.toFixed(2)}/ton\n` : ''}• Adjusted Rate: Rs. ${settlement.adjustedRate.toFixed(2)}/ton
+• Tax Deduction: - Rs. ${settlement.taxDeduction.toFixed(2)}/ton
+${previewDispatch.commissionPerTon ? `• Commission: - Rs. ${previewDispatch.commissionPerTon.toFixed(2)}/ton\n` : ''}----------------------------------------
+*PAYABLE RATE:* Rs. ${settlement.payableRate.toFixed(2)} / ton
+*TOTAL PAYABLE:* Rs. ${Math.round(settlement.totalRevenue).toLocaleString('en-PK')}
+----------------------------------------
+${previewDispatch.notes ? `*Remarks:* ${previewDispatch.notes}\n\n` : ''}✓ E-Verified Dispatch Voucher`;
+
+        try {
+            if (Capacitor.isNativePlatform()) {
+                await Share.share({
+                    title: `Dispatch Settlement - ${previewDispatch.truckNumber}`,
+                    text,
+                    dialogTitle: 'Share Settlement Slip',
+                });
+                playSuccessSound();
+                showToast('Settlement slip shared!');
+                return;
+            } else if (navigator.share) {
+                await navigator.share({
+                    title: `Dispatch Settlement - ${previewDispatch.truckNumber}`,
+                    text,
+                });
+                playSuccessSound();
+                showToast('Settlement slip shared!');
+                return;
+            }
+        } catch {
+            // Ignored if cancelled
+        }
+
+        if (navigator.clipboard) {
+            await navigator.clipboard.writeText(text);
+            playPopSound();
+            showToast('Settlement slip text copied to clipboard!');
+        }
+    }, [previewDispatch, parties, pos, settings]);
 
     // Filtered entries
     const filteredDispatches = useMemo(() => {
@@ -479,7 +546,10 @@ export default function AllEntries() {
                                 <div
                                     key={dispatch.id}
                                     className="ios-cell"
-                                    onClick={() => setPreviewDispatch(dispatch)}
+                                    onClick={() => {
+                                        playPopSound();
+                                        setPreviewDispatch(dispatch);
+                                    }}
                                 >
                                     <div
                                         style={{
@@ -549,19 +619,19 @@ export default function AllEntries() {
             {/* ── Dispatch Inspection & Preview Bottom Sheet ── */}
             {previewDispatch && (
                 <>
-                    <div className="ios-modal-backdrop" onClick={() => setPreviewDispatch(null)} />
+                    <div className="ios-modal-backdrop" onClick={() => { setPreviewDispatch(null); setIsDispatchShareSheetOpen(false); }} />
                     <div className="ios-bottom-sheet" style={{ background: 'var(--bg-grouped)', borderTopLeftRadius: 24, borderTopRightRadius: 24, height: '90vh', display: 'flex', flexDirection: 'column' }}>
                         <div className="ios-sheet-handle" />
                         <div className="ios-sheet-header" style={{ borderBottom: '0.5px solid var(--separator)', padding: '10px 16px 12px', background: 'var(--bg-grouped)', flexShrink: 0 }}>
-                            <button onClick={() => setPreviewDispatch(null)} className="ios-nav-action" style={{ fontWeight: 400 }}>Close</button>
+                            <button onClick={() => { setPreviewDispatch(null); setIsDispatchShareSheetOpen(false); }} className="ios-nav-action" style={{ fontWeight: 400 }}>Close</button>
                             <span style={{ fontSize: 17, fontWeight: 700 }}>Dispatch Preview</span>
                             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                                 <button
                                     type="button"
-                                    onClick={handleShareDispatchImage}
+                                    onClick={() => setIsDispatchShareSheetOpen(true)}
                                     disabled={isSharingDispatch}
                                     className="ios-nav-action"
-                                    title="Share Receipt as Picture"
+                                    title="Share Receipt"
                                     style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
                                 >
                                     {isSharingDispatch ? (
@@ -581,11 +651,12 @@ export default function AllEntries() {
                         </div>
 
                         <div className="ios-sheet-body" style={{ flex: 1, overflowY: 'auto', padding: '16px 0 40px', background: 'var(--bg-grouped)' }}>
-                            {/* Prominent Share Picture Receipt Action */}
+
+                            {/* Prominent Share Action */}
                             <div style={{ padding: '0 16px', marginBottom: 14 }}>
                                 <button
                                     type="button"
-                                    onClick={handleShareDispatchImage}
+                                    onClick={() => setIsDispatchShareSheetOpen(true)}
                                     disabled={isSharingDispatch}
                                     className="ios-btn ios-btn-primary"
                                     style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
@@ -595,7 +666,7 @@ export default function AllEntries() {
                                     ) : (
                                         <Share2 style={{ width: 18, height: 18 }} strokeWidth={2.4} />
                                     )}
-                                    <span>Share Settlement Receipt (Picture)</span>
+                                    <span>Share Settlement Receipt</span>
                                 </button>
                             </div>
 
@@ -616,22 +687,23 @@ export default function AllEntries() {
                                 </div>
                             </div>
 
-                            {/* Contract & Lab Specifications */}
                             <div className="ios-group">
                                 <div className="ios-group-title">Contract & Lab Results</div>
                                 <div className="ios-card-grouped" style={{ padding: '12px 16px' }}>
                                     <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8, fontSize: 15 }}>
                                         <span style={{ color: 'var(--label-secondary)' }}>Factory Account</span>
                                         <span style={{ fontWeight: 600 }}>
-                                            {parties.find(p => p.id === previewDispatch.partyId)?.name || previewDispatch.factoryName}
+                                            {parties.find(p => p.id === previewDispatch.partyId)?.name || previewDispatch.factoryName || 'Factory Client'}
                                         </span>
                                     </div>
-                                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8, fontSize: 15 }}>
-                                        <span style={{ color: 'var(--label-secondary)' }}>Purchase Order</span>
-                                        <span style={{ fontWeight: 500 }}>
-                                            {pos.find(p => p.id === previewDispatch.poId)?.poNumber || 'Standard Delivery'}
-                                        </span>
-                                    </div>
+                                    {pos.find(p => p.id === previewDispatch.poId)?.poNumber && (
+                                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8, fontSize: 15 }}>
+                                            <span style={{ color: 'var(--label-secondary)' }}>Purchase Order</span>
+                                            <span style={{ fontWeight: 500 }}>
+                                                {pos.find(p => p.id === previewDispatch.poId)?.poNumber}
+                                            </span>
+                                        </div>
+                                    )}
                                     <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8, fontSize: 15 }}>
                                         <span style={{ color: 'var(--label-secondary)' }}>Target GCV</span>
                                         <span className="tabular-nums" style={{ fontWeight: 500 }}>{previewDispatch.targetGcv || 'N/A'} kcal/kg</span>
@@ -646,18 +718,17 @@ export default function AllEntries() {
                                     </div>
                                     <div className="ios-separator" style={{ margin: '12px 0' }} />
                                     <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15 }}>
-                                        <span style={{ color: 'var(--label-secondary)' }}>Delivered Received Weight</span>
+                                        <span style={{ color: 'var(--label-secondary)' }}>Received Weight</span>
                                         <span className="tabular-nums" style={{ fontWeight: 600, color: 'var(--ios-blue)' }}>{previewDispatch.labReceivedWeight || 0} t</span>
                                     </div>
                                 </div>
                             </div>
 
-                            {/* Coal Blending Sources */}
                             <div className="ios-group">
                                 <div className="ios-group-title">Coal Blending Sources</div>
                                 <div className="ios-card-grouped">
-                                    {previewDispatch.coalInputs.map((input, idx) => (
-                                        <div key={input.id}>
+                                    {previewDispatch.coalInputs?.map((input, idx) => (
+                                        <div key={input.id || idx}>
                                             <div style={{ padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                                                 <div>
                                                     <div style={{ fontSize: 15, fontWeight: 500, color: 'var(--label-primary)' }}>{input.sourceName || 'Unknown Source'}</div>
@@ -667,7 +738,7 @@ export default function AllEntries() {
                                                     {input.weight} t
                                                 </div>
                                             </div>
-                                            {idx < previewDispatch.coalInputs.length - 1 && <div className="ios-separator" />}
+                                            {idx < (previewDispatch.coalInputs?.length || 0) - 1 && <div className="ios-separator" />}
                                         </div>
                                     ))}
                                     {(!previewDispatch.coalInputs || previewDispatch.coalInputs.length === 0) && (
@@ -678,7 +749,6 @@ export default function AllEntries() {
                                 </div>
                             </div>
 
-                            {/* Official Settlement Breakdown */}
                             {(() => {
                                 const settlement = calculateSettlement(previewDispatch);
                                 const isProfit = settlement.netProfit >= 0;
@@ -688,6 +758,7 @@ export default function AllEntries() {
                                             <Calculator size={16} /> Official Settlement Breakdown
                                         </div>
                                         <div className="ios-card-grouped" style={{ padding: '16px' }}>
+
                                             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 8 }}>
                                                 <span style={{ color: 'var(--label-secondary)' }}>Base Agreement Rate</span>
                                                 <span style={{ fontWeight: 600 }} className="tabular-nums">Rs. {previewDispatch.baseRate.toFixed(2)}</span>
@@ -710,59 +781,201 @@ export default function AllEntries() {
                                                 <span style={{ fontWeight: 600 }} className="tabular-nums">Rs. {settlement.adjustedRate.toFixed(2)}</span>
                                             </div>
 
-                                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 8, color: 'var(--label-secondary)' }}>
-                                                <span>- Sales Tax / GST</span>
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 8, color: 'var(--ios-red)' }}>
+                                                <span>- Tax Deduction</span>
                                                 <span className="tabular-nums">- Rs. {settlement.taxDeduction.toFixed(2)}</span>
                                             </div>
 
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 8 }}>
+                                                <span style={{ color: 'var(--label-secondary)' }}>Net Rate</span>
+                                                <span className="tabular-nums">Rs. {settlement.netRate.toFixed(2)}</span>
+                                            </div>
+
                                             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 8, color: 'var(--ios-red)' }}>
-                                                <span>- Commission / Ton</span>
+                                                <span>- Commission</span>
                                                 <span className="tabular-nums">- Rs. {(previewDispatch.commissionPerTon || 0).toFixed(2)}</span>
                                             </div>
 
                                             <div style={{ height: 0.5, background: 'var(--separator)', margin: '10px 0' }} />
 
                                             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 16, marginBottom: 12 }}>
-                                                <span style={{ fontWeight: 700 }}>Final Payable Rate</span>
+                                                <span style={{ fontWeight: 700, color: 'var(--ios-blue)' }}>Payable Rate (per ton)</span>
                                                 <span style={{ fontWeight: 700, color: 'var(--ios-blue)' }} className="tabular-nums">
-                                                    Rs. {settlement.payableRate.toFixed(2)} / ton
+                                                    Rs. {settlement.payableRate.toFixed(2)}
                                                 </span>
                                             </div>
 
-                                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 8, color: 'var(--label-primary)' }}>
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, color: 'var(--label-secondary)', marginBottom: 6 }}>
                                                 <span>Total Revenue ({previewDispatch.labReceivedWeight || 0} t × Rs. {settlement.payableRate.toFixed(2)})</span>
-                                                <span style={{ fontWeight: 600 }} className="tabular-nums">Rs. {Math.round(settlement.totalRevenue).toLocaleString('en-PK')}</span>
+                                                <span className="tabular-nums">Rs. {Math.round(settlement.totalRevenue).toLocaleString('en-PK')}</span>
                                             </div>
 
-                                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 8, color: 'var(--label-secondary)' }}>
-                                                <span>Total Cost (Procurement + Freight)</span>
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, color: 'var(--label-secondary)', marginBottom: 12 }}>
+                                                <span>Total Cost (Coal + Overheads)</span>
                                                 <span className="tabular-nums">Rs. {Math.round(settlement.totalCost).toLocaleString('en-PK')}</span>
                                             </div>
 
-                                            <div style={{ height: 0.5, background: 'var(--separator)', margin: '10px 0' }} />
-
-                                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 17 }}>
-                                                <span style={{ fontWeight: 700 }}>Net Margin Profit</span>
-                                                <span style={{ fontWeight: 700, color: isProfit ? 'var(--ios-green)' : 'var(--ios-red)' }} className="tabular-nums">
+                                            <div style={{
+                                                padding: '12px 14px',
+                                                borderRadius: 10,
+                                                background: isProfit ? 'var(--ios-green)' : 'var(--ios-red)',
+                                                display: 'flex',
+                                                justifyContent: 'space-between',
+                                                alignItems: 'center'
+                                            }}>
+                                                <span style={{ fontSize: 16, fontWeight: 700, color: 'white' }}>
+                                                    Final Net Profit
+                                                </span>
+                                                <span style={{ fontSize: 20, fontWeight: 800, color: 'white' }} className="tabular-nums">
                                                     {isProfit ? '+' : ''}Rs. {Math.round(settlement.netProfit).toLocaleString('en-PK')}
                                                 </span>
                                             </div>
+
                                         </div>
                                     </div>
                                 );
                             })()}
 
-                            {/* Action Button */}
-                            <div style={{ padding: '24px 16px 0' }}>
+                            <div style={{ padding: '0 16px', marginTop: 10 }}>
                                 <button
                                     onClick={() => navigate(`/parties/${previewDispatch.partyId}/dispatch/${previewDispatch.id}`)}
                                     className="ios-btn ios-btn-primary"
-                                    style={{ width: '100%', padding: '14px', borderRadius: 14, fontSize: 16, fontWeight: 600 }}
+                                    style={{ width: '100%', padding: 16, fontSize: 16, borderRadius: 14, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
                                 >
-                                    Open Full Edit Screen
+                                    <Edit2 size={18} /> Edit Full Entry
                                 </button>
                             </div>
+
                         </div>
+                    </div>
+                </>
+            )}
+
+            {/* ── Apple iOS Action Sheet for Dispatch Sharing ── */}
+            {isDispatchShareSheetOpen && previewDispatch && (
+                <>
+                    <div
+                        className="ios-modal-backdrop"
+                        onClick={() => setIsDispatchShareSheetOpen(false)}
+                        style={{ zIndex: 100000 }}
+                    />
+                    <div
+                        style={{
+                            position: 'fixed',
+                            left: 0,
+                            right: 0,
+                            bottom: 0,
+                            zIndex: 100001,
+                            padding: '0 12px calc(14px + env(safe-area-inset-bottom, 14px))',
+                            maxWidth: 480,
+                            margin: '0 auto',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: 8,
+                            animation: 'slideUp 0.22s cubic-bezier(0.16, 1, 0.3, 1)'
+                        }}
+                    >
+                        {/* Action Sheet Group 1: Options */}
+                        <div
+                            style={{
+                                background: 'var(--bg-card)',
+                                borderRadius: 14,
+                                overflow: 'hidden',
+                                border: '0.5px solid var(--separator)',
+                                boxShadow: 'var(--shadow-elevated)'
+                            }}
+                        >
+                            {/* Action Sheet Header */}
+                            <div
+                                style={{
+                                    padding: '14px 16px 12px',
+                                    textAlign: 'center',
+                                    borderBottom: '0.5px solid var(--separator)',
+                                    background: 'var(--fill-quaternary)'
+                                }}
+                            >
+                                <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--label-secondary)', textTransform: 'uppercase', letterSpacing: 0.6 }}>
+                                    Share Dispatch Receipt
+                                </div>
+                                <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--label-primary)', marginTop: 2 }}>
+                                    {previewDispatch.truckNumber} · {previewDispatch.date}
+                                </div>
+                            </div>
+
+                            {/* Option 1: Share as Image */}
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setIsDispatchShareSheetOpen(false);
+                                    handleShareDispatchImage();
+                                }}
+                                style={{
+                                    width: '100%',
+                                    padding: '16px 20px',
+                                    background: 'transparent',
+                                    border: 'none',
+                                    borderBottom: '0.5px solid var(--separator)',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    gap: 10,
+                                    fontSize: 17,
+                                    fontWeight: 500,
+                                    color: 'var(--ios-blue)',
+                                    cursor: 'pointer'
+                                }}
+                            >
+                                <Image style={{ width: 20, height: 20 }} strokeWidth={2.2} />
+                                <span>Share as Picture (Official Receipt)</span>
+                            </button>
+
+                            {/* Option 2: Share Detailed WhatsApp Message */}
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setIsDispatchShareSheetOpen(false);
+                                    handleShareDispatchWhatsApp();
+                                }}
+                                style={{
+                                    width: '100%',
+                                    padding: '16px 20px',
+                                    background: 'transparent',
+                                    border: 'none',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    gap: 10,
+                                    fontSize: 17,
+                                    fontWeight: 500,
+                                    color: 'var(--ios-green)',
+                                    cursor: 'pointer'
+                                }}
+                            >
+                                <MessageSquare style={{ width: 20, height: 20 }} strokeWidth={2.2} />
+                                <span>Detailed WhatsApp Message</span>
+                            </button>
+                        </div>
+
+                        {/* Action Sheet Group 2: Cancel */}
+                        <button
+                            type="button"
+                            onClick={() => setIsDispatchShareSheetOpen(false)}
+                            style={{
+                                width: '100%',
+                                padding: '16px 20px',
+                                background: 'var(--bg-card)',
+                                borderRadius: 14,
+                                border: '0.5px solid var(--separator)',
+                                fontSize: 17,
+                                fontWeight: 600,
+                                color: 'var(--ios-blue)',
+                                cursor: 'pointer',
+                                textAlign: 'center',
+                                boxShadow: 'var(--shadow-elevated)'
+                            }}
+                        >
+                            Cancel
+                        </button>
                     </div>
                 </>
             )}

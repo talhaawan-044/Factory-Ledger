@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import {
   ChevronLeft,
+  ChevronDown,
   Save,
   Trash2,
   AlertTriangle,
@@ -51,6 +52,7 @@ const emptyDispatch: Omit<Dispatch, 'id' | 'createdAt' | 'updatedAt'> = {
   manualDeduction: 0,
   manualPremium: 0,
   manualTax: 0,
+  taxMethod: 'manual',
   notes: '',
 };
 
@@ -472,8 +474,8 @@ export default function DispatchForm() {
           <button
             onClick={addCoalInput}
             style={{
-              background: 'var(--tint-blue)',
-              color: 'var(--ios-blue)',
+              background: 'var(--ios-blue)',
+              color: 'white',
               border: 'none',
               borderRadius: 8,
               padding: '4px 10px',
@@ -771,7 +773,7 @@ export default function DispatchForm() {
               placeholder="5950"
             />
             <FloatingField
-              label="Received Weight"
+              label="Rcvd Weight"
               type="number"
               step="0.01"
               suffix="tons"
@@ -922,14 +924,96 @@ export default function DispatchForm() {
               placeholder="0"
             />
           </div>
-          <FloatingField
-            label="Tax Deduction"
-            type="number"
-            suffix="Rs./t"
-            value={dispatch.manualTax || ''}
-            onChange={(v) => handleChange('manualTax', parseFloat(v) || 0)}
-            placeholder="0"
-          />
+          {/* Tax Calculation Method */}
+          <div className="floating-field is-floated" style={{ marginBottom: 12, position: 'relative' }}>
+            <select
+              value={dispatch.taxMethod || 'manual'}
+              onChange={(e) => handleChange('taxMethod', e.target.value as 'manual' | 'formula_18_5')}
+              className="floating-input"
+              style={{
+                cursor: 'pointer',
+                color: 'var(--label-primary)',
+                fontWeight: 600,
+                appearance: 'none',
+                WebkitAppearance: 'none',
+                paddingRight: 36,
+                background: 'transparent',
+              }}
+            >
+              <option value="manual">Manual Entry</option>
+              <option value="formula_18_5">Formula: (Rate + 18%) * 5%</option>
+            </select>
+            <label
+              className="floating-label"
+              style={{
+                top: 0,
+                transform: 'translateY(-50%)',
+                fontSize: 12,
+                fontWeight: 500,
+                background: 'var(--bg-card)',
+                color: 'var(--label-secondary)',
+              }}
+            >
+              Tax Calculation Method
+            </label>
+            <div
+              style={{
+                position: 'absolute',
+                right: 14,
+                top: '50%',
+                transform: 'translateY(-50%)',
+                pointerEvents: 'none',
+                color: 'var(--label-secondary)',
+                display: 'flex',
+                alignItems: 'center',
+              }}
+            >
+              <ChevronDown size={18} />
+            </div>
+          </div>
+
+          {/* Dynamic UI: Manual Number Input or Read-Only Auto Formula Value */}
+          {(dispatch.taxMethod || 'manual') === 'manual' ? (
+            <FloatingField
+              label="Tax Deduction"
+              type="number"
+              suffix="Rs./t"
+              value={dispatch.manualTax || ''}
+              onChange={(v) => handleChange('manualTax', parseFloat(v) || 0)}
+              placeholder="0"
+            />
+          ) : (
+            <div className="floating-field is-floated has-suffix" style={{ marginBottom: 12 }}>
+              <input
+                type="text"
+                readOnly
+                disabled
+                value={settlement.taxDeduction.toFixed(2)}
+                className="floating-input"
+                style={{
+                  color: 'var(--label-primary)',
+                  fontWeight: 600,
+                  cursor: 'not-allowed',
+                  opacity: 0.9,
+                  background: 'transparent',
+                }}
+              />
+              <label
+                className="floating-label"
+                style={{
+                  top: 0,
+                  transform: 'translateY(-50%)',
+                  fontSize: 12,
+                  fontWeight: 500,
+                  background: 'var(--bg-card)',
+                  color: 'var(--label-secondary)',
+                }}
+              >
+                Tax Deduction (Auto: (Rate + 18%) * 5%)
+              </label>
+              <span className="floating-suffix">Rs./t</span>
+            </div>
+          )}
         </div>
       </div>
 
@@ -947,12 +1031,12 @@ export default function DispatchForm() {
               handleChange('notes', e.target.value);
             }}
             placeholder="Enter any specific notes..."
-            style={{ 
-              width: '100%', 
-              minHeight: '80px', 
-              marginBottom: '12px', 
-              padding: '12px', 
-              fontFamily: 'inherit', 
+            style={{
+              width: '100%',
+              minHeight: '80px',
+              marginBottom: '12px',
+              padding: '12px',
+              fontFamily: 'inherit',
               fontSize: '15px',
               border: '1px solid var(--separator)',
               borderRadius: '12px',
@@ -996,7 +1080,7 @@ export default function DispatchForm() {
           </div>
 
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 8, color: 'var(--ios-red)' }}>
-            <span>- Tax Deduction</span>
+            <span>- Tax Deduction {dispatch.taxMethod === 'formula_18_5' ? '((Rate + 18%) × 5%)' : ''}</span>
             <span className="tabular-nums">- Rs. {settlement.taxDeduction.toFixed(2)}</span>
           </div>
 
@@ -1032,15 +1116,15 @@ export default function DispatchForm() {
           <div style={{
             padding: '12px 14px',
             borderRadius: 10,
-            background: isProfit ? 'var(--tint-green)' : 'var(--tint-red)',
+            background: isProfit ? 'var(--ios-green)' : 'var(--ios-red)',
             display: 'flex',
             justifyContent: 'space-between',
             alignItems: 'center'
           }}>
-            <span style={{ fontSize: 16, fontWeight: 700, color: isProfit ? 'var(--ios-green)' : 'var(--ios-red)' }}>
+            <span style={{ fontSize: 16, fontWeight: 700, color: isProfit ? 'white' : 'red' }}>
               Final Net Profit
             </span>
-            <span style={{ fontSize: 20, fontWeight: 800, color: isProfit ? 'var(--ios-green)' : 'var(--ios-red)' }} className="tabular-nums">
+            <span style={{ fontSize: 20, fontWeight: 800, color: isProfit ? 'white' : 'red' }} className="tabular-nums">
               {isProfit ? '+' : ''}Rs. {Math.round(settlement.netProfit).toLocaleString('en-PK')}
             </span>
           </div>

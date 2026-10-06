@@ -627,7 +627,7 @@ async function exportFleetAuditPdf(options: ExportDispatchesPdfOptions & { setti
     const adjList = [
       d.manualDeduction ? `GCV Ded: -Rs.${d.manualDeduction}/t` : null,
       d.manualPremium ? `Bonus: +Rs.${d.manualPremium}/t` : null,
-      d.manualTax ? `Tax: -Rs.${d.manualTax}/t` : null,
+      s.taxDeduction ? `Tax: -Rs.${s.taxDeduction.toFixed(2)}/t` : null,
       d.commissionPerTon ? `Comm: -Rs.${d.commissionPerTon}/t` : null,
     ].filter(Boolean);
 
@@ -794,8 +794,8 @@ async function exportFleetAuditPdf(options: ExportDispatchesPdfOptions & { setti
     data: pdfDataUri,
     fileName,
     mimeType: 'application/pdf',
-    title: `Coal Ledger - ${partyName || 'All Dispatches'}`,
-    text: `Coal Dispatch Ledger containing ${dispatches.length} deliveries. Total: ${totalTons.toFixed(2)} tons.`,
+    title: `Factory Ledger - ${partyName || 'All Dispatches'}`,
+    text: `Factory Dispatch Ledger containing ${dispatches.length} deliveries. Total: ${totalTons.toFixed(2)} tons.`,
     dialogTitle: 'Share PDF Ledger',
   });
 }
@@ -975,7 +975,7 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
           'Base Rate (Rs)': d.baseRate || 0,
           'GCV Deduction (Rs)': d.manualDeduction || 0,
           'Bonus Premium (Rs)': d.manualPremium || 0,
-          'WHT Tax (Rs)': d.manualTax || 0,
+          'WHT Tax (Rs)': s.taxDeduction ? parseFloat(s.taxDeduction.toFixed(2)) : 0,
           'Payable Rate (Rs)': parseFloat(s.payableRate.toFixed(2)),
           'Gross Invoiced (Rs)': Math.round(s.totalRevenue),
           'Remarks': d.notes || '',
@@ -1195,8 +1195,8 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
     data: base64Xlsx,
     fileName: finalFileName,
     mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    title: `Excel Ledger - ${partyName || 'All Dispatches'}`,
-    text: `Coal Ledger Excel Workbook (${dispatches.length} dispatches).`,
+    title: `Factory Ledger - ${partyName || 'All Dispatches'}`,
+    text: `Factory Ledger Excel Workbook (${dispatches.length} dispatches).`,
     dialogTitle: 'Share Excel Spreadsheet',
   });
 }

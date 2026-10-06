@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef, useCallback } from 'react';
 import { getDispatches, getParties, getPayments, getPurchaseOrders, getSettings } from '../lib/db';
 import type { Dispatch, Party, Payment, PurchaseOrder, AppSettings } from '../types';
 import { calculateSettlement, calculatePartyBalance } from '../utils/calculations';
@@ -8,19 +8,22 @@ import {
     Building2,
     ChevronRight,
     ArrowUpRight,
-    Flame,
     Scale,
     TrendingUp,
     Share2,
     Loader2,
     CheckCircle2,
     Calculator,
-    Plus
+    Edit2,
+    Image,
+    MessageSquare
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { DispatchReceipt } from '../components/DispatchReceipt';
 import { shareReceiptImage } from '../utils/exportSharing';
 import DealEstimatorModal from '../components/DealEstimatorModal';
+import { Capacitor } from '@capacitor/core';
+import { Share } from '@capacitor/share';
 
 export default function Summary() {
     const [dispatches, setDispatches] = useState<Dispatch[]>([]);
@@ -31,6 +34,7 @@ export default function Summary() {
     const [loading, setLoading] = useState(true);
     const [period, setPeriod] = useState<'all' | 'month' | '30days'>('all');
     const [previewDispatch, setPreviewDispatch] = useState<Dispatch | null>(null);
+    const [isDispatchShareSheetOpen, setIsDispatchShareSheetOpen] = useState(false);
     const [isSharingDispatch, setIsSharingDispatch] = useState(false);
     const [isEstimatorOpen, setIsEstimatorOpen] = useState(false);
     const [toastMsg, setToastMsg] = useState<string | null>(null);
@@ -86,6 +90,67 @@ export default function Summary() {
         }
     };
 
+    const handleShareDispatchWhatsApp = useCallback(async () => {
+        if (!previewDispatch) return;
+
+        const party = parties.find(p => p.id === previewDispatch.partyId);
+        const settlement = calculateSettlement(previewDispatch);
+        const poObj = pos.find((p) => p.id === previewDispatch.poId);
+
+        const text = `*${(settings?.businessName || 'AWAN COAL LOGISTICS').toUpperCase()}*
+*OFFICIAL SETTLEMENT SLIP*
+----------------------------------------
+*Truck No:* ${previewDispatch.truckNumber}
+*Date:* ${previewDispatch.date}
+*Party:* ${party?.name || previewDispatch.factoryName || 'Factory Client'}
+${poObj ? `*PO Number:* ${poObj.poNumber}\n` : ''}*Received Weight:* ${previewDispatch.labReceivedWeight || 0} Tons
+
+*LAB ANALYSIS:*
+• Target GCV: ${previewDispatch.targetGcv || 'N/A'} kcal/kg
+• Actual GCV: ${previewDispatch.labActualGcv || 'N/A'} kcal/kg
+• Ash / Moisture / Sulphur: ${previewDispatch.labAsh || 0}% / ${previewDispatch.labMoisture || 0}% / ${previewDispatch.labSulphur || 0}%
+
+*RATE & SETTLEMENT CALCULATION:*
+• Base Agreement Rate: Rs. ${previewDispatch.baseRate.toFixed(2)}/ton
+• GCV Deduction: - Rs. ${settlement.gcvDeduction.toFixed(2)}/ton
+${previewDispatch.manualPremium ? `• Premium: + Rs. ${previewDispatch.manualPremium.toFixed(2)}/ton\n` : ''}• Adjusted Rate: Rs. ${settlement.adjustedRate.toFixed(2)}/ton
+• Tax Deduction: - Rs. ${settlement.taxDeduction.toFixed(2)}/ton
+${previewDispatch.commissionPerTon ? `• Commission: - Rs. ${previewDispatch.commissionPerTon.toFixed(2)}/ton\n` : ''}----------------------------------------
+*PAYABLE RATE:* Rs. ${settlement.payableRate.toFixed(2)} / ton
+*TOTAL PAYABLE:* Rs. ${Math.round(settlement.totalRevenue).toLocaleString('en-PK')}
+----------------------------------------
+${previewDispatch.notes ? `*Remarks:* ${previewDispatch.notes}\n\n` : ''}✓ E-Verified Dispatch Voucher`;
+
+        try {
+            if (Capacitor.isNativePlatform()) {
+                await Share.share({
+                    title: `Dispatch Settlement - ${previewDispatch.truckNumber}`,
+                    text,
+                    dialogTitle: 'Share Settlement Slip',
+                });
+                playSuccessSound();
+                showToast('Settlement slip shared!');
+                return;
+            } else if (navigator.share) {
+                await navigator.share({
+                    title: `Dispatch Settlement - ${previewDispatch.truckNumber}`,
+                    text,
+                });
+                playSuccessSound();
+                showToast('Settlement slip shared!');
+                return;
+            }
+        } catch {
+            // Ignored if cancelled
+        }
+
+        if (navigator.clipboard) {
+            await navigator.clipboard.writeText(text);
+            playPopSound();
+            showToast('Settlement slip text copied to clipboard!');
+        }
+    }, [previewDispatch, parties, pos, settings]);
+
     if (loading) {
         return (
             <div style={{ padding: 40, textAlign: 'center', color: 'var(--label-secondary)', fontSize: 15 }}>
@@ -128,31 +193,6 @@ export default function Summary() {
     const totalReceivables = partyBalances.reduce((sum, pb) => pb.balance > 0 ? sum + pb.balance : sum, 0);
     const partiesWithDues = partyBalances.filter(pb => pb.balance > 0);
 
-    // Coal Sourcing & Blend breakdown
-    const sourceMap: { [name: string]: { totalTons: number; totalCost: number; count: number } } = {};
-    filteredDispatches.forEach(d => {
-        d.coalInputs?.forEach(c => {
-            const name = (c.sourceName || 'Unspecified').trim();
-            if (!sourceMap[name]) {
-                sourceMap[name] = { totalTons: 0, totalCost: 0, count: 0 };
-            }
-            const weight = Number(c.weight) || 0;
-            const rate = Number(c.purchaseRate) || 0;
-            sourceMap[name].totalTons += weight;
-            sourceMap[name].totalCost += weight * rate;
-            sourceMap[name].count += 1;
-        });
-    });
-
-    const coalSourcesSummary = Object.entries(sourceMap)
-        .map(([name, data]) => ({
-            name,
-            totalTons: data.totalTons,
-            totalCost: data.totalCost,
-            avgRate: data.totalTons > 0 ? Math.round(data.totalCost / data.totalTons) : 0,
-            count: data.count
-        }))
-        .sort((a, b) => b.totalTons - a.totalTons);
 
     const firstName = settings?.userName?.trim().split(/\s+/)[0] || '';
 
@@ -163,33 +203,17 @@ export default function Summary() {
                 <div className="ios-large-subtitle">{todayStr}</div>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                     <h1 className="ios-large-title">{firstName ? `Welcome ${firstName}` : 'Welcome'}</h1>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                        <button
-                            type="button"
-                            onClick={() => {
-                                playPopSound();
-                                setIsEstimatorOpen(true);
-                            }}
-                            className="ios-nav-circle-btn"
-                            title="Quick Deal Estimator & Margin Calculator"
-                        >
-                            <Calculator style={{ width: 19, height: 19 }} strokeWidth={2.4} />
-                        </button>
-                        <button
-                            onClick={() => {
-                                playPopSound();
-                                if (parties.length > 0) {
-                                    navigate(`/parties/${parties[0].id}/dispatch/new`);
-                                } else {
-                                    navigate('/parties');
-                                }
-                            }}
-                            className="ios-nav-circle-btn"
-                            title="New Dispatch"
-                        >
-                            <Plus style={{ width: 20, height: 20 }} strokeWidth={2.6} />
-                        </button>
-                    </div>
+                    <button
+                        type="button"
+                        onClick={() => {
+                            playPopSound();
+                            setIsEstimatorOpen(true);
+                        }}
+                        className="ios-nav-circle-btn"
+                        title="Quick Deal Estimator & Margin Calculator"
+                    >
+                        <Calculator style={{ width: 19, height: 19 }} strokeWidth={2.4} />
+                    </button>
                 </div>
             </div>
 
@@ -243,8 +267,8 @@ export default function Summary() {
                                 fontWeight: 700,
                                 padding: '2px 7px',
                                 borderRadius: 6,
-                                background: 'var(--accent-tint)',
-                                color: 'var(--accent-primary)',
+                                background: 'var(--ios-blue)',
+                                color: 'white',
                                 textTransform: 'uppercase',
                                 letterSpacing: 0.3,
                                 whiteSpace: 'nowrap'
@@ -262,10 +286,10 @@ export default function Summary() {
                         }}
                         className="ios-hero-badge"
                         title="Click for celebration!"
-                        style={{ border: 'none', cursor: 'pointer', flexShrink: 0, whiteSpace: 'nowrap' }}
+                        style={{ background: 'var(--ios-green)', border: 'none', cursor: 'pointer', flexShrink: 0, whiteSpace: 'nowrap' }}
                     >
-                        <ArrowUpRight style={{ width: 14, height: 14, flexShrink: 0 }} strokeWidth={2.6} />
-                        <span style={{ whiteSpace: 'nowrap' }}>{profitMargin.toFixed(1)}% margin</span>
+                        <ArrowUpRight style={{ color: 'white', background: 'var(--ios-blue)', borderRadius: 4, fontWeight: 800, width: 14, height: 14, flexShrink: 0 }} strokeWidth={2.6} />
+                        <span style={{ color: 'white', fontWeight: 800, whiteSpace: 'nowrap' }}>{profitMargin.toFixed(1)}% margin</span>
                     </button>
                 </div>
 
@@ -588,46 +612,6 @@ export default function Summary() {
                 </div>
             </div>
 
-            {/* ── Coal Sourcing & Blend Breakdown ── */}
-            {coalSourcesSummary.length > 0 && (
-                <div className="ios-group">
-                    <div className="ios-group-title">Coal Sourcing & Blends</div>
-                    <div className="ios-card-grouped">
-                        {coalSourcesSummary.map((source, i) => (
-                            <div key={source.name} className="ios-cell" style={{ cursor: 'default' }}>
-                                <div
-                                    className="ios-glyph-badge"
-                                    style={{ background: 'var(--tint-teal)' }}
-                                >
-                                    <Flame style={{ width: 17, height: 17, color: 'var(--ios-teal)' }} />
-                                </div>
-                                <div style={{ flex: 1, minWidth: 0, paddingRight: 8 }}>
-                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-                                        <span style={{ fontSize: 16, fontWeight: 600, color: 'var(--label-primary)' }}>
-                                            {source.name}
-                                        </span>
-                                        <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--label-primary)' }} className="tabular-nums">
-                                            {source.totalTons.toFixed(1)} <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--label-secondary)' }}>tons</span>
-                                        </span>
-                                    </div>
-                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 2 }}>
-                                        <span style={{ fontSize: 13, color: 'var(--label-secondary)' }}>
-                                            {source.count} {source.count === 1 ? 'batch' : 'batches'} blended
-                                        </span>
-                                        <span style={{ fontSize: 13, color: 'var(--label-secondary)', fontWeight: 500 }} className="tabular-nums">
-                                            Avg Rs. {source.avgRate.toLocaleString('en-PK')}/t
-                                        </span>
-                                    </div>
-                                </div>
-                                {i < coalSourcesSummary.length - 1 && <div className="ios-separator with-glyph" />}
-                            </div>
-                        ))}
-                    </div>
-                    <div className="ios-group-footnote">
-                        Aggregated procurement tonnage and weighted average cost across dispatched trucks.
-                    </div>
-                </div>
-            )}
 
             {/* ── Key Parties Grouped Section with Live Ledger Balances ── */}
             {parties.length > 0 && (
@@ -694,19 +678,19 @@ export default function Summary() {
             {/* ── Dispatch Inspection & Preview Bottom Sheet ── */}
             {previewDispatch && (
                 <>
-                    <div className="ios-modal-backdrop" onClick={() => setPreviewDispatch(null)} />
+                    <div className="ios-modal-backdrop" onClick={() => { setPreviewDispatch(null); setIsDispatchShareSheetOpen(false); }} />
                     <div className="ios-bottom-sheet" style={{ background: 'var(--bg-grouped)', borderTopLeftRadius: 24, borderTopRightRadius: 24, height: '90vh', display: 'flex', flexDirection: 'column' }}>
                         <div className="ios-sheet-handle" />
                         <div className="ios-sheet-header" style={{ borderBottom: '0.5px solid var(--separator)', padding: '10px 16px 12px', background: 'var(--bg-grouped)', flexShrink: 0 }}>
-                            <button onClick={() => setPreviewDispatch(null)} className="ios-nav-action" style={{ fontWeight: 400 }}>Close</button>
+                            <button onClick={() => { setPreviewDispatch(null); setIsDispatchShareSheetOpen(false); }} className="ios-nav-action" style={{ fontWeight: 400 }}>Close</button>
                             <span style={{ fontSize: 17, fontWeight: 700 }}>Dispatch Preview</span>
                             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                                 <button
                                     type="button"
-                                    onClick={handleShareDispatchImage}
+                                    onClick={() => setIsDispatchShareSheetOpen(true)}
                                     disabled={isSharingDispatch}
                                     className="ios-nav-action"
-                                    title="Share Receipt as Picture"
+                                    title="Share Receipt"
                                     style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
                                 >
                                     {isSharingDispatch ? (
@@ -726,11 +710,12 @@ export default function Summary() {
                         </div>
 
                         <div className="ios-sheet-body" style={{ flex: 1, overflowY: 'auto', padding: '16px 0 40px', background: 'var(--bg-grouped)' }}>
-                            {/* Prominent Share Picture Receipt Action */}
+
+                            {/* Prominent Share Action */}
                             <div style={{ padding: '0 16px', marginBottom: 14 }}>
                                 <button
                                     type="button"
-                                    onClick={handleShareDispatchImage}
+                                    onClick={() => setIsDispatchShareSheetOpen(true)}
                                     disabled={isSharingDispatch}
                                     className="ios-btn ios-btn-primary"
                                     style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
@@ -740,7 +725,7 @@ export default function Summary() {
                                     ) : (
                                         <Share2 style={{ width: 18, height: 18 }} strokeWidth={2.4} />
                                     )}
-                                    <span>Share Settlement Receipt (Picture)</span>
+                                    <span>Share Settlement Receipt</span>
                                 </button>
                             </div>
 
@@ -761,22 +746,23 @@ export default function Summary() {
                                 </div>
                             </div>
 
-                            {/* Contract & Lab Specifications */}
                             <div className="ios-group">
                                 <div className="ios-group-title">Contract & Lab Results</div>
                                 <div className="ios-card-grouped" style={{ padding: '12px 16px' }}>
                                     <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8, fontSize: 15 }}>
                                         <span style={{ color: 'var(--label-secondary)' }}>Factory Account</span>
                                         <span style={{ fontWeight: 600 }}>
-                                            {parties.find(p => p.id === previewDispatch.partyId)?.name || previewDispatch.factoryName}
+                                            {parties.find(p => p.id === previewDispatch.partyId)?.name || previewDispatch.factoryName || 'Factory Client'}
                                         </span>
                                     </div>
-                                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8, fontSize: 15 }}>
-                                        <span style={{ color: 'var(--label-secondary)' }}>Purchase Order</span>
-                                        <span style={{ fontWeight: 500 }}>
-                                            {pos.find(p => p.id === previewDispatch.poId)?.poNumber || 'Standard Delivery'}
-                                        </span>
-                                    </div>
+                                    {pos.find(p => p.id === previewDispatch.poId)?.poNumber && (
+                                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8, fontSize: 15 }}>
+                                            <span style={{ color: 'var(--label-secondary)' }}>Purchase Order</span>
+                                            <span style={{ fontWeight: 500 }}>
+                                                {pos.find(p => p.id === previewDispatch.poId)?.poNumber}
+                                            </span>
+                                        </div>
+                                    )}
                                     <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8, fontSize: 15 }}>
                                         <span style={{ color: 'var(--label-secondary)' }}>Target GCV</span>
                                         <span className="tabular-nums" style={{ fontWeight: 500 }}>{previewDispatch.targetGcv || 'N/A'} kcal/kg</span>
@@ -786,117 +772,269 @@ export default function Summary() {
                                         <span className="tabular-nums" style={{ fontWeight: 500 }}>{previewDispatch.labActualGcv || 'N/A'} kcal/kg</span>
                                     </div>
                                     <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8, fontSize: 15 }}>
-                                        <span style={{ color: 'var(--label-secondary)' }}>Ash / Moist / Sulphur</span>
+                                        <span style={{ color: 'var(--label-secondary)' }}>Ash / Moisture / Sulphur</span>
                                         <span className="tabular-nums" style={{ fontWeight: 500 }}>{previewDispatch.labAsh || 0}% / {previewDispatch.labMoisture || 0}% / {previewDispatch.labSulphur || 0}%</span>
                                     </div>
-                                    <div style={{ height: 0.5, background: 'var(--separator)', margin: '10px 0' }} />
+                                    <div className="ios-separator" style={{ margin: '12px 0' }} />
                                     <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15 }}>
-                                        <span style={{ fontWeight: 600 }}>Received Weight</span>
+                                        <span style={{ color: 'var(--label-secondary)' }}>Received Weight</span>
                                         <span className="tabular-nums" style={{ fontWeight: 600, color: 'var(--ios-blue)' }}>{previewDispatch.labReceivedWeight || 0} t</span>
                                     </div>
                                 </div>
                             </div>
 
-                            {/* Coal Input Blends */}
                             <div className="ios-group">
-                                <div className="ios-group-title">Coal Sourcing & Blends</div>
+                                <div className="ios-group-title">Coal Blending Sources</div>
                                 <div className="ios-card-grouped">
                                     {previewDispatch.coalInputs?.map((input, idx) => (
                                         <div key={input.id || idx}>
                                             <div style={{ padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                                                 <div>
-                                                    <div style={{ fontWeight: 600, fontSize: 15 }}>{input.sourceName || 'Unnamed Coal'}</div>
-                                                    <div style={{ fontSize: 13, color: 'var(--label-secondary)', marginTop: 2 }}>
-                                                        {input.weight} tons @ Rs. {input.purchaseRate}/t
-                                                    </div>
+                                                    <div style={{ fontSize: 15, fontWeight: 500, color: 'var(--label-primary)' }}>{input.sourceName || 'Unknown Source'}</div>
+                                                    <div style={{ fontSize: 13, color: 'var(--label-secondary)', marginTop: 2 }}>Purchase: Rs. {input.purchaseRate}/t</div>
                                                 </div>
-                                                <div style={{ fontWeight: 600, fontSize: 15 }} className="tabular-nums">
-                                                    Rs. {Math.round(input.weight * input.purchaseRate).toLocaleString('en-PK')}
+                                                <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--label-primary)' }}>
+                                                    {input.weight} t
                                                 </div>
                                             </div>
-                                            {idx < previewDispatch.coalInputs.length - 1 && <div className="ios-separator" />}
+                                            {idx < (previewDispatch.coalInputs?.length || 0) - 1 && <div className="ios-separator" />}
                                         </div>
                                     ))}
                                     {(!previewDispatch.coalInputs || previewDispatch.coalInputs.length === 0) && (
-                                        <div style={{ padding: '16px', color: 'var(--label-secondary)', textAlign: 'center' }}>
-                                            No raw coal inputs defined
+                                        <div style={{ padding: '12px 16px', color: 'var(--label-tertiary)', fontSize: 15, textAlign: 'center' }}>
+                                            No coal inputs recorded.
                                         </div>
                                     )}
                                 </div>
                             </div>
 
-                            {/* Settlement Breakdown */}
-                            <div className="ios-group">
-                                <div className="ios-group-title" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                                    <Calculator size={16} /> Settlement Financial Breakdown
+                            {(() => {
+                                const settlement = calculateSettlement(previewDispatch);
+                                const isProfit = settlement.netProfit >= 0;
+                                return (
+                                    <div className="ios-group">
+                                        <div className="ios-group-title" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                            <Calculator size={16} /> Official Settlement Breakdown
+                                        </div>
+                                        <div className="ios-card-grouped" style={{ padding: '16px' }}>
+
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 8 }}>
+                                                <span style={{ color: 'var(--label-secondary)' }}>Base Agreement Rate</span>
+                                                <span style={{ fontWeight: 600 }} className="tabular-nums">Rs. {previewDispatch.baseRate.toFixed(2)}</span>
+                                            </div>
+
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 8, color: 'var(--ios-red)' }}>
+                                                <span>- Manual Deduction</span>
+                                                <span className="tabular-nums">- Rs. {settlement.gcvDeduction.toFixed(2)}</span>
+                                            </div>
+
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 8, color: 'var(--ios-green)' }}>
+                                                <span>+ Manual Premium</span>
+                                                <span className="tabular-nums">+ Rs. {(previewDispatch.manualPremium || 0).toFixed(2)}</span>
+                                            </div>
+
+                                            <div style={{ height: 0.5, background: 'var(--separator)', margin: '10px 0' }} />
+
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 8 }}>
+                                                <span style={{ fontWeight: 600 }}>Adjusted Rate</span>
+                                                <span style={{ fontWeight: 600 }} className="tabular-nums">Rs. {settlement.adjustedRate.toFixed(2)}</span>
+                                            </div>
+
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 8, color: 'var(--ios-red)' }}>
+                                                <span>- Tax Deduction</span>
+                                                <span className="tabular-nums">- Rs. {settlement.taxDeduction.toFixed(2)}</span>
+                                            </div>
+
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 8 }}>
+                                                <span style={{ color: 'var(--label-secondary)' }}>Net Rate</span>
+                                                <span className="tabular-nums">Rs. {settlement.netRate.toFixed(2)}</span>
+                                            </div>
+
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 8, color: 'var(--ios-red)' }}>
+                                                <span>- Commission</span>
+                                                <span className="tabular-nums">- Rs. {(previewDispatch.commissionPerTon || 0).toFixed(2)}</span>
+                                            </div>
+
+                                            <div style={{ height: 0.5, background: 'var(--separator)', margin: '10px 0' }} />
+
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 16, marginBottom: 12 }}>
+                                                <span style={{ fontWeight: 700, color: 'var(--ios-blue)' }}>Payable Rate (per ton)</span>
+                                                <span style={{ fontWeight: 700, color: 'var(--ios-blue)' }} className="tabular-nums">
+                                                    Rs. {settlement.payableRate.toFixed(2)}
+                                                </span>
+                                            </div>
+
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, color: 'var(--label-secondary)', marginBottom: 6 }}>
+                                                <span>Total Revenue ({previewDispatch.labReceivedWeight || 0} t × Rs. {settlement.payableRate.toFixed(2)})</span>
+                                                <span className="tabular-nums">Rs. {Math.round(settlement.totalRevenue).toLocaleString('en-PK')}</span>
+                                            </div>
+
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, color: 'var(--label-secondary)', marginBottom: 12 }}>
+                                                <span>Total Cost (Coal + Overheads)</span>
+                                                <span className="tabular-nums">Rs. {Math.round(settlement.totalCost).toLocaleString('en-PK')}</span>
+                                            </div>
+
+                                            <div style={{
+                                                padding: '12px 14px',
+                                                borderRadius: 10,
+                                                background: isProfit ? 'var(--ios-green)' : 'var(--ios-red)',
+                                                display: 'flex',
+                                                justifyContent: 'space-between',
+                                                alignItems: 'center'
+                                            }}>
+                                                <span style={{ fontSize: 16, fontWeight: 700, color: 'white' }}>
+                                                    Final Net Profit
+                                                </span>
+                                                <span style={{ fontSize: 20, fontWeight: 800, color: 'white' }} className="tabular-nums">
+                                                    {isProfit ? '+' : ''}Rs. {Math.round(settlement.netProfit).toLocaleString('en-PK')}
+                                                </span>
+                                            </div>
+
+                                        </div>
+                                    </div>
+                                );
+                            })()}
+
+                            <div style={{ padding: '0 16px', marginTop: 10 }}>
+                                <button
+                                    onClick={() => navigate(`/parties/${previewDispatch.partyId}/dispatch/${previewDispatch.id}`)}
+                                    className="ios-btn ios-btn-primary"
+                                    style={{ width: '100%', padding: 16, fontSize: 16, borderRadius: 14, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
+                                >
+                                    <Edit2 size={18} /> Edit Full Entry
+                                </button>
+                            </div>
+
+                        </div>
+                    </div>
+                </>
+            )}
+
+            {/* ── Apple iOS Action Sheet for Dispatch Sharing ── */}
+            {isDispatchShareSheetOpen && previewDispatch && (
+                <>
+                    <div
+                        className="ios-modal-backdrop"
+                        onClick={() => setIsDispatchShareSheetOpen(false)}
+                        style={{ zIndex: 100000 }}
+                    />
+                    <div
+                        style={{
+                            position: 'fixed',
+                            left: 0,
+                            right: 0,
+                            bottom: 0,
+                            zIndex: 100001,
+                            padding: '0 12px calc(14px + env(safe-area-inset-bottom, 14px))',
+                            maxWidth: 480,
+                            margin: '0 auto',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: 8,
+                            animation: 'slideUp 0.22s cubic-bezier(0.16, 1, 0.3, 1)'
+                        }}
+                    >
+                        {/* Action Sheet Group 1: Options */}
+                        <div
+                            style={{
+                                background: 'var(--bg-card)',
+                                borderRadius: 14,
+                                overflow: 'hidden',
+                                border: '0.5px solid var(--separator)',
+                                boxShadow: 'var(--shadow-elevated)'
+                            }}
+                        >
+                            {/* Action Sheet Header */}
+                            <div
+                                style={{
+                                    padding: '14px 16px 12px',
+                                    textAlign: 'center',
+                                    borderBottom: '0.5px solid var(--separator)',
+                                    background: 'var(--fill-quaternary)'
+                                }}
+                            >
+                                <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--label-secondary)', textTransform: 'uppercase', letterSpacing: 0.6 }}>
+                                    Share Dispatch Receipt
                                 </div>
-                                <div className="ios-card-grouped" style={{ padding: '16px' }}>
-                                    {(() => {
-                                        const s = calculateSettlement(previewDispatch);
-                                        const isProfitVal = s.netProfit >= 0;
-                                        return (
-                                            <>
-                                                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 8 }}>
-                                                    <span style={{ color: 'var(--label-secondary)' }}>Base Agreement Rate</span>
-                                                    <span style={{ fontWeight: 600 }} className="tabular-nums">Rs. {previewDispatch.baseRate.toFixed(2)}</span>
-                                                </div>
-                                                {previewDispatch.manualDeduction ? (
-                                                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 8, color: 'var(--ios-red)' }}>
-                                                        <span>- Quality Deduction</span>
-                                                        <span className="tabular-nums">- Rs. {previewDispatch.manualDeduction.toFixed(2)}</span>
-                                                    </div>
-                                                ) : null}
-                                                {previewDispatch.manualPremium ? (
-                                                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 8, color: 'var(--ios-green)' }}>
-                                                        <span>+ Quality Premium</span>
-                                                        <span className="tabular-nums">+ Rs. {previewDispatch.manualPremium.toFixed(2)}</span>
-                                                    </div>
-                                                ) : null}
-                                                <div style={{ height: 0.5, background: 'var(--separator)', margin: '8px 0' }} />
-                                                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 16, marginBottom: 8 }}>
-                                                    <span style={{ fontWeight: 700, color: 'var(--ios-blue)' }}>Payable Rate</span>
-                                                    <span style={{ fontWeight: 700, color: 'var(--ios-blue)' }} className="tabular-nums">Rs. {s.payableRate.toFixed(2)}/t</span>
-                                                </div>
-                                                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, color: 'var(--label-secondary)', marginBottom: 6 }}>
-                                                    <span>Total Revenue</span>
-                                                    <span className="tabular-nums">Rs. {Math.round(s.totalRevenue).toLocaleString('en-PK')}</span>
-                                                </div>
-                                                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, color: 'var(--label-secondary)', marginBottom: 12 }}>
-                                                    <span>Total Cost</span>
-                                                    <span className="tabular-nums">Rs. {Math.round(s.totalCost).toLocaleString('en-PK')}</span>
-                                                </div>
-                                                <div style={{
-                                                    padding: '12px 14px',
-                                                    borderRadius: 10,
-                                                    background: isProfitVal ? 'var(--tint-green)' : 'var(--tint-red)',
-                                                    display: 'flex',
-                                                    justifyContent: 'space-between',
-                                                    alignItems: 'center'
-                                                }}>
-                                                    <span style={{ fontSize: 15, fontWeight: 700, color: isProfitVal ? 'var(--ios-green)' : 'var(--ios-red)' }}>
-                                                        Net Profit
-                                                    </span>
-                                                    <span style={{ fontSize: 19, fontWeight: 800, color: isProfitVal ? 'var(--ios-green)' : 'var(--ios-red)' }} className="tabular-nums">
-                                                        {isProfitVal ? '+' : ''}Rs. {Math.round(s.netProfit).toLocaleString('en-PK')}
-                                                    </span>
-                                                </div>
-                                            </>
-                                        );
-                                    })()}
+                                <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--label-primary)', marginTop: 2 }}>
+                                    {previewDispatch.truckNumber} · {previewDispatch.date}
                                 </div>
                             </div>
 
-                            {/* Bottom Edit Action */}
-                            <div style={{ padding: '0 16px', display: 'flex', flexDirection: 'column', gap: 10, marginTop: 10 }}>
-                                <button
-                                    onClick={() => navigate(`/parties/${previewDispatch.partyId}/dispatch/${previewDispatch.id}`)}
-                                    className="ios-btn ios-btn-secondary"
-                                    style={{ width: '100%' }}
-                                >
-                                    Edit Dispatch Record
-                                </button>
-                            </div>
+                            {/* Option 1: Share as Image */}
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setIsDispatchShareSheetOpen(false);
+                                    handleShareDispatchImage();
+                                }}
+                                style={{
+                                    width: '100%',
+                                    padding: '16px 20px',
+                                    background: 'transparent',
+                                    border: 'none',
+                                    borderBottom: '0.5px solid var(--separator)',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    gap: 10,
+                                    fontSize: 17,
+                                    fontWeight: 500,
+                                    color: 'var(--ios-blue)',
+                                    cursor: 'pointer'
+                                }}
+                            >
+                                <Image style={{ width: 20, height: 20 }} strokeWidth={2.2} />
+                                <span>Share as Picture (Official Receipt)</span>
+                            </button>
+
+                            {/* Option 2: Share Detailed WhatsApp Message */}
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setIsDispatchShareSheetOpen(false);
+                                    handleShareDispatchWhatsApp();
+                                }}
+                                style={{
+                                    width: '100%',
+                                    padding: '16px 20px',
+                                    background: 'transparent',
+                                    border: 'none',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    gap: 10,
+                                    fontSize: 17,
+                                    fontWeight: 500,
+                                    color: 'var(--ios-green)',
+                                    cursor: 'pointer'
+                                }}
+                            >
+                                <MessageSquare style={{ width: 20, height: 20 }} strokeWidth={2.2} />
+                                <span>Detailed WhatsApp Message</span>
+                            </button>
                         </div>
+
+                        {/* Action Sheet Group 2: Cancel */}
+                        <button
+                            type="button"
+                            onClick={() => setIsDispatchShareSheetOpen(false)}
+                            style={{
+                                width: '100%',
+                                padding: '16px 20px',
+                                background: 'var(--bg-card)',
+                                borderRadius: 14,
+                                border: '0.5px solid var(--separator)',
+                                fontSize: 17,
+                                fontWeight: 600,
+                                color: 'var(--ios-blue)',
+                                cursor: 'pointer',
+                                textAlign: 'center',
+                                boxShadow: 'var(--shadow-elevated)'
+                            }}
+                        >
+                            Cancel
+                        </button>
                     </div>
                 </>
             )}

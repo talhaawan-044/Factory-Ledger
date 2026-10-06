@@ -293,11 +293,13 @@ export const DispatchReceipt = React.forwardRef<HTMLDivElement, DispatchReceiptP
                 </tr>
               )}
 
-              {Boolean(dispatch.manualTax && dispatch.manualTax > 0) && (
+              {Boolean(settlement.taxDeduction && settlement.taxDeduction > 0) && (
                 <tr style={{ borderBottom: '1px solid #F1F5F9' }}>
-                  <td style={{ padding: '5px 0', color: '#64748B' }}>Tax Withholding</td>
+                  <td style={{ padding: '5px 0', color: '#64748B' }}>
+                    Tax Withholding {dispatch.taxMethod === 'formula_18_5' ? '((Rate + 18%) × 5%)' : ''}
+                  </td>
                   <td style={{ padding: '5px 0', textAlign: 'right', color: '#475569' }}>
-                    - Rs. {dispatch.manualTax} / ton
+                    - Rs. {settlement.taxDeduction.toFixed(2)} / ton
                   </td>
                 </tr>
               )}
