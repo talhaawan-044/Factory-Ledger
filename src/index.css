@@ -151,6 +151,19 @@
   --btn-tile-bg: #1E293B;
 }
 
+/* ── iOS Security Keypad Button ── */
+.ios-keypad-button {
+  background: var(--fill-secondary);
+  border: 1px solid var(--separator);
+  color: var(--label-primary);
+  transition: background-color 0.12s ease, transform 0.08s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+.ios-keypad-button:active {
+  background: var(--fill-primary) !important;
+  transform: scale(0.96);
+}
+
 /* Dynamic Theme Accent Classes */
 .theme-emerald {
   --accent-primary: #10B981 !important;

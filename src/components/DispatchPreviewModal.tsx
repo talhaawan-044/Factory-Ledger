@@ -2,6 +2,7 @@ import { useState, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { Dispatch, Party, PurchaseOrder, AppSettings } from '../types';
 import { calculateSettlement } from '../utils/calculations';
+import { getCurrencySymbol, formatAmountNumber } from '../utils/currency';
 import { playPopSound, playSuccessSound } from '../utils/delight';
 import { DispatchReceipt } from './DispatchReceipt';
 import { shareReceiptImage } from '../utils/exportSharing';
@@ -52,6 +53,7 @@ export default function DispatchPreviewModal({
     setTimeout(() => setToastMsg(null), 2500);
   };
 
+  const curSym = getCurrencySymbol(settings?.currency);
   const targetParty = party || (parties && dispatch ? parties.find((p) => p.id === dispatch.partyId) : undefined);
   const poObj = dispatch ? pos.find((p) => p.id === dispatch.poId) : undefined;
   const shouldDisplayParty = showParty !== undefined ? showParty : (!party && !!parties);
@@ -89,7 +91,8 @@ export default function DispatchPreviewModal({
   const handleShareDispatchWhatsApp = useCallback(async () => {
     if (!dispatch) return;
 
-    const settlement = calculateSettlement(dispatch);
+    const curSym = getCurrencySymbol(settings?.currency);
+    const settlement = calculateSettlement(dispatch, settings);
 
     const text = `*${(settings?.businessName || 'AWAN COAL LOGISTICS').toUpperCase()}*
 *OFFICIAL SETTLEMENT SLIP*
@@ -105,13 +108,13 @@ ${poObj ? `*PO Number:* ${poObj.poNumber}\n` : ''}*Received Weight:* ${dispatch.
 • Ash / Moisture / Sulphur: ${dispatch.labAsh || 0}% / ${dispatch.labMoisture || 0}% / ${dispatch.labSulphur || 0}%
 
 *RATE & SETTLEMENT CALCULATION:*
-• Base Agreement Rate: Rs. ${dispatch.baseRate.toFixed(2)}/ton
-• GCV Deduction: - Rs. ${settlement.gcvDeduction.toFixed(2)}/ton
-${dispatch.manualPremium ? `• Premium: + Rs. ${dispatch.manualPremium.toFixed(2)}/ton\n` : ''}• Adjusted Rate: Rs. ${settlement.adjustedRate.toFixed(2)}/ton
-• Tax Deduction: - Rs. ${settlement.taxDeduction.toFixed(2)}/ton
-${dispatch.commissionPerTon ? `• Commission: - Rs. ${dispatch.commissionPerTon.toFixed(2)}/ton\n` : ''}----------------------------------------
-*PAYABLE RATE:* Rs. ${settlement.payableRate.toFixed(2)} / ton
-*TOTAL PAYABLE:* Rs. ${Math.round(settlement.totalRevenue).toLocaleString('en-PK')}
+• Base Agreement Rate: ${curSym} ${dispatch.baseRate.toFixed(2)}/ton
+• GCV Deduction: - ${curSym} ${settlement.gcvDeduction.toFixed(2)}/ton
+${dispatch.manualPremium ? `• Premium: + ${curSym} ${dispatch.manualPremium.toFixed(2)}/ton\n` : ''}• Adjusted Rate: ${curSym} ${settlement.adjustedRate.toFixed(2)}/ton
+• Tax Deduction${dispatch.taxMethod === 'formula_18_5' ? ` ((Rate + ${dispatch.taxSalesPercent ?? 18}%) × ${dispatch.taxIncomePercent ?? 5}%)` : ''}: - ${curSym} ${settlement.taxDeduction.toFixed(2)}/ton
+${dispatch.commissionPerTon ? `• Commission: - ${curSym} ${dispatch.commissionPerTon.toFixed(2)}/ton\n` : ''}----------------------------------------
+*PAYABLE RATE:* ${curSym} ${settlement.payableRate.toFixed(2)} / ton
+*TOTAL PAYABLE:* ${curSym} ${formatAmountNumber(settlement.totalRevenue, settings)}
 ----------------------------------------
 ${dispatch.notes ? `*Remarks:* ${dispatch.notes}\n\n` : ''}✓ E-Verified Dispatch Voucher`;
 
@@ -205,10 +208,10 @@ ${dispatch.notes ? `*Remarks:* ${dispatch.notes}\n\n` : ''}✓ E-Verified Dispat
               </div>
               <div style={{ textAlign: 'right' }}>
                 <div style={{ fontSize: 13, color: 'var(--label-secondary)', textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 600 }}>
-                  {calculateSettlement(dispatch).netProfit >= 0 ? 'Net Profit' : 'Net Loss'}
+                  {calculateSettlement(dispatch, settings).netProfit >= 0 ? 'Net Profit' : 'Net Loss'}
                 </div>
-                <div style={{ fontSize: 20, fontWeight: 700, color: calculateSettlement(dispatch).netProfit >= 0 ? 'var(--ios-green)' : 'var(--ios-red)', marginTop: 2 }} className="tabular-nums">
-                  {calculateSettlement(dispatch).netProfit >= 0 ? '+Rs. ' : '-Rs. '}{Math.abs(Math.round(calculateSettlement(dispatch).netProfit)).toLocaleString('en-PK')}
+                <div style={{ fontSize: 20, fontWeight: 700, color: calculateSettlement(dispatch, settings).netProfit >= 0 ? 'var(--ios-green)' : 'var(--ios-red)', marginTop: 2 }} className="tabular-nums">
+                  {calculateSettlement(dispatch, settings).netProfit >= 0 ? `+${curSym} ` : `-${curSym} `}{formatAmountNumber(calculateSettlement(dispatch, settings).netProfit, settings)}
                 </div>
               </div>
             </div>
@@ -261,7 +264,7 @@ ${dispatch.notes ? `*Remarks:* ${dispatch.notes}\n\n` : ''}✓ E-Verified Dispat
                   <div style={{ padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <div>
                       <div style={{ fontSize: 15, fontWeight: 500, color: 'var(--label-primary)' }}>{input.sourceName || 'Unknown Source'}</div>
-                      <div style={{ fontSize: 13, color: 'var(--label-secondary)', marginTop: 2 }}>Purchase: Rs. {input.purchaseRate}/t</div>
+                      <div style={{ fontSize: 13, color: 'var(--label-secondary)', marginTop: 2 }}>Purchase: {curSym} {input.purchaseRate}/t</div>
                     </div>
                     <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--label-primary)' }}>
                       {input.weight} t
@@ -279,7 +282,7 @@ ${dispatch.notes ? `*Remarks:* ${dispatch.notes}\n\n` : ''}✓ E-Verified Dispat
           </div>
 
           {(() => {
-            const settlement = calculateSettlement(dispatch);
+            const settlement = calculateSettlement(dispatch, settings);
             const isProfit = settlement.netProfit >= 0;
             return (
               <div className="ios-group">
@@ -290,39 +293,39 @@ ${dispatch.notes ? `*Remarks:* ${dispatch.notes}\n\n` : ''}✓ E-Verified Dispat
 
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 8 }}>
                     <span style={{ color: 'var(--label-secondary)' }}>Base Agreement Rate</span>
-                    <span style={{ fontWeight: 600 }} className="tabular-nums">Rs. {dispatch.baseRate.toFixed(2)}</span>
+                    <span style={{ fontWeight: 600 }} className="tabular-nums">{curSym} {dispatch.baseRate.toFixed(2)}</span>
                   </div>
 
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 8, color: 'var(--ios-red)' }}>
                     <span>- Manual Deduction</span>
-                    <span className="tabular-nums">- Rs. {settlement.gcvDeduction.toFixed(2)}</span>
+                    <span className="tabular-nums">- {curSym} {settlement.gcvDeduction.toFixed(2)}</span>
                   </div>
 
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 8, color: 'var(--ios-green)' }}>
                     <span>+ Manual Premium</span>
-                    <span className="tabular-nums">+ Rs. {(dispatch.manualPremium || 0).toFixed(2)}</span>
+                    <span className="tabular-nums">+ {curSym} {(dispatch.manualPremium || 0).toFixed(2)}</span>
                   </div>
 
                   <div style={{ height: 0.5, background: 'var(--separator)', margin: '10px 0' }} />
 
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 8 }}>
                     <span style={{ fontWeight: 600 }}>Adjusted Rate</span>
-                    <span style={{ fontWeight: 600 }} className="tabular-nums">Rs. {settlement.adjustedRate.toFixed(2)}</span>
+                    <span style={{ fontWeight: 600 }} className="tabular-nums">{curSym} {settlement.adjustedRate.toFixed(2)}</span>
                   </div>
 
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 8, color: 'var(--ios-red)' }}>
-                    <span>- Tax Deduction</span>
-                    <span className="tabular-nums">- Rs. {settlement.taxDeduction.toFixed(2)}</span>
+                    <span>- Tax Deduction {dispatch.taxMethod === 'formula_18_5' ? `((Rate + ${dispatch.taxSalesPercent ?? 18}%) × ${dispatch.taxIncomePercent ?? 5}%)` : ''}</span>
+                    <span className="tabular-nums">- {curSym} {settlement.taxDeduction.toFixed(2)}</span>
                   </div>
 
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 8 }}>
                     <span style={{ color: 'var(--label-secondary)' }}>Net Rate</span>
-                    <span className="tabular-nums">Rs. {settlement.netRate.toFixed(2)}</span>
+                    <span className="tabular-nums">{curSym} {settlement.netRate.toFixed(2)}</span>
                   </div>
 
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 8, color: 'var(--ios-red)' }}>
                     <span>- Commission</span>
-                    <span className="tabular-nums">- Rs. {(dispatch.commissionPerTon || 0).toFixed(2)}</span>
+                    <span className="tabular-nums">- {curSym} {(dispatch.commissionPerTon || 0).toFixed(2)}</span>
                   </div>
 
                   <div style={{ height: 0.5, background: 'var(--separator)', margin: '10px 0' }} />
@@ -330,18 +333,18 @@ ${dispatch.notes ? `*Remarks:* ${dispatch.notes}\n\n` : ''}✓ E-Verified Dispat
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 16, marginBottom: 12 }}>
                     <span style={{ fontWeight: 700, color: 'var(--ios-blue)' }}>Payable Rate (per ton)</span>
                     <span style={{ fontWeight: 700, color: 'var(--ios-blue)' }} className="tabular-nums">
-                      Rs. {settlement.payableRate.toFixed(2)}
+                      {curSym} {settlement.payableRate.toFixed(2)}
                     </span>
                   </div>
 
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, color: 'var(--label-secondary)', marginBottom: 6 }}>
-                    <span>Total Revenue ({dispatch.labReceivedWeight || 0} t × Rs. {settlement.payableRate.toFixed(2)})</span>
-                    <span className="tabular-nums">Rs. {Math.round(settlement.totalRevenue).toLocaleString('en-PK')}</span>
+                    <span>Total Revenue ({dispatch.labReceivedWeight || 0} t × {curSym} {settlement.payableRate.toFixed(2)})</span>
+                    <span className="tabular-nums">{curSym} {formatAmountNumber(settlement.totalRevenue, settings)}</span>
                   </div>
 
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, color: 'var(--label-secondary)', marginBottom: 12 }}>
                     <span>Total Cost (Coal + Overheads)</span>
-                    <span className="tabular-nums">Rs. {Math.round(settlement.totalCost).toLocaleString('en-PK')}</span>
+                    <span className="tabular-nums">{curSym} {formatAmountNumber(settlement.totalCost, settings)}</span>
                   </div>
 
                   <div style={{
@@ -356,7 +359,7 @@ ${dispatch.notes ? `*Remarks:* ${dispatch.notes}\n\n` : ''}✓ E-Verified Dispat
                       {isProfit ? 'Final Net Profit' : 'Final Net Loss'}
                     </span>
                     <span style={{ fontSize: 20, fontWeight: 800, color: 'white' }} className="tabular-nums">
-                      {isProfit ? '+Rs. ' : '-Rs. '}{Math.abs(Math.round(settlement.netProfit)).toLocaleString('en-PK')}
+                      {isProfit ? `+${curSym} ` : `-${curSym} `}{formatAmountNumber(Math.abs(settlement.netProfit), settings)}
                     </span>
                   </div>
 
@@ -383,7 +386,7 @@ ${dispatch.notes ? `*Remarks:* ${dispatch.notes}\n\n` : ''}✓ E-Verified Dispat
                   onDelete(dispatch);
                 }}
                 className="ios-btn ios-btn-destructive"
-                style={{ width: '100%', padding: 14, fontSize: 15, borderRadius: 14, background: 'var(--tint-red)', color: 'var(--ios-red)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
+                style={{ width: '100%', padding: 14, fontSize: 15, borderRadius: 14, background: 'var(--ios-red)', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
               >
                 <Trash2 size={16} /> Delete Dispatch
               </button>

@@ -49,6 +49,8 @@ export interface Dispatch {
   manualPremium?: number;
   manualTax?: number;
   taxMethod?: TaxMethod;
+  taxSalesPercent?: number; // Snapshot of sales tax % (e.g. 18) when dispatch was saved
+  taxIncomePercent?: number; // Snapshot of income tax % (e.g. 5) when dispatch was saved
   notes?: string;
   createdAt: number;
   updatedAt: number;
@@ -86,8 +88,18 @@ export interface AppSettings {
   signatureUrl?: string;
   theme: 'light' | 'dark' | 'system';
   currency?: string;
+  locale?: string;
+  numberFormat?: 'lakh' | 'million';
+  defaultTaxMethod?: TaxMethod;
+  taxFormulaSalesPercent?: number;
+  taxFormulaIncomePercent?: number;
+  accountType?: string;
   companyAddress?: string;
   ntnNumber?: string;
   updatedAt?: number;
+  // Security & App Lock settings (synced to cloud)
+  appLockEnabled?: boolean;
+  pinHash?: string;
+  pinLength?: number;
+  lockTimeout?: number;
 }
-

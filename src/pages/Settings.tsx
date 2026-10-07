@@ -5,8 +5,13 @@ import {
   clearAllData,
   getDispatches,
   getParties,
+  getPayments,
+  getPurchaseOrders,
   getAllBackupData,
-  restoreBackup
+  restoreBackup,
+  mergeLedgerData,
+  getTombstones,
+  type BackupPayload,
 } from '../lib/db';
 import type { AppSettings } from '../types';
 import {
@@ -20,11 +25,10 @@ import {
   Download,
   Upload,
   Trash2,
-  ChevronRight,
   ChevronDown,
+  ChevronRight,
   Smartphone,
   Coins,
-  Globe,
   FileText,
   MapPin,
   Volume2,
@@ -32,13 +36,28 @@ import {
   PenLine,
   Camera,
   Loader2,
-  Cloud,
   LogOut,
-  RefreshCw
+  RefreshCw,
+  Lock,
+  Fingerprint,
+  ShieldCheck,
+  KeyRound,
+  Briefcase,
+  Layers,
+  /* Info, */
+  Sliders,
+  // Sparkles,
 } from 'lucide-react';
 import { triggerConfetti, playSuccessSound, playPopSound, playCashChime } from '../utils/delight';
+import { exportDatabaseBackupJson } from '../utils/exportSharing';
 import { processImageFile } from '../utils/imageUtils';
 import IOSConfirmModal from '../components/IOSConfirmModal';
+import IOSSetPasscodeModal from '../components/IOSSetPasscodeModal';
+import IOSVerifyPasscodeModal from '../components/IOSVerifyPasscodeModal';
+import IOSRecoveryKeyViewerModal from '../components/IOSRecoveryKeyViewerModal';
+import IOSImportConfirmModal from '../components/IOSImportConfirmModal';
+import IOSTaxFormulaModal from '../components/IOSTaxFormulaModal';
+import IOSSelect, { type IOSSelectOption } from '../components/IOSSelect';
 import {
   loginWithGoogle,
   checkRedirectAuth,
@@ -51,6 +70,19 @@ import {
   AnonymousConflictModal,
   SignOutActionSheet,
 } from '../components/AccountSyncModals';
+import {
+  isAppLockEnabled,
+  isBiometricEnabled,
+  setBiometricEnabled,
+  disableAppLock,
+  getLockTimeout,
+  setLockTimeout,
+  //  lockSession,
+  isBiometricAvailable,
+  registerBiometrics,
+  getPinLength,
+  getStoredPinHash,
+} from '../utils/securityLock';
 
 function GoogleLogo({ size = 18 }: { size?: number }) {
   return (
@@ -75,6 +107,48 @@ function GoogleLogo({ size = 18 }: { size?: number }) {
   );
 }
 
+{/*
+/* const ACCENT_COLOR_OPTIONS = [
+  { id: 'blue', name: 'Sapphire', color: '#007AFF' },
+  { id: 'emerald', name: 'Emerald', color: '#10B981' },
+  { id: 'violet', name: 'Violet', color: '#8B5CF6' },
+  { id: 'amber', name: 'Amber', color: '#F59E0B' },
+  { id: 'crimson', name: 'Ruby', color: '#F43F5E' },
+]; 
+*/}
+
+const CURRENCY_SELECT_OPTIONS: IOSSelectOption<string>[] = [
+  { value: 'PKR (Rs.)', label: 'PKR (Rs.)', subtitle: 'Pakistani Rupee · Local coal settlements', badge: 'Default' },
+  { value: 'USD ($)', label: 'USD ($)', subtitle: 'US Dollar · International benchmark' },
+  { value: 'AED (AED)', label: 'AED (AED)', subtitle: 'UAE Dirham · Gulf trade & shipping' },
+  { value: 'SAR (SAR)', label: 'SAR (SAR)', subtitle: 'Saudi Riyal · Middle East transactions' },
+  { value: 'EUR (€)', label: 'EUR (€)', subtitle: 'Euro · European commercial trade' },
+  { value: 'INR (₹)', label: 'INR (₹)', subtitle: 'Indian Rupee · Regional trade' },
+  { value: 'CNY (¥)', label: 'CNY (¥)', subtitle: 'Chinese Yuan · Direct imports' },
+];
+
+const NUMBER_FORMAT_OPTIONS: IOSSelectOption<'lakh' | 'million'>[] = [
+  {
+    value: 'million',
+    label: 'International (Millions)',
+    subtitle: 'Grouped as 1,250,000 (Three-digit international grouping)',
+    badge: 'Default',
+  },
+  {
+    value: 'lakh',
+    label: 'South Asian (Lakhs & Crores)',
+    subtitle: 'Grouped as 12,50,000 (Two-digit grouping standard in Pakistan)',
+  },
+];
+
+const ACCOUNT_TYPE_OPTIONS: IOSSelectOption<string>[] = [
+  { value: 'Commercial Coal Trader', label: 'Commercial Coal Trader', subtitle: 'Buys and sells coal lots with margin calculations' },
+  { value: 'Broker & Commission Agent', label: 'Broker & Commission Agent', subtitle: 'Facilitates supply contracts between mines and mills' },
+  { value: 'Factory Direct Procurement', label: 'Factory Direct Procurement', subtitle: 'Purchasing and testing coal for industrial consumption' },
+  { value: 'Mining & Yard Operator', label: 'Mining & Yard Operator', subtitle: 'Pit-head depot, crushing, and logistics management' },
+  { value: 'General Commodity Merchant', label: 'General Commodity Merchant', subtitle: 'Wholesale merchant handling multi-fuel commodities' },
+];
+
 export default function Settings() {
   const [settings, setSettings] = useState<AppSettings>({
     userName: '',
@@ -85,25 +159,44 @@ export default function Settings() {
     companyAddress: '',
     ntnNumber: '',
     theme: 'light',
+    currency: 'PKR (Rs.)',
+    numberFormat: 'million',
+    defaultTaxMethod: 'formula_18_5',
+    taxFormulaSalesPercent: 18,
+    taxFormulaIncomePercent: 5,
+    accountType: 'Commercial Coal Trader',
   });
+  const [showTaxFormulaModal, setShowTaxFormulaModal] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saved, setSaved] = useState(false);
-  const [stats, setStats] = useState({ dispatches: 0, parties: 0 });
+  const [stats, setStats] = useState({ dispatches: 0, parties: 0, payments: 0, pos: 0 });
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [soundEnabled, setSoundEnabled] = useState(() => localStorage.getItem('coal_sound_enabled') !== 'false');
+  // const [activeAccent, setActiveAccent] = useState(() => localStorage.getItem('coal_accent_theme') || 'blue');
   const [isLogoUploading, setIsLogoUploading] = useState(false);
   const [isSignatureUploading, setIsSignatureUploading] = useState(false);
   const [systemPrefersDark, setSystemPrefersDark] = useState(
     () => typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches
   );
 
-  // Collapsible dropdown groups (all collapsed by default)
+  // Security App Lock state
+  const [appLockActive, setAppLockActive] = useState(() => isAppLockEnabled());
+  const [bioActive, setBioActive] = useState(() => isBiometricEnabled());
+  const [lockTimeoutSec, setLockTimeoutSec] = useState(() => getLockTimeout());
+  const [pinLength, setPinLength] = useState(() => getPinLength());
+  const [showPasscodeModal, setShowPasscodeModal] = useState(false);
+  const [isChangingPasscode, setIsChangingPasscode] = useState(false);
+  const [isBioHardwareAvailable, setIsBioHardwareAvailable] = useState(false);
+
+  // Collapsible dropdown groups (all collapsed by default per user specification)
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({
+    security: false,
     google: false,
     business: false,
     appearance: false,
     currency: false,
     backup: false,
+    about: false,
   });
 
   // Cloud Sync & Auth Manager
@@ -129,15 +222,65 @@ export default function Settings() {
   const [conflictScenario, setConflictScenario] = useState<LoginScenarioResult | null>(null);
   const [isSignOutSheetOpen, setIsSignOutSheetOpen] = useState(false);
 
+  // Modal triggers
+  const [showRemoveLogoConfirm, setShowRemoveLogoConfirm] = useState(false);
+  const [showRemoveSignatureConfirm, setShowRemoveSignatureConfirm] = useState(false);
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const [showDisableLockConfirm, setShowDisableLockConfirm] = useState(false);
+  const [showVerifyPinForDisable, setShowVerifyPinForDisable] = useState(false);
+  const [showVerifyPinForExport, setShowVerifyPinForExport] = useState(false);
+  const [showVerifyPinForImport, setShowVerifyPinForImport] = useState(false);
+  const [showRecoveryKeyViewer, setShowRecoveryKeyViewer] = useState(false);
+  const [pendingImportFile, setPendingImportFile] = useState<{ name: string; data: BackupPayload } | null>(null);
+  const [showImportConfirmModal, setShowImportConfirmModal] = useState(false);
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const logoInputRef = useRef<HTMLInputElement>(null);
+  const signatureInputRef = useRef<HTMLInputElement>(null);
+
+  const showToast = (msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => setToastMessage(null), 3500);
+  };
+
+  const loadAllData = async () => {
+    const [s, d, p, pay, pos] = await Promise.all([
+      getSettings(),
+      getDispatches(),
+      getParties(),
+      getPayments(),
+      getPurchaseOrders(),
+    ]);
+    setSettings(s);
+    setStats({
+      dispatches: d.length,
+      parties: p.length,
+      payments: pay.length,
+      pos: pos.length,
+    });
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    loadAllData();
+    isBiometricAvailable().then(setIsBioHardwareAvailable);
+
+    const handleLockStatusChange = () => {
+      setAppLockActive(isAppLockEnabled());
+      setBioActive(isBiometricEnabled());
+      setLockTimeoutSec(getLockTimeout());
+      setPinLength(getPinLength());
+    };
+    window.addEventListener('coal_lock_status_changed', handleLockStatusChange);
+    return () => window.removeEventListener('coal_lock_status_changed', handleLockStatusChange);
+  }, []);
+
   // Auto-refresh settings and stats when any mutation or cloud sync happens
   useLedgerListener(() => {
-    Promise.all([getSettings(), getDispatches(), getParties()]).then(([s, d, p]) => {
-      setSettings(s);
-      setStats({ dispatches: d.length, parties: p.length });
-    });
+    loadAllData();
   });
 
-  // Handle any redirect logins on web
+  // Handle redirect logins on web
   useEffect(() => {
     checkRedirectAuth()
       .then((redirectUser) => {
@@ -148,6 +291,43 @@ export default function Settings() {
       .catch((err) => console.error('Redirect auth check error:', err));
   }, []);
 
+  useEffect(() => {
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    const handler = (e: MediaQueryListEvent) => setSystemPrefersDark(e.matches);
+    mq.addEventListener('change', handler);
+    return () => mq.removeEventListener('change', handler);
+  }, []);
+
+  const toggleSection = (sectionKey: string) => {
+    playPopSound();
+    setOpenSections((prev) => ({
+      ...prev,
+      [sectionKey]: !prev[sectionKey],
+    }));
+  };
+
+  const handleChange = (field: keyof AppSettings, value: any) => {
+    setSettings((prev) => ({ ...prev, [field]: value }));
+    setSaved(false);
+  };
+
+  const handleAutoSave = async () => {
+    await saveSettings(settings);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  };
+
+  const handleSave = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    await saveSettings(settings);
+    setSaved(true);
+    playSuccessSound();
+    triggerConfetti();
+    showToast('Settings saved');
+    setTimeout(() => setSaved(false), 2500);
+  };
+
+  // Google Sign-In & Sync handlers
   const handleGoogleSignIn = async () => {
     setIsSigningIn(true);
     playPopSound();
@@ -155,9 +335,7 @@ export default function Settings() {
       const user = await loginWithGoogle();
       localStorage.setItem('coal_google_user', JSON.stringify(user));
 
-      // Analyze real-world scenario (account switch, anonymous conflict, or clean ready)
       const scenario = await checkLoginScenario(user);
-
       if (scenario.type === 'account_switch') {
         setSwitchScenario(scenario);
       } else if (scenario.type === 'anonymous_conflict') {
@@ -166,9 +344,7 @@ export default function Settings() {
         playSuccessSound();
         triggerConfetti();
         showToast(scenario.message || 'Signed in with Google successfully!');
-        const [s, d, p] = await Promise.all([getSettings(), getDispatches(), getParties()]);
-        setSettings(s);
-        setStats({ dispatches: d.length, parties: p.length });
+        loadAllData();
       }
     } catch (err: any) {
       console.error('Google Sign-in error:', err);
@@ -194,9 +370,7 @@ export default function Settings() {
     try {
       const res = await handleSignOut(mode);
       showToast(res.message);
-      const [s, d, p] = await Promise.all([getSettings(), getDispatches(), getParties()]);
-      setSettings(s);
-      setStats({ dispatches: d.length, parties: p.length });
+      loadAllData();
     } catch (err: any) {
       console.error('Sign out error:', err);
       showToast('Error signing out');
@@ -244,9 +418,7 @@ export default function Settings() {
         playSuccessSound();
         triggerConfetti();
         showToast('Restored successfully from Firebase Cloud! 🎉');
-        const [s, d, p] = await Promise.all([getSettings(), getDispatches(), getParties()]);
-        setSettings(s);
-        setStats({ dispatches: d.length, parties: p.length });
+        loadAllData();
       } else {
         alert(result.message || 'Failed to restore backup');
       }
@@ -258,53 +430,7 @@ export default function Settings() {
     }
   };
 
-  const toggleSection = (sectionKey: string) => {
-    playPopSound();
-    setOpenSections((prev) => ({
-      ...prev,
-      [sectionKey]: !prev[sectionKey],
-    }));
-  };
-
-  useEffect(() => {
-    const mq = window.matchMedia('(prefers-color-scheme: dark)');
-    const handler = (e: MediaQueryListEvent) => setSystemPrefersDark(e.matches);
-    mq.addEventListener('change', handler);
-    return () => mq.removeEventListener('change', handler);
-  }, []);
-
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const logoInputRef = useRef<HTMLInputElement>(null);
-  const signatureInputRef = useRef<HTMLInputElement>(null);
-
-  const showToast = (msg: string) => {
-    setToastMessage(msg);
-    setTimeout(() => setToastMessage(null), 3500);
-  };
-
-  useEffect(() => {
-    Promise.all([getSettings(), getDispatches(), getParties()]).then(([s, d, p]) => {
-      setSettings(s);
-      setStats({ dispatches: d.length, parties: p.length });
-      setLoading(false);
-    });
-  }, []);
-
-  const handleChange = (field: keyof AppSettings, value: string) => {
-    setSettings((prev) => ({ ...prev, [field]: value }));
-    setSaved(false);
-  };
-
-  const handleSave = async (e?: React.FormEvent) => {
-    if (e) e.preventDefault();
-    await saveSettings(settings);
-    setSaved(true);
-    playSuccessSound();
-    triggerConfetti();
-    showToast('Settings saved');
-    setTimeout(() => setSaved(false), 2000);
-  };
-
+  // Image upload handlers
   const handleLogoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -315,22 +441,13 @@ export default function Settings() {
       setSettings(updated);
       await saveSettings(updated);
       playSuccessSound();
-      showToast('logo updated');
+      showToast('Logo updated');
     } catch (err: any) {
       alert(err.message || 'Failed to process logo');
     } finally {
       setIsLogoUploading(false);
       if (logoInputRef.current) logoInputRef.current.value = '';
     }
-  };
-
-  const [showRemoveLogoConfirm, setShowRemoveLogoConfirm] = useState(false);
-  const [showRemoveSignatureConfirm, setShowRemoveSignatureConfirm] = useState(false);
-
-  const handleRemoveLogo = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    playPopSound();
-    setShowRemoveLogoConfirm(true);
   };
 
   const handleConfirmRemoveLogo = async () => {
@@ -352,19 +469,13 @@ export default function Settings() {
       setSettings(updated);
       await saveSettings(updated);
       playSuccessSound();
-      showToast('Authorized signature updated successfully');
+      showToast('Authorized signature updated');
     } catch (err: any) {
       alert(err.message || 'Failed to process signature image');
     } finally {
       setIsSignatureUploading(false);
       if (signatureInputRef.current) signatureInputRef.current.value = '';
     }
-  };
-
-  const handleRemoveSignature = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    playPopSound();
-    setShowRemoveSignatureConfirm(true);
   };
 
   const handleConfirmRemoveSignature = async () => {
@@ -376,30 +487,7 @@ export default function Settings() {
     showToast('Signature removed');
   };
 
-  {/* const handleAccentChange = (accent: string) => {
-    localStorage.setItem('coal_accent_theme', accent);
-    const root = document.documentElement;
-    ['theme-emerald', 'theme-violet', 'theme-amber', 'theme-crimson'].forEach((cls) => {
-      root.classList.remove(cls);
-    });
-    if (accent !== 'blue' && accent !== 'sapphire') {
-      root.classList.add(`theme-${accent}`);
-    }
-    playPopSound();
-    showToast(`Accent updated to ${accent.charAt(0).toUpperCase() + accent.slice(1)}`);
-  }; */}
-
-  const handleSoundToggle = (enabled: boolean) => {
-    setSoundEnabled(enabled);
-    localStorage.setItem('coal_sound_enabled', String(enabled));
-    if (enabled) {
-      playCashChime();
-      showToast('Sound effects enabled');
-    } else {
-      showToast('Sound effects muted');
-    }
-  };
-
+  // Appearance & Sound handlers
   const handleThemeChange = async (theme: 'light' | 'dark' | 'system') => {
     const updated = { ...settings, theme };
     setSettings(updated);
@@ -414,28 +502,159 @@ export default function Settings() {
       document.documentElement.classList.remove('dark');
     }
     playPopSound();
-    const label =
+    showToast(
       theme === 'system'
         ? `Switched to System Mode (${isDark ? 'Dark' : 'Light'})`
         : theme === 'dark'
           ? 'Switched to Dark Mode'
-          : 'Switched to Light Mode';
-    showToast(label);
+          : 'Switched to Light Mode'
+    );
   };
 
-  const handleExportData = async () => {
+
+  /*
+  const handleAccentChange = (accent: string) => {
+    setActiveAccent(accent);
+    localStorage.setItem('coal_accent_theme', accent);
+    const root = document.documentElement;
+    ['theme-emerald', 'theme-violet', 'theme-amber', 'theme-crimson'].forEach((cls) => {
+      root.classList.remove(cls);
+    });
+    if (accent !== 'blue') {
+      root.classList.add(`theme-${accent}`);
+    }
+    playPopSound();
+    showToast(`Accent updated to ${accent.charAt(0).toUpperCase() + accent.slice(1)}`);
+  };
+  */
+  const handleSoundToggle = (enabled: boolean) => {
+    setSoundEnabled(enabled);
+    localStorage.setItem('coal_sound_enabled', String(enabled));
+    if (enabled) {
+      playCashChime();
+      showToast('Sound effects enabled');
+    } else {
+      showToast('Sound effects muted');
+    }
+  };
+
+  // App Lock Security Handlers
+  const handleToggleAppLock = () => {
+    playPopSound();
+    if (appLockActive) {
+      setShowDisableLockConfirm(true);
+    } else {
+      setIsChangingPasscode(false);
+      setShowPasscodeModal(true);
+    }
+  };
+
+  const handleConfirmDisableLock = () => {
+    setShowDisableLockConfirm(false);
+    setShowVerifyPinForDisable(true);
+  };
+
+  const handlePasscodeVerifiedForDisable = async () => {
+    setShowVerifyPinForDisable(false);
+    disableAppLock();
+    playPopSound();
+    const updated = {
+      ...settings,
+      appLockEnabled: false,
+      pinHash: '',
+      pinLength: 5,
+    };
+    setSettings(updated);
+    await saveSettings(updated);
+    setAppLockActive(false);
+    setBioActive(false);
+    showToast('App Lock disabled & synced to cloud');
+  };
+
+  const handlePasscodeSuccess = async (withBio: boolean) => {
+    setShowPasscodeModal(false);
+    setAppLockActive(true);
+    if (withBio) setBioActive(true);
+    const pinHash = getStoredPinHash() || '';
+    const pinLen = getPinLength();
+    setPinLength(pinLen);
+    const updated = {
+      ...settings,
+      appLockEnabled: true,
+      pinHash,
+      pinLength: pinLen,
+      lockTimeout: lockTimeoutSec,
+    };
+    setSettings(updated);
+    await saveSettings(updated);
+    showToast(isChangingPasscode ? '5-Digit Passcode updated & synced to cloud' : 'App Lock activated with 5-Digit Passcode');
+  };
+
+  const handleToggleBiometrics = async () => {
+    playPopSound();
+    if (bioActive) {
+      setBiometricEnabled(false);
+      setBioActive(false);
+      showToast('Fingerprint unlock disabled');
+    } else {
+      const regSuccess = await registerBiometrics();
+      if (regSuccess) {
+        setBioActive(true);
+        playSuccessSound();
+        showToast('Fingerprint unlock activated');
+      } else {
+        setBiometricEnabled(true);
+        setBioActive(true);
+        showToast('Fingerprint biometric enabled');
+      }
+    }
+  };
+
+  const handleTimeoutChange = async (sec: number) => {
+    playPopSound();
+    setLockTimeoutSec(sec);
+    setLockTimeout(sec);
+    const updated = {
+      ...settings,
+      lockTimeout: sec,
+    };
+    setSettings(updated);
+    await saveSettings(updated);
+    const label = sec === 0 ? 'Immediately' : sec === 60 ? 'After 1 Minute' : 'After 5 Minutes';
+    showToast(`Auto-lock set to ${label}`);
+  };
+
+  // const handleTestLockNow = () => {
+  //   playPopSound();
+  //   lockSession();
+  // };
+
+  // Export / Import / Clear Data handlers
+  const handleTriggerExport = () => {
+    playPopSound();
+    if (appLockActive) {
+      setShowVerifyPinForExport(true);
+    } else {
+      executeExport();
+    }
+  };
+
+  const executeExport = async () => {
     try {
-      const fullBackup = await getAllBackupData();
-      const blob = new Blob([JSON.stringify(fullBackup, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `coal-ledger-full-backup-${new Date().toISOString().split('T')[0]}.json`;
-      a.click();
-      URL.revokeObjectURL(url);
-      showToast('Full database backup exported');
+      const result = await exportDatabaseBackupJson();
+      playSuccessSound();
+      showToast(`Exported ${result.counts.parties} parties, ${result.counts.dispatches} dispatches, ${result.counts.payments} payments`);
     } catch {
-      alert('Failed to generate export backup');
+      showToast('Failed to generate export backup');
+    }
+  };
+
+  const handleTriggerImport = () => {
+    playPopSound();
+    if (appLockActive) {
+      setShowVerifyPinForImport(true);
+    } else {
+      fileInputRef.current?.click();
     }
   };
 
@@ -446,21 +665,23 @@ export default function Settings() {
     try {
       const text = await file.text();
       const json = JSON.parse(text);
-      const result = await restoreBackup(json);
-      if (result.success && result.counts) {
-        alert(
-          `Backup Restored Successfully!\n\n` +
-          `• Parties: ${result.counts.parties}\n` +
-          `• Dispatches: ${result.counts.dispatches}\n` +
-          `• Payments: ${result.counts.payments}\n` +
-          `• Purchase Orders: ${result.counts.pos}`
-        );
-        window.location.reload();
-      } else {
-        alert(`Restore Failed: ${result.message}`);
+
+      if (
+        !json ||
+        typeof json !== 'object' ||
+        (!Array.isArray(json.parties) &&
+          !Array.isArray(json.dispatches) &&
+          !Array.isArray(json.payments) &&
+          !Array.isArray(json.pos))
+      ) {
+        showToast('Invalid backup file. Ensure it is a Factory Ledger JSON backup.');
+        return;
       }
+
+      setPendingImportFile({ name: file.name, data: json });
+      setShowImportConfirmModal(true);
     } catch {
-      alert('Failed to parse the backup file. Please ensure it is a valid JSON file exported from Factory Ledger.');
+      showToast('Failed to parse backup file. Please select a valid JSON file.');
     } finally {
       if (fileInputRef.current) {
         fileInputRef.current.value = '';
@@ -468,11 +689,41 @@ export default function Settings() {
     }
   };
 
-  const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const handleConfirmImport = async (mode: 'replace' | 'merge') => {
+    if (!pendingImportFile) return;
+    setShowImportConfirmModal(false);
 
-  const handleClear = () => {
-    playPopSound();
-    setShowClearConfirm(true);
+    try {
+      if (mode === 'replace') {
+        await clearAllData({ resetSettings: false });
+        const result = await restoreBackup(pendingImportFile.data);
+        if (result.success) {
+          playSuccessSound();
+          triggerConfetti();
+          showToast('Database replaced cleanly from backup!');
+          await loadAllData();
+        } else {
+          showToast(`Restore Failed: ${result.message}`);
+        }
+      } else {
+        const currentLocal = await getAllBackupData();
+        const tombstones = getTombstones();
+        const { merged } = mergeLedgerData(currentLocal, pendingImportFile.data, tombstones);
+        const result = await restoreBackup(merged);
+        if (result.success) {
+          playSuccessSound();
+          triggerConfetti();
+          showToast('Records merged successfully! Zero data lost.');
+          await loadAllData();
+        } else {
+          showToast(`Merge Failed: ${result.message}`);
+        }
+      }
+    } catch (err: any) {
+      showToast(`Import error: ${err?.message || 'Operation failed'}`);
+    } finally {
+      setPendingImportFile(null);
+    }
   };
 
   const handleConfirmClear = async () => {
@@ -490,100 +741,90 @@ export default function Settings() {
   }
 
   return (
-    <div className="ios-fade-in" style={{ paddingBottom: 32 }}>
+    <div className="ios-fade-in" style={{ paddingBottom: 48 }}>
       {/* Toast Notification */}
       {toastMessage && (
-        <div style={{
-          position: 'fixed',
-          top: '4%',
-          left: '50%',
-          transform: 'translate(-50%)',
-          background: 'rgba(28, 28, 30, 0.95)',
-          color: '#FFFFFF',
-          padding: '10px 20px',
-          borderRadius: 24,
-          fontSize: 14,
-          fontWeight: 600,
-          zIndex: 9999,
-          boxShadow: '0 8px 24px rgba(0,0,0,0.3)',
-          backdropFilter: 'blur(16px)',
-          border: '0.5px solid rgba(255,255,255,0.15)',
-          display: 'flex',
-          alignItems: 'center',
-          gap: 8
-        }}>
+        <div
+          style={{
+            position: 'fixed',
+            top: '4%',
+            left: '50%',
+            transform: 'translate(-50%)',
+            background: 'var(--bg-elevated, #1C1D24)',
+            color: 'var(--label-primary, #FFFFFF)',
+            padding: '10px 20px',
+            borderRadius: 24,
+            fontSize: 14,
+            fontWeight: 600,
+            zIndex: 9999,
+            boxShadow: '0 8px 24px rgba(0,0,0,0.3)',
+            border: '0.5px solid var(--separator-opaque, rgba(255,255,255,0.15))',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+          }}
+        >
           <Check size={16} strokeWidth={3} style={{ color: 'var(--ios-green)' }} />
           <span>{toastMessage}</span>
         </div>
       )}
 
-      {/* Hidden File Input for Backup Restore */}
-      <input
-        type="file"
-        ref={fileInputRef}
-        onChange={handleImportFile}
-        accept=".json"
-        style={{ display: 'none' }}
-      />
-
-      {/* Hidden File Input for Company Logo */}
-      <input
-        type="file"
-        ref={logoInputRef}
-        onChange={handleLogoUpload}
-        accept="image/*"
-        style={{ display: 'none' }}
-      />
-
-      {/* Hidden File Input for Authorized Signature */}
-      <input
-        type="file"
-        ref={signatureInputRef}
-        onChange={handleSignatureUpload}
-        accept="image/*"
-        style={{ display: 'none' }}
-      />
+      {/* Hidden File Inputs */}
+      <input type="file" ref={fileInputRef} onChange={handleImportFile} accept=".json" style={{ display: 'none' }} />
+      <input type="file" ref={logoInputRef} onChange={handleLogoUpload} accept="image/*" style={{ display: 'none' }} />
+      <input type="file" ref={signatureInputRef} onChange={handleSignatureUpload} accept="image/*" style={{ display: 'none' }} />
 
       {/* ── iOS Navigation Header with Large Title ── */}
-      <div className="ios-large-header">
+      <div className="ios-large-header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <h1 className="ios-large-title">Settings</h1>
+        {saved && (
+          <span
+            style={{
+              fontSize: 12,
+              fontWeight: 600,
+              color: 'white',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 4,
+              padding: '4px 8px',
+              borderRadius: 8,
+              background: 'var(--ios-green)',
+            }}
+          >
+            <Check size={13} strokeWidth={3} />
+            Saved
+          </span>
+        )}
       </div>
 
-      {/* ── Apple ID / Business Profile Banner (with Company Logo) ── */}
-      <div className="ios-group" style={{ marginTop: 6 }}>
-        <div className="ios-card-grouped" style={{ padding: '14px 16px', display: 'flex', alignItems: 'center', gap: 14 }}>
+      {/* ── Apple ID / Business Profile Banner Card ── */}
+      <div className="ios-group" style={{ marginTop: 6, marginBottom: 14 }}>
+        <div className="ios-card-grouped" style={{ padding: '16px', display: 'flex', alignItems: 'center', gap: 14 }}>
           <div
             onClick={() => logoInputRef.current?.click()}
-            title="Tap to change company logo"
+            title="Tap to change logo"
             style={{
-              width: 58,
-              height: 58,
+              width: 64,
+              height: 64,
               borderRadius: '50%',
-              background: settings.logoUrl
-                ? 'var(--fill-tertiary)'
-                : 'var(--ios-blue)',
+              background: settings.logoUrl ? 'var(--fill-tertiary)' : 'var(--ios-blue)',
               color: '#FFFFFF',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
               fontWeight: 700,
-              fontSize: 22,
+              fontSize: 24,
               flexShrink: 0,
               cursor: 'pointer',
               position: 'relative',
               overflow: 'hidden',
-              boxShadow: '0 2px 8px rgba(0,0,0,0.12)',
-              border: '2px solid rgba(255,255,255,0.2)'
+              border: '2px solid var(--separator-opaque)',
             }}
           >
             {isLogoUploading ? (
-              <Loader2 className="animate-spin" style={{ width: 22, height: 22, color: 'var(--ios-blue)' }} />
+              <Loader2 className="animate-spin" style={{ width: 24, height: 24, color: 'var(--ios-blue)' }} />
             ) : settings.logoUrl ? (
-              <img
-                src={settings.logoUrl}
-                alt="Company Logo"
-                style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-              />
+              <img src={settings.logoUrl} alt="Company Logo" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
             ) : (
               settings.userName?.charAt(0)?.toUpperCase() || 'T'
             )}
@@ -593,35 +834,59 @@ export default function Settings() {
                 bottom: 0,
                 left: 0,
                 right: 0,
-                height: 18,
-                background: 'rgba(0, 0, 0, 0.45)',
+                height: 20,
+                background: 'rgba(0, 0, 0, 0.55)',
                 display: 'flex',
                 alignItems: 'center',
-                justifyContent: 'center'
+                justifyContent: 'center',
               }}
             >
-              <Camera style={{ width: 11, height: 11, color: '#FFFFFF' }} />
+              <Camera style={{ width: 12, height: 12, color: '#FFFFFF' }} />
             </div>
           </div>
 
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 18, fontWeight: 600, color: 'var(--label-primary)' }}>
+            <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--label-primary)', letterSpacing: '-0.2px' }}>
               {settings.userName || 'Coal Trader'}
             </div>
-            <div style={{ fontSize: 13, color: 'var(--label-secondary)', marginTop: 2 }}>
-              {settings.businessName || 'Apex Coal Logistics'} · {settings.phoneNumber || 'Operations'}
+            <div style={{ fontSize: 13, color: 'var(--label-secondary)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {settings.businessName || 'Apex Coal Logistics'} {settings.phoneNumber ? `· ${settings.phoneNumber}` : ''}
             </div>
-            <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--ios-blue)', marginTop: 4 }}>
-              Commercial Account · {stats.parties} Parties · {googleUser ? 'Firebase Synced' : `${stats.dispatches} Trucks`}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 5, flexWrap: 'wrap' }}>
+              <span
+                style={{
+                  fontSize: 11,
+                  fontWeight: 600,
+                  color: 'white',
+                  background: 'var(--ios-blue)',
+                  padding: '2px 8px',
+                  borderRadius: 6,
+                }}
+              >
+                {settings.accountType || 'Commercial Account'}
+              </span>
+              <span
+                style={{
+                  fontSize: 11,
+                  fontWeight: 600,
+                  color: googleUser ? 'white' : 'var(--label-tertiary)',
+                  background: googleUser ? 'var(--ios-green)' : 'var(--fill-tertiary)',
+                  padding: '2px 8px',
+                  borderRadius: 6,
+                }}
+              >
+                {googleUser ? 'Cloud Synced' : `${stats.dispatches} Trucks`}
+              </span>
             </div>
           </div>
         </div>
       </div>
 
-      {/* ── Section: Google Account & Cloud Sync ── */}
+
+
+      {/* ── ACCORDION 1: Google Account & Cloud Sync ── */}
       <div className="ios-group" style={{ marginBottom: 14 }}>
         <div className="ios-card-grouped" style={{ overflow: 'hidden' }}>
-          {/* Collapsible Header Trigger */}
           <div
             className="ios-cell"
             onClick={() => toggleSection('google')}
@@ -632,7 +897,7 @@ export default function Settings() {
               alignItems: 'center',
               justifyContent: 'space-between',
               padding: '13px 16px',
-              minHeight: 52
+              minHeight: 54,
             }}
           >
             <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
@@ -644,7 +909,7 @@ export default function Settings() {
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  flexShrink: 0
+                  flexShrink: 0,
                 }}
               >
                 <GoogleLogo size={18} />
@@ -661,7 +926,7 @@ export default function Settings() {
                       marginTop: 1,
                       whiteSpace: 'nowrap',
                       overflow: 'hidden',
-                      textOverflow: 'ellipsis'
+                      textOverflow: 'ellipsis',
                     }}
                   >
                     {googleUser ? `${googleUser.email}` : 'Sign in for Firebase Cloud Sync'}
@@ -679,7 +944,7 @@ export default function Settings() {
                     padding: '3px 8px',
                     borderRadius: 10,
                     background: googleUser ? 'var(--ios-green)' : 'var(--fill-tertiary)',
-                    color: googleUser ? 'white' : 'var(--ios-green)'
+                    color: googleUser ? '#FFFFFF' : 'var(--label-secondary)',
                   }}
                 >
                   {googleUser ? 'Signed IN' : 'Not Linked'}
@@ -691,7 +956,7 @@ export default function Settings() {
                   height: 18,
                   color: 'var(--label-tertiary)',
                   transform: openSections['google'] ? 'rotate(180deg)' : 'rotate(0deg)',
-                  transition: 'transform 0.25s cubic-bezier(0.4, 0, 0.2, 1)'
+                  transition: 'transform 0.25s cubic-bezier(0.4, 0, 0.2, 1)',
                 }}
                 strokeWidth={2.4}
               />
@@ -699,13 +964,11 @@ export default function Settings() {
             {openSections['google'] && <div className="ios-separator with-glyph" />}
           </div>
 
-          {/* Expanded Body */}
           {openSections['google'] && (
             <div>
               {!googleUser ? (
-                /* ── NOT SIGNED IN STATE ── */
+                /* Not Signed In */
                 <div style={{ padding: '20px 16px 16px' }}>
-                  {/* Explanatory Hero Card */}
                   <div
                     style={{
                       display: 'flex',
@@ -715,7 +978,7 @@ export default function Settings() {
                       padding: '16px 12px 20px',
                       background: 'var(--fill-quaternary)',
                       borderRadius: 14,
-                      marginBottom: 16
+                      marginBottom: 16,
                     }}
                   >
                     <div
@@ -729,7 +992,7 @@ export default function Settings() {
                         alignItems: 'center',
                         justifyContent: 'center',
                         marginBottom: 12,
-                        boxShadow: '0 1px 4px rgba(0,0,0,0.06)'
+                        boxShadow: '0 1px 4px rgba(0,0,0,0.06)',
                       }}
                     >
                       <GoogleLogo size={26} />
@@ -737,12 +1000,11 @@ export default function Settings() {
                     <div style={{ fontSize: 17, fontWeight: 700, color: 'var(--label-primary)', marginBottom: 6 }}>
                       Sign In with Google
                     </div>
-                    <div style={{ fontSize: 13, color: 'var(--label-secondary)', lineHeight: 1.45, maxWidth: 300 }}>
+                    <div style={{ fontSize: 13, color: 'var(--label-secondary)', lineHeight: 1.45, maxWidth: 320 }}>
                       Connect your Google Account to back up dispatches and parties automatically with Firebase Cloud.
                     </div>
                   </div>
 
-                  {/* Native iOS Styled Google Sign In Button */}
                   <button
                     type="button"
                     onClick={handleGoogleSignIn}
@@ -761,10 +1023,8 @@ export default function Settings() {
                       fontSize: 16,
                       fontWeight: 600,
                       cursor: isSigningIn ? 'not-allowed' : 'pointer',
-                      transition: 'opacity 0.15s ease',
                       opacity: isSigningIn ? 0.75 : 1,
-                      userSelect: 'none',
-                      boxShadow: '0 1px 3px rgba(0,0,0,0.08)'
+                      boxShadow: '0 1px 3px rgba(0,0,0,0.08)',
                     }}
                   >
                     {isSigningIn ? (
@@ -779,66 +1039,10 @@ export default function Settings() {
                       </>
                     )}
                   </button>
-
-                  {/* Benefits Feature Grid */}
-                  {/* <div style={{ marginTop: 20, display: 'flex', flexDirection: 'column', gap: 12 }}>
-                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
-                      <div
-                        style={{
-                          width: 32,
-                          height: 32,
-                          borderRadius: 8,
-                          background: 'rgba(0, 122, 255, 0.12)',
-                          color: 'var(--ios-blue)',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          flexShrink: 0
-                        }}
-                      >
-                        <Cloud style={{ width: 17, height: 17 }} />
-                      </div>
-                      <div style={{ flex: 1 }}>
-                        <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--label-primary)' }}>
-                          Real-time Firebase Sync
-                        </div>
-                        <div style={{ fontSize: 12, color: 'var(--label-secondary)', marginTop: 2 }}>
-                          Dispatches, contracts, and ledger balances synced directly to the cloud.
-                        </div>
-                      </div>
-                    </div>
-
-                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
-                      <div
-                        style={{
-                          width: 32,
-                          height: 32,
-                          borderRadius: 8,
-                          background: 'rgba(52, 199, 89, 0.12)',
-                          color: 'var(--ios-green)',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          flexShrink: 0
-                        }}
-                      >
-                        <Smartphone style={{ width: 17, height: 17 }} />
-                      </div>
-                      <div style={{ flex: 1 }}>
-                        <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--label-primary)' }}>
-                          Multi-Device Access
-                        </div>
-                        <div style={{ fontSize: 12, color: 'var(--label-secondary)', marginTop: 2 }}>
-                          Open Factory Ledger on your mobile phone, laptop, or tablet anytime.
-                        </div>
-                      </div>
-                    </div>
-                  </div> */}
                 </div>
               ) : (
-                /* ── SIGNED IN STATE ── */
+                /* Signed In */
                 <div>
-                  {/* User Profile Cell */}
                   <div className="ios-cell" style={{ cursor: 'default', padding: '14px 16px' }}>
                     <div
                       style={{
@@ -854,7 +1058,7 @@ export default function Settings() {
                         fontWeight: 700,
                         marginRight: 12,
                         flexShrink: 0,
-                        overflow: 'hidden'
+                        overflow: 'hidden',
                       }}
                     >
                       {googleUser.photoUrl ? (
@@ -880,31 +1084,18 @@ export default function Settings() {
                                 ? 'rgba(255, 59, 48, 0.15)'
                                 : syncStatus === 'syncing' || isSyncing
                                   ? 'rgba(0, 122, 255, 0.15)'
-                                  : syncStatus === 'pending'
-                                    ? 'rgba(255, 149, 0, 0.15)'
-                                    : 'rgba(52, 199, 89, 0.15)',
+                                  : 'rgba(52, 199, 89, 0.15)',
                             color: !isOnline
                               ? 'var(--ios-orange)'
                               : syncStatus === 'error'
                                 ? 'var(--ios-red)'
                                 : syncStatus === 'syncing' || isSyncing
                                   ? 'var(--ios-blue)'
-                                  : syncStatus === 'pending'
-                                    ? 'var(--ios-orange)'
-                                    : 'var(--ios-green)',
+                                  : 'var(--ios-green)',
                             textTransform: 'uppercase',
-                            letterSpacing: 0.4
                           }}
                         >
-                          {!isOnline
-                            ? 'Offline (Local)'
-                            : syncStatus === 'syncing' || isSyncing
-                              ? 'Syncing…'
-                              : syncStatus === 'pending'
-                                ? 'Pending Sync'
-                                : syncStatus === 'error'
-                                  ? 'Sync Issue'
-                                  : 'Firebase Synced'}
+                          {!isOnline ? 'Offline' : syncStatus === 'syncing' || isSyncing ? 'Syncing…' : 'Synced'}
                         </span>
                       </div>
                       <div style={{ fontSize: 13, color: 'var(--label-secondary)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis' }}>
@@ -914,7 +1105,7 @@ export default function Settings() {
                     <div className="ios-separator with-glyph" />
                   </div>
 
-                  {/* Auto Sync Toggle Row */}
+                  {/* Auto Sync Toggle */}
                   <div
                     className="ios-cell"
                     onClick={() => {
@@ -926,12 +1117,12 @@ export default function Settings() {
                     style={{ cursor: 'pointer' }}
                   >
                     <div className="ios-glyph-badge" style={{ background: 'var(--ios-blue)' }}>
-                      <Cloud style={{ width: 18, height: 18 }} />
+                      <RefreshCw size={18} color="#FFFFFF" />
                     </div>
                     <div style={{ flex: 1 }}>
                       <span className="ios-cell-label">Automatic Cloud Backup</span>
                       <div style={{ fontSize: 12, color: 'var(--label-secondary)' }}>
-                        Write-through sync on every change
+                        Write-through sync on every entry
                       </div>
                     </div>
                     <div
@@ -941,7 +1132,7 @@ export default function Settings() {
                         borderRadius: 31,
                         background: autoSyncEnabled ? 'var(--ios-green)' : 'var(--fill-primary)',
                         position: 'relative',
-                        transition: 'background 0.25s ease'
+                        transition: 'background 0.25s ease',
                       }}
                     >
                       <div
@@ -954,47 +1145,45 @@ export default function Settings() {
                           top: 2,
                           left: autoSyncEnabled ? 22 : 2,
                           boxShadow: '0 2px 5px rgba(0,0,0,0.2)',
-                          transition: 'left 0.25s ease'
+                          transition: 'left 0.25s ease',
                         }}
                       />
                     </div>
                     <div className="ios-separator with-glyph" />
                   </div>
 
-                  {/* Manual Cloud Sync (Upload) Row */}
-                  <div className="ios-cell" onClick={handleManualSync} style={{ cursor: isSyncing || syncStatus === 'syncing' ? 'default' : 'pointer' }}>
+                  {/* Manual Sync Row */}
+                  <div className="ios-cell" onClick={handleManualSync} style={{ cursor: isSyncing ? 'default' : 'pointer' }}>
                     <div className="ios-glyph-badge" style={{ background: 'var(--ios-teal)' }}>
-                      <RefreshCw className={isSyncing || syncStatus === 'syncing' ? 'animate-spin' : ''} style={{ width: 18, height: 18 }} />
+                      <RefreshCw className={isSyncing ? 'animate-spin' : ''} size={18} color="#FFFFFF" />
                     </div>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <span className="ios-cell-label">Back Up to Cloud</span>
                       <div style={{ fontSize: 12, color: 'var(--label-secondary)', marginTop: 1 }}>
-                        {isSyncing || syncStatus === 'syncing'
-                          ? 'Syncing with Firebase Cloud…'
-                          : !isOnline
-                            ? 'Offline: Changes queued locally'
-                            : hasPendingChanges
-                              ? 'Local changes waiting to sync'
-                              : lastSyncTime
-                                ? `Last synced: ${new Date(lastSyncTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
-                                : 'Upload current ledgers & parties'}
+                        {isSyncing
+                          ? 'Syncing with Firebase…'
+                          : hasPendingChanges
+                            ? 'Local changes waiting to sync'
+                            : lastSyncTime
+                              ? `Last: ${new Date(lastSyncTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+                              : 'Upload ledgers to Firebase'}
                       </div>
                     </div>
                     <button
                       type="button"
-                      disabled={isSyncing || syncStatus === 'syncing'}
+                      disabled={isSyncing}
                       style={{
                         border: 'none',
                         background: 'var(--ios-blue)',
-                        color: 'white',
+                        color: '#FFFFFF',
                         padding: '6px 14px',
                         borderRadius: 14,
                         fontSize: 13,
                         fontWeight: 600,
-                        cursor: isSyncing || syncStatus === 'syncing' ? 'not-allowed' : 'pointer'
+                        cursor: isSyncing ? 'not-allowed' : 'pointer',
                       }}
                     >
-                      {isSyncing || syncStatus === 'syncing' ? 'Syncing…' : 'Sync Now'}
+                      {isSyncing ? 'Syncing…' : 'Sync Now'}
                     </button>
                     <div className="ios-separator with-glyph" />
                   </div>
@@ -1002,7 +1191,7 @@ export default function Settings() {
                   {/* Restore from Cloud Row */}
                   <div className="ios-cell" onClick={handleCloudRestore} style={{ cursor: isRestoringFromCloud ? 'default' : 'pointer' }}>
                     <div className="ios-glyph-badge" style={{ background: 'var(--ios-purple)' }}>
-                      <Download className={isRestoringFromCloud ? 'animate-pulse' : ''} style={{ width: 18, height: 18 }} />
+                      <Download size={18} color="#FFFFFF" />
                     </div>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <span className="ios-cell-label">Restore from Cloud</span>
@@ -1021,7 +1210,7 @@ export default function Settings() {
                         borderRadius: 14,
                         fontSize: 13,
                         fontWeight: 600,
-                        cursor: isRestoringFromCloud ? 'not-allowed' : 'pointer'
+                        cursor: isRestoringFromCloud ? 'not-allowed' : 'pointer',
                       }}
                     >
                       {isRestoringFromCloud ? 'Restoring…' : 'Restore'}
@@ -1032,7 +1221,7 @@ export default function Settings() {
                   {/* Sign Out Row */}
                   <div className="ios-cell" onClick={handleGoogleSignOut} style={{ cursor: 'pointer' }}>
                     <div className="ios-glyph-badge" style={{ background: 'var(--ios-red)' }}>
-                      <LogOut style={{ width: 18, height: 18 }} />
+                      <LogOut size={18} color="#FFFFFF" />
                     </div>
                     <span className="ios-cell-label" style={{ color: 'var(--ios-red)' }}>
                       Sign Out of Google
@@ -1043,17 +1232,281 @@ export default function Settings() {
             </div>
           )}
         </div>
-        {/* {openSections['google'] && (
-          <div className="ios-group-footnote">
-            Only Google Account authentication is supported for simplified single-sign-on. No passwords or email registrations required.
-          </div>
-        )}  */}
       </div>
 
-      {/* ── Section: Business Profile ── */}
+      {/* ── ACCORDION 2: Security & App Lock (Fingerprint + Passcode) ── */}
       <div className="ios-group" style={{ marginBottom: 14 }}>
         <div className="ios-card-grouped" style={{ overflow: 'hidden' }}>
-          {/* Collapsible Header */}
+          <div
+            className="ios-cell"
+            onClick={() => toggleSection('security')}
+            style={{
+              cursor: 'pointer',
+              userSelect: 'none',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              padding: '13px 16px',
+              minHeight: 54,
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
+              <div className="ios-glyph-badge" style={{ background: 'var(--ios-indigo)', flexShrink: 0 }}>
+                {appLockActive ? <Fingerprint size={19} /> : <Lock size={18} />}
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+                <span style={{ fontSize: 16, fontWeight: 600, color: 'var(--label-primary)', letterSpacing: '-0.2px' }}>
+                  Security & App Lock
+                </span>
+                {!openSections['security'] && (
+                  <span style={{ fontSize: 12, color: appLockActive ? 'var(--ios-green)' : 'var(--label-secondary)', marginTop: 1 }}>
+                    {appLockActive
+                      ? bioActive
+                        ? `Active · ${pinLength}-Digit PIN + Fingerprint Unlock`
+                        : `Active · ${pinLength}-Digit Passcode PIN`
+                      : 'Disabled · Protect ledgers with 5-digit PIN'}
+                  </span>
+                )}
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+              {!openSections['security'] && (
+                <span
+                  style={{
+                    fontSize: 12,
+                    fontWeight: 600,
+                    padding: '3px 8px',
+                    borderRadius: 10,
+                    background: appLockActive ? 'var(--ios-green)' : 'var(--fill-tertiary)',
+                    color: appLockActive ? '#FFFFFF' : 'var(--label-secondary)',
+                  }}
+                >
+                  {appLockActive ? 'Locked' : 'Off'}
+                </span>
+              )}
+              <ChevronDown
+                style={{
+                  width: 18,
+                  height: 18,
+                  color: 'var(--label-tertiary)',
+                  transform: openSections['security'] ? 'rotate(180deg)' : 'rotate(0deg)',
+                  transition: 'transform 0.25s cubic-bezier(0.4, 0, 0.2, 1)',
+                }}
+                strokeWidth={2.4}
+              />
+            </div>
+            {openSections['security'] && <div className="ios-separator with-glyph" />}
+          </div>
+
+          {openSections['security'] && (
+            <div>
+              {/* Require App Lock Toggle */}
+              <div className="ios-cell" onClick={handleToggleAppLock} style={{ cursor: 'pointer' }}>
+                <div className="ios-glyph-badge" style={{ background: appLockActive ? 'var(--ios-green)' : 'var(--fill-secondary)' }}>
+                  <Lock size={18} color="#FFFFFF" />
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <span className="ios-cell-label">Require App Passcode</span>
+                  <div style={{ fontSize: 12, color: 'var(--label-secondary)', marginTop: 1 }}>
+                    Locks app when closed or backgrounded
+                  </div>
+                </div>
+                {/* iOS Switch */}
+                <div
+                  style={{
+                    width: 51,
+                    height: 31,
+                    borderRadius: 31,
+                    background: appLockActive ? 'var(--ios-green)' : 'var(--fill-primary)',
+                    position: 'relative',
+                    transition: 'background 0.25s ease',
+                  }}
+                >
+                  <div
+                    style={{
+                      width: 27,
+                      height: 27,
+                      borderRadius: '50%',
+                      background: '#FFFFFF',
+                      position: 'absolute',
+                      top: 2,
+                      left: appLockActive ? 22 : 2,
+                      boxShadow: '0 2px 5px rgba(0,0,0,0.2)',
+                      transition: 'left 0.25s ease',
+                    }}
+                  />
+                </div>
+                <div className="ios-separator with-glyph" />
+              </div>
+
+              {appLockActive && (
+                <>
+                  {/* Fingerprint / Biometric Toggle */}
+                  <div className="ios-cell" onClick={handleToggleBiometrics} style={{ cursor: 'pointer' }}>
+                    <div className="ios-glyph-badge" style={{ background: 'var(--ios-blue)' }}>
+                      <Fingerprint size={19} color="#FFFFFF" />
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <span className="ios-cell-label">Fingerprint / Biometric Unlock</span>
+                      <div style={{ fontSize: 12, color: 'var(--label-secondary)', marginTop: 1 }}>
+                        {isBioHardwareAvailable ? 'Device sensor available' : 'Biometric authentication on supported devices'}
+                      </div>
+                    </div>
+                    {/* iOS Switch */}
+                    <div
+                      style={{
+                        width: 51,
+                        height: 31,
+                        borderRadius: 31,
+                        background: bioActive ? 'var(--ios-green)' : 'var(--fill-primary)',
+                        position: 'relative',
+                        transition: 'background 0.25s ease',
+                      }}
+                    >
+                      <div
+                        style={{
+                          width: 27,
+                          height: 27,
+                          borderRadius: '50%',
+                          background: '#FFFFFF',
+                          position: 'absolute',
+                          top: 2,
+                          left: bioActive ? 22 : 2,
+                          boxShadow: '0 2px 5px rgba(0,0,0,0.2)',
+                          transition: 'left 0.25s ease',
+                        }}
+                      />
+                    </div>
+                    <div className="ios-separator with-glyph" />
+                  </div>
+
+                  {/* Change / Upgrade Passcode Row */}
+                  <div
+                    className="ios-cell"
+                    onClick={() => {
+                      playPopSound();
+                      setIsChangingPasscode(true);
+                      setShowPasscodeModal(true);
+                    }}
+                    style={{ cursor: 'pointer' }}
+                  >
+                    <div className="ios-glyph-badge" style={{ background: pinLength === 4 ? '#FF9F0A' : 'var(--ios-orange)' }}>
+                      <ShieldCheck size={18} color="#FFFFFF" />
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <span className="ios-cell-label">
+                        {pinLength === 4 ? 'Upgrade to 5-Digit Passcode' : 'Change 5-Digit Passcode'}
+                      </span>
+                      <div style={{ fontSize: 12, color: pinLength === 4 ? '#FF9F0A' : 'var(--label-secondary)', marginTop: 1 }}>
+                        {pinLength === 4 ? 'Using legacy 4-digit PIN · Tap to upgrade to 5 digits' : 'Synced securely to Cloud Firestore'}
+                      </div>
+                    </div>
+                    <span style={{ fontSize: 14, color: 'var(--ios-blue)', fontWeight: 600 }}>
+                      {pinLength === 4 ? 'Upgrade' : 'Update'}
+                    </span>
+                    <div className="ios-separator with-glyph" />
+                  </div>
+
+                  {/* Master Recovery Key Row */}
+                  <div
+                    className="ios-cell"
+                    onClick={() => {
+                      playPopSound();
+                      setShowRecoveryKeyViewer(true);
+                    }}
+                    style={{ cursor: 'pointer' }}
+                  >
+                    <div className="ios-glyph-badge" style={{ background: '#FF9F0A' }}>
+                      <KeyRound size={18} color="#FFFFFF" />
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <span className="ios-cell-label">Master Recovery Key</span>
+                      <div style={{ fontSize: 12, color: 'var(--label-secondary)', marginTop: 1 }}>
+                        Offline key to reset forgotten PIN · Tap to view
+                      </div>
+                    </div>
+                    <span style={{ fontSize: 14, color: 'var(--ios-blue)', fontWeight: 600 }}>
+                      View Key
+                    </span>
+                    <div className="ios-separator with-glyph" />
+                  </div>
+
+                  {/* Auto-Lock Timeout Row */}
+                  <div className="ios-cell" style={{ cursor: 'default', flexDirection: 'column', alignItems: 'flex-start', padding: '12px 16px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', marginBottom: 10 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                        <div className="ios-glyph-badge" style={{ background: 'var(--ios-teal)' }}>
+                          <Sliders size={18} color="#FFFFFF" />
+                        </div>
+                        <div>
+                          <div className="ios-cell-label">Auto-Lock Interval</div>
+                          <div style={{ fontSize: 12, color: 'var(--label-secondary)' }}>Lock app when inactive</div>
+                        </div>
+                      </div>
+                    </div>
+                    {/* Segmented Picker */}
+                    <div
+                      style={{
+                        width: '100%',
+                        display: 'flex',
+                        background: 'var(--fill-tertiary)',
+                        borderRadius: 10,
+                        padding: 3,
+                        gap: 4,
+                      }}
+                    >
+                      {[
+                        { sec: 0, label: 'Immediately' },
+                        { sec: 60, label: '1 Minute' },
+                        { sec: 300, label: '5 Minutes' },
+                      ].map((item) => {
+                        const active = lockTimeoutSec === item.sec;
+                        return (
+                          <button
+                            key={item.sec}
+                            type="button"
+                            onClick={() => handleTimeoutChange(item.sec)}
+                            style={{
+                              flex: 1,
+                              padding: '7px 4px',
+                              borderRadius: 8,
+                              border: 'none',
+                              background: active ? 'var(--bg-card)' : 'transparent',
+                              color: active ? 'var(--label-primary)' : 'var(--label-secondary)',
+                              fontSize: 13,
+                              fontWeight: active ? 600 : 500,
+                              cursor: 'pointer',
+                              boxShadow: active ? '0 1px 3px rgba(0,0,0,0.08)' : 'none',
+                            }}
+                          >
+                            {item.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <div className="ios-separator with-glyph" style={{ marginTop: 8 }} />
+                  </div>
+
+                  {/* Test Lock Screen Action 
+                  <div className="ios-cell" onClick={handleTestLockNow} style={{ cursor: 'pointer' }}>
+                    <div className="ios-glyph-badge" style={{ background: 'var(--ios-blue)' }}>
+                      <Sparkles size={18} color="#FFFFFF" />
+                    </div>
+                    <span className="ios-cell-label" style={{ color: 'var(--ios-blue)', fontWeight: 600 }}>
+                      Lock App Now (Test Security)
+                    </span>
+                  </div> */}
+                </>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ── ACCORDION 3: Business Profile & Invoicing ── */}
+      <div className="ios-group" style={{ marginBottom: 14 }}>
+        <div className="ios-card-grouped" style={{ overflow: 'hidden' }}>
           <div
             className="ios-cell"
             onClick={() => toggleSection('business')}
@@ -1064,29 +1517,20 @@ export default function Settings() {
               alignItems: 'center',
               justifyContent: 'space-between',
               padding: '13px 16px',
-              minHeight: 52
+              minHeight: 54,
             }}
           >
             <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
               <div className="ios-glyph-badge" style={{ background: 'var(--ios-blue)', flexShrink: 0 }}>
-                <Building2 style={{ width: 18, height: 18, color: '#FFFFFF' }} />
+                <Building2 size={18} color="#FFFFFF" />
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
                 <span style={{ fontSize: 16, fontWeight: 600, color: 'var(--label-primary)', letterSpacing: '-0.2px' }}>
-                  Business Profile
+                  Business Profile & Branding
                 </span>
                 {!openSections['business'] && (
-                  <span
-                    style={{
-                      fontSize: 12,
-                      color: 'var(--label-secondary)',
-                      marginTop: 1,
-                      whiteSpace: 'nowrap',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis'
-                    }}
-                  >
-                    {settings.businessName || 'Contact, Tax ID & Invoicing'}
+                  <span style={{ fontSize: 12, color: 'var(--label-secondary)', marginTop: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {settings.businessName || 'Trader Name, NTN & Signatures'}
                   </span>
                 )}
               </div>
@@ -1099,7 +1543,7 @@ export default function Settings() {
                   height: 18,
                   color: 'var(--label-tertiary)',
                   transform: openSections['business'] ? 'rotate(180deg)' : 'rotate(0deg)',
-                  transition: 'transform 0.25s cubic-bezier(0.4, 0, 0.2, 1)'
+                  transition: 'transform 0.25s cubic-bezier(0.4, 0, 0.2, 1)',
                 }}
                 strokeWidth={2.4}
               />
@@ -1107,29 +1551,28 @@ export default function Settings() {
             {openSections['business'] && <div className="ios-separator with-glyph" />}
           </div>
 
-          {/* Expanded Body */}
           {openSections['business'] && (
             <form onSubmit={handleSave}>
-              {/* User Name */}
+              {/* Trader Name */}
               <div className="ios-cell" style={{ cursor: 'default' }}>
                 <div className="ios-glyph-badge" style={{ background: 'var(--ios-blue)' }}>
-                  <User style={{ width: 18, height: 18 }} />
+                  <User size={18} color="#FFFFFF" />
                 </div>
                 <span className="ios-cell-label">Trader Name</span>
                 <input
                   type="text"
                   value={settings.userName}
                   onChange={(e) => handleChange('userName', e.target.value)}
+                  onBlur={handleAutoSave}
                   placeholder="Your name"
                   style={{
                     border: 'none',
                     background: 'transparent',
-                    fontSize: 17,
+                    fontSize: 16,
                     textAlign: 'right',
                     color: 'var(--label-primary)',
                     outline: 'none',
-                    fontFamily: 'var(--font-system)',
-                    maxWidth: 180
+                    maxWidth: 200,
                   }}
                 />
                 <div className="ios-separator with-glyph" />
@@ -1138,104 +1581,127 @@ export default function Settings() {
               {/* Business Name */}
               <div className="ios-cell" style={{ cursor: 'default' }}>
                 <div className="ios-glyph-badge" style={{ background: 'var(--ios-orange)' }}>
-                  <Building2 style={{ width: 18, height: 18 }} />
+                  <Building2 size={18} color="#FFFFFF" />
                 </div>
                 <span className="ios-cell-label">Business Name</span>
                 <input
                   type="text"
                   value={settings.businessName}
                   onChange={(e) => handleChange('businessName', e.target.value)}
+                  onBlur={handleAutoSave}
                   placeholder="Enterprise name"
                   style={{
                     border: 'none',
                     background: 'transparent',
-                    fontSize: 17,
+                    fontSize: 16,
                     textAlign: 'right',
                     color: 'var(--label-primary)',
                     outline: 'none',
-                    fontFamily: 'var(--font-system)',
-                    maxWidth: 180
+                    maxWidth: 200,
                   }}
                 />
                 <div className="ios-separator with-glyph" />
               </div>
 
-              {/* NTN / Tax ID */}
+              {/* Account Category Selector (Custom iOS Dropdown) */}
+              <div style={{ position: 'relative' }}>
+                <IOSSelect
+                  glyphBadge={
+                    <div className="ios-glyph-badge" style={{ background: 'var(--ios-purple)' }}>
+                      <Briefcase size={18} color="#FFFFFF" />
+                    </div>
+                  }
+                  label="Trade Entity"
+                  description="Shows on statements"
+                  value={settings.accountType || 'Commercial Coal Trader'}
+                  onChange={async (val) => {
+                    handleChange('accountType', val);
+                    await saveSettings({ ...settings, accountType: val });
+                    showToast(`Entity set to ${val}`);
+                  }}
+                  options={ACCOUNT_TYPE_OPTIONS}
+                  title="Select Business Entity Type"
+                  searchable={false}
+                />
+                <div className="ios-separator with-glyph" />
+              </div>
+
+              {/* NTN / STRN 
               <div className="ios-cell" style={{ cursor: 'default' }}>
                 <div className="ios-glyph-badge" style={{ background: 'var(--ios-indigo)' }}>
-                  <FileText style={{ width: 18, height: 18 }} />
+                  <FileText size={18} color="#FFFFFF" />
                 </div>
                 <span className="ios-cell-label">NTN / STRN #</span>
                 <input
                   type="text"
                   value={settings.ntnNumber || ''}
                   onChange={(e) => handleChange('ntnNumber', e.target.value)}
+                  onBlur={handleAutoSave}
                   placeholder="e.g. 7482910-3"
                   style={{
                     border: 'none',
                     background: 'transparent',
-                    fontSize: 17,
+                    fontSize: 16,
                     textAlign: 'right',
                     color: 'var(--label-primary)',
                     outline: 'none',
-                    fontFamily: 'var(--font-system)',
-                    maxWidth: 180
+                    maxWidth: 200,
                   }}
                 />
                 <div className="ios-separator with-glyph" />
-              </div>
+              </div> */}
 
               {/* Direct Phone */}
               <div className="ios-cell" style={{ cursor: 'default' }}>
                 <div className="ios-glyph-badge" style={{ background: 'var(--ios-green)' }}>
-                  <Phone style={{ width: 18, height: 18 }} />
+                  <Phone size={18} color="#FFFFFF" />
                 </div>
                 <span className="ios-cell-label">Direct Phone</span>
                 <input
                   type="tel"
                   value={settings.phoneNumber}
                   onChange={(e) => handleChange('phoneNumber', e.target.value)}
-                  placeholder="Phone number"
+                  onBlur={handleAutoSave}
+                  placeholder="0300-1234567"
                   style={{
                     border: 'none',
                     background: 'transparent',
-                    fontSize: 17,
+                    fontSize: 16,
                     textAlign: 'right',
                     color: 'var(--label-primary)',
                     outline: 'none',
-                    fontFamily: 'var(--font-system)',
-                    maxWidth: 180
+                    maxWidth: 200,
                   }}
                 />
                 <div className="ios-separator with-glyph" />
               </div>
 
-              {/* Office / Depot Address */}
+              {/* Office / Yard Address */}
               <div className="ios-cell" style={{ cursor: 'default' }}>
                 <div className="ios-glyph-badge" style={{ background: 'var(--ios-teal)' }}>
-                  <MapPin style={{ width: 18, height: 18 }} />
+                  <MapPin size={18} color="#FFFFFF" />
                 </div>
-                <span className="ios-cell-label">Office / Yard</span>
+                <span className="ios-cell-label">Address</span>
                 <input
                   type="text"
                   value={settings.companyAddress || ''}
                   onChange={(e) => handleChange('companyAddress', e.target.value)}
+                  onBlur={handleAutoSave}
                   placeholder="Address or Plot #"
                   style={{
                     border: 'none',
                     background: 'transparent',
-                    fontSize: 17,
+                    fontSize: 16,
                     textAlign: 'right',
                     color: 'var(--label-primary)',
                     outline: 'none',
-                    fontFamily: 'var(--font-system)',
-                    maxWidth: 180
+                    maxWidth: 200,
                   }}
                 />
                 <div className="ios-separator with-glyph" />
               </div>
 
-              {/* Company Logo Row (exact Day-2-Day Kotlin design) */}
+              {/* Company Logo Row */}
               <div
                 className="ios-cell"
                 onClick={() => {
@@ -1246,61 +1712,47 @@ export default function Settings() {
                 style={{ cursor: settings.logoUrl ? 'default' : 'pointer' }}
               >
                 <div className="ios-glyph-badge" style={{ background: 'var(--ios-red)' }}>
-                  <Image style={{ width: 18, height: 18 }} />
+                  <Image size={18} color="#FFFFFF" />
                 </div>
-                <span className="ios-cell-label">Company Logo</span>
+                <div style={{ flex: 1 }}>
+                  <span className="ios-cell-label">Company Logo</span>
+                  <div style={{ fontSize: 12, color: 'var(--label-secondary)' }}>Vouchers & PDF receipts</div>
+                </div>
 
                 {settings.logoUrl || isLogoUploading ? (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                     <div
                       onClick={(e) => {
                         e.stopPropagation();
                         logoInputRef.current?.click();
                       }}
-                      title="Change company logo"
+                      title="Change logo"
                       style={{
-                        width: 40,
-                        height: 40,
-                        borderRadius: 8,
-                        border: '0.5px solid var(--separator-opaque)',
+                        width: 42,
+                        height: 42,
+                        borderRadius: 10,
+                        border: '1px solid var(--separator-opaque)',
                         background: 'var(--fill-tertiary)',
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'center',
                         overflow: 'hidden',
                         cursor: 'pointer',
-                        position: 'relative',
-                        boxShadow: '0 1px 3px rgba(0,0,0,0.06)'
                       }}
                     >
                       {settings.logoUrl && (
-                        <img
-                          src={settings.logoUrl}
-                          alt="Logo"
-                          style={{
-                            width: '100%',
-                            height: '100%',
-                            objectFit: 'contain',
-                            opacity: isLogoUploading ? 0.35 : 1
-                          }}
-                        />
+                        <img src={settings.logoUrl} alt="Logo" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
                       )}
-                      {isLogoUploading && (
-                        <Loader2
-                          className="animate-spin"
-                          style={{
-                            position: 'absolute',
-                            width: 18,
-                            height: 18,
-                            color: 'var(--ios-blue)'
-                          }}
-                        />
-                      )}
+                      {isLogoUploading && <Loader2 className="animate-spin" size={18} color="var(--ios-blue)" />}
                     </div>
 
                     <button
                       type="button"
-                      onClick={handleRemoveLogo}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        playPopSound();
+                        setShowRemoveLogoConfirm(true);
+                      }}
                       title="Remove logo"
                       style={{
                         width: 36,
@@ -1313,10 +1765,9 @@ export default function Settings() {
                         justifyContent: 'center',
                         cursor: 'pointer',
                         color: 'var(--ios-red)',
-                        transition: 'background-color 0.15s'
                       }}
                     >
-                      <Trash2 style={{ width: 18, height: 18 }} />
+                      <Trash2 size={18} />
                     </button>
                   </div>
                 ) : (
@@ -1330,7 +1781,6 @@ export default function Settings() {
                       fontSize: 16,
                       fontWeight: 600,
                       cursor: 'pointer',
-                      padding: 0
                     }}
                   >
                     Upload
@@ -1339,7 +1789,7 @@ export default function Settings() {
                 <div className="ios-separator with-glyph" />
               </div>
 
-              {/* Signature Row (exact Day-2-Day Kotlin design) */}
+              {/* Authorized Signature Row */}
               <div
                 className="ios-cell"
                 onClick={() => {
@@ -1350,12 +1800,15 @@ export default function Settings() {
                 style={{ cursor: settings.signatureUrl ? 'default' : 'pointer' }}
               >
                 <div className="ios-glyph-badge" style={{ background: 'var(--ios-purple)' }}>
-                  <PenLine style={{ width: 18, height: 18 }} />
+                  <PenLine size={18} color="#FFFFFF" />
                 </div>
-                <span className="ios-cell-label">Signature</span>
+                <div style={{ flex: 1 }}>
+                  <span className="ios-cell-label">Authorized Signature</span>
+                  <div style={{ fontSize: 12, color: 'var(--label-secondary)' }}>Stamped dispatch bills</div>
+                </div>
 
                 {settings.signatureUrl || isSignatureUploading ? (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                     <div
                       onClick={(e) => {
                         e.stopPropagation();
@@ -1363,48 +1816,31 @@ export default function Settings() {
                       }}
                       title="Change signature"
                       style={{
-                        width: 48,
-                        height: 36,
-                        borderRadius: 8,
-                        border: '0.5px solid var(--separator-opaque)',
+                        width: 52,
+                        height: 38,
+                        borderRadius: 10,
+                        border: '1px solid var(--separator-opaque)',
                         background: 'var(--fill-tertiary)',
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'center',
                         overflow: 'hidden',
                         cursor: 'pointer',
-                        position: 'relative',
-                        boxShadow: '0 1px 3px rgba(0,0,0,0.06)'
                       }}
                     >
                       {settings.signatureUrl && (
-                        <img
-                          src={settings.signatureUrl}
-                          alt="Signature"
-                          style={{
-                            width: '100%',
-                            height: '100%',
-                            objectFit: 'contain',
-                            opacity: isSignatureUploading ? 0.35 : 1
-                          }}
-                        />
+                        <img src={settings.signatureUrl} alt="Signature" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
                       )}
-                      {isSignatureUploading && (
-                        <Loader2
-                          className="animate-spin"
-                          style={{
-                            position: 'absolute',
-                            width: 18,
-                            height: 18,
-                            color: 'var(--ios-blue)'
-                          }}
-                        />
-                      )}
+                      {isSignatureUploading && <Loader2 className="animate-spin" size={18} color="var(--ios-blue)" />}
                     </div>
 
                     <button
                       type="button"
-                      onClick={handleRemoveSignature}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        playPopSound();
+                        setShowRemoveSignatureConfirm(true);
+                      }}
                       title="Remove signature"
                       style={{
                         width: 36,
@@ -1417,10 +1853,9 @@ export default function Settings() {
                         justifyContent: 'center',
                         cursor: 'pointer',
                         color: 'var(--ios-red)',
-                        transition: 'background-color 0.15s'
                       }}
                     >
-                      <Trash2 style={{ width: 18, height: 18 }} />
+                      <Trash2 size={18} />
                     </button>
                   </div>
                 ) : (
@@ -1434,7 +1869,6 @@ export default function Settings() {
                       fontSize: 16,
                       fontWeight: 600,
                       cursor: 'pointer',
-                      padding: 0
                     }}
                   >
                     Upload
@@ -1442,30 +1876,20 @@ export default function Settings() {
                 )}
               </div>
 
-              {/* Save button */}
+              {/* Save Button */}
               <div style={{ padding: '12px 16px', background: 'var(--bg-card)' }}>
-                <button
-                  type="submit"
-                  className="ios-btn ios-btn-primary"
-                  style={{ width: '100%' }}
-                >
-                  {saved ? 'Changes Saved!' : 'Save Profile Changes'}
+                <button type="submit" className="ios-btn ios-btn-primary" style={{ width: '100%' }}>
+                  {saved ? 'Changes Saved!' : 'Save Business Profile'}
                 </button>
               </div>
             </form>
           )}
         </div>
-        {/* {openSections['business'] && (
-          <div className="ios-group-footnote">
-            Your name, NTN, and business credentials appear on generated WhatsApp statements and dispatch settlement vouchers.
-          </div>
-        )} */}
       </div>
 
-      {/* ── Section: Appearance & iOS Theme ── */}
+      {/* ── ACCORDION 4: Appearance & Sound ── */}
       <div className="ios-group" style={{ marginBottom: 14 }}>
         <div className="ios-card-grouped" style={{ overflow: 'hidden' }}>
-          {/* Collapsible Header */}
           <div
             className="ios-cell"
             onClick={() => toggleSection('appearance')}
@@ -1476,16 +1900,16 @@ export default function Settings() {
               alignItems: 'center',
               justifyContent: 'space-between',
               padding: '13px 16px',
-              minHeight: 52
+              minHeight: 54,
             }}
           >
             <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
               <div className="ios-glyph-badge" style={{ background: 'var(--ios-indigo)', flexShrink: 0 }}>
-                <Moon style={{ width: 18, height: 18, color: '#FFFFFF' }} />
+                <Moon size={18} color="#FFFFFF" />
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
                 <span style={{ fontSize: 16, fontWeight: 600, color: 'var(--label-primary)', letterSpacing: '-0.2px' }}>
-                  Appearance
+                  Appearance & Sound
                 </span>
                 {!openSections['appearance'] && (
                   <span style={{ fontSize: 12, color: 'var(--label-secondary)', marginTop: 1 }}>
@@ -1493,7 +1917,8 @@ export default function Settings() {
                       ? `System (${systemPrefersDark ? 'Dark' : 'Light'})`
                       : settings.theme === 'dark'
                         ? 'Dark Mode'
-                        : 'Light Mode'}
+                        : 'Light Mode'}{' '}
+                    · {soundEnabled ? 'Audio Chimes On' : 'Muted'}
                   </span>
                 )}
               </div>
@@ -1506,7 +1931,7 @@ export default function Settings() {
                   height: 18,
                   color: 'var(--label-tertiary)',
                   transform: openSections['appearance'] ? 'rotate(180deg)' : 'rotate(0deg)',
-                  transition: 'transform 0.25s cubic-bezier(0.4, 0, 0.2, 1)'
+                  transition: 'transform 0.25s cubic-bezier(0.4, 0, 0.2, 1)',
                 }}
                 strokeWidth={2.4}
               />
@@ -1514,139 +1939,117 @@ export default function Settings() {
             {openSections['appearance'] && <div className="ios-separator with-glyph" />}
           </div>
 
-          {/* Expanded Body */}
           {openSections['appearance'] && (
             <div>
-              {/* System (Device Default) Mode */}
-              <div
-                className="ios-cell"
-                onClick={() => handleThemeChange('system')}
-                style={{ cursor: 'pointer' }}
-              >
-                <div className="ios-glyph-badge" style={{ background: 'var(--ios-teal, #30B0C7)' }}>
-                  <Smartphone style={{ width: 18, height: 18, color: '#FFFFFF' }} />
+              {/* iOS 18 Segmented Theme Switcher */}
+              <div style={{ padding: '16px 16px 12px', background: 'var(--bg-card)' }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--label-secondary)', marginBottom: 8 }}>
+                  DISPLAY THEME
                 </div>
-                <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
-                  <span className="ios-cell-label">System</span>
-                  <span style={{ fontSize: 12, color: 'var(--label-secondary)', marginTop: 1 }}>
-                    Matches device's Mode - {systemPrefersDark ? 'Dark' : 'Light'}
-                  </span>
+                <div
+                  style={{
+                    display: 'flex',
+                    background: 'var(--fill-tertiary)',
+                    borderRadius: 12,
+                    padding: 3,
+                    gap: 4,
+                  }}
+                >
+                  {[
+                    { id: 'system', label: 'System', icon: Smartphone },
+                    { id: 'light', label: 'Light', icon: Sun },
+                    { id: 'dark', label: 'Dark', icon: Moon },
+                  ].map((item) => {
+                    const active = settings.theme === item.id;
+                    const IconComp = item.icon;
+                    return (
+                      <button
+                        key={item.id}
+                        type="button"
+                        onClick={() => handleThemeChange(item.id as any)}
+                        style={{
+                          flex: 1,
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: 6,
+                          padding: '9px 6px',
+                          borderRadius: 9,
+                          border: 'none',
+                          background: active ? 'var(--bg-card)' : 'transparent',
+                          color: active ? 'var(--label-primary)' : 'var(--label-secondary)',
+                          fontSize: 14,
+                          fontWeight: active ? 600 : 500,
+                          cursor: 'pointer',
+                          boxShadow: active ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
+                        }}
+                      >
+                        <IconComp size={16} color={active ? 'var(--ios-blue)' : 'inherit'} />
+                        <span>{item.label}</span>
+                      </button>
+                    );
+                  })}
                 </div>
-                {settings.theme === 'system' && (
-                  <Check style={{ width: 20, height: 20, color: 'var(--ios-blue)' }} strokeWidth={2.8} />
-                )}
-                <div className="ios-separator with-glyph" />
               </div>
 
-              {/* Light Mode */}
-              <div
-                className="ios-cell"
-                onClick={() => handleThemeChange('light')}
-                style={{ cursor: 'pointer' }}
-              >
-                <div className="ios-glyph-badge" style={{ background: 'var(--ios-yellow)' }}>
-                  <Sun style={{ width: 18, height: 18, color: '#FFFFFF' }} />
+              {/* Accent Color Palette 
+              <div style={{ padding: '12px 16px 14px', background: 'var(--bg-card)' }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--label-secondary)', marginBottom: 10 }}>
+                  ACCENT COLOR HIGHLIGHT
                 </div>
-                <span className="ios-cell-label" style={{ flex: 1 }}>Light Mode</span>
-                {settings.theme === 'light' && (
-                  <Check style={{ width: 20, height: 20, color: 'var(--ios-blue)' }} strokeWidth={2.8} />
-                )}
-                <div className="ios-separator with-glyph" />
-              </div>
-
-              {/* Dark Mode */}
-              <div
-                className="ios-cell"
-                onClick={() => handleThemeChange('dark')}
-                style={{ cursor: 'pointer' }}
-              >
-                <div className="ios-glyph-badge" style={{ background: 'var(--ios-indigo)' }}>
-                  <Moon style={{ width: 18, height: 18, color: '#FFFFFF' }} />
+                <div style={{ display: 'flex', gap: 14, justifyContent: 'space-around' }}>
+                  {ACCENT_COLOR_OPTIONS.map((swatch) => {
+                    const isSelected = activeAccent === swatch.id;
+                    return (
+                      <button
+                        key={swatch.id}
+                        type="button"
+                        onClick={() => handleAccentChange(swatch.id)}
+                        style={{
+                          border: 'none',
+                          background: 'none',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          alignItems: 'center',
+                          gap: 6,
+                          padding: 0,
+                        }}
+                      >
+                        <div
+                          style={{
+                            width: 38,
+                            height: 38,
+                            borderRadius: '50%',
+                            background: swatch.color,
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            color: '#FFFFFF',
+                            boxShadow: isSelected ? `0 0 0 3px var(--bg-card), 0 0 0 5px ${swatch.color}` : 'none',
+                          }}
+                        >
+                          {isSelected && <Check size={18} strokeWidth={3} />}
+                        </div>
+                        <span style={{ fontSize: 11, fontWeight: isSelected ? 700 : 500, color: isSelected ? 'var(--label-primary)' : 'var(--label-tertiary)' }}>
+                          {swatch.name}
+                        </span>
+                      </button>
+                    );
+                  })}
                 </div>
-                <span className="ios-cell-label" style={{ flex: 1 }}>Dark Mode</span>
-                {settings.theme === 'dark' && (
-                  <Check style={{ width: 20, height: 20, color: 'var(--ios-blue)' }} strokeWidth={2.8} />
-                )}
-                <div className="ios-separator with-glyph" />
+                <div className="ios-separator with-glyph" style={{ marginTop: 12 }} />
               </div>
+              */}
 
-              {/* Dynamic Accent Color Theme 
-            <div className="ios-cell" style={{ cursor: 'default', flexDirection: 'column', alignItems: 'flex-start', padding: '14px 16px 12px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', marginBottom: 12 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                  <div className="ios-glyph-badge" style={{ background: 'var(--ios-blue)' }}>
-                    <Palette style={{ width: 18, height: 18, color: '#FFFFFF' }} />
-                  </div>
-                  <div>
-                    <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--label-primary)' }}>Accent Color Theme</div>
-                    <div style={{ fontSize: 12, color: 'var(--label-secondary)' }}>Personalize tabs, buttons, and visual highlights</div>
-                  </div>
-                </div>
-              </div> */}
-
-              {/* Color swatches 
-              <div style={{ display: 'flex', gap: 12, width: '100%', justifyContent: 'space-around', padding: '4px 0 6px' }}>
-                {[
-                  { id: 'sapphire', name: 'Sapphire', color: '#007AFF' },
-                  { id: 'emerald', name: 'Emerald', color: '#34C759' },
-                  { id: 'violet', name: 'Violet', color: '#AF52DE' },
-                  { id: 'amber', name: 'Amber', color: '#FF9500' },
-                  { id: 'crimson', name: 'Crimson', color: '#FF2D55' },
-                ].map((swatch) => (
-                  <button
-                    key={swatch.id}
-                    type="button"
-                    onClick={() => handleAccentChange(swatch.id)}
-                    style={{
-                      border: 'none',
-                      background: 'none',
-                      cursor: 'pointer',
-                      display: 'flex',
-                      flexDirection: 'column',
-                      alignItems: 'center',
-                      gap: 6
-                    }}
-                  >
-                    <div
-                      style={{
-                        width: 38,
-                        height: 38,
-                        borderRadius: '50%',
-                        background: swatch.color,
-                        boxShadow: accentColor === swatch.id ? `0 0 0 3px var(--bg-card), 0 0 0 5px ${swatch.color}` : '0 2px 6px rgba(0,0,0,0.15)',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        color: '#FFFFFF',
-                        transition: 'transform 0.15s ease, box-shadow 0.15s ease',
-                        transform: accentColor === swatch.id ? 'scale(1.1)' : 'scale(1)'
-                      }}
-                    >
-                      {accentColor === swatch.id && <Check size={18} strokeWidth={3} />}
-                    </div>
-                    <span style={{ fontSize: 11, fontWeight: accentColor === swatch.id ? 700 : 500, color: accentColor === swatch.id ? 'var(--label-primary)' : 'var(--label-tertiary)' }}>
-                      {swatch.name}
-                    </span>
-                  </button>
-                ))}
-              </div>
-              <div className="ios-separator with-glyph" style={{ marginTop: 8 }} />
-            </div> */}
-
-              {/* Audio Feedback & Tactile Chimes */}
+              {/* Sound & Haptics */}
               <div className="ios-cell" style={{ cursor: 'pointer' }} onClick={() => handleSoundToggle(!soundEnabled)}>
                 <div className="ios-glyph-badge" style={{ background: soundEnabled ? 'var(--ios-green)' : 'var(--fill-secondary)' }}>
-                  {soundEnabled ? (
-                    <Volume2 style={{ width: 18, height: 18, color: '#FFFFFF' }} />
-                  ) : (
-                    <VolumeX style={{ width: 18, height: 18, color: 'var(--label-secondary)' }} />
-                  )}
+                  {soundEnabled ? <Volume2 size={18} color="#FFFFFF" /> : <VolumeX size={18} color="var(--label-secondary)" />}
                 </div>
                 <div style={{ flex: 1 }}>
                   <span className="ios-cell-label">Sound & Haptics</span>
-                  <div style={{ fontSize: 12, color: 'var(--label-secondary)' }}>
-                    Audio feedback
-                  </div>
+                  <div style={{ fontSize: 12, color: 'var(--label-secondary)' }}>Audio feedback on ledger actions</div>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                   {soundEnabled && (
@@ -1664,7 +2067,7 @@ export default function Settings() {
                         borderRadius: 12,
                         fontSize: 12,
                         fontWeight: 600,
-                        cursor: 'pointer'
+                        cursor: 'pointer',
                       }}
                     >
                       Test Chime
@@ -1677,7 +2080,7 @@ export default function Settings() {
                       borderRadius: 31,
                       background: soundEnabled ? 'var(--ios-green)' : 'var(--fill-primary)',
                       position: 'relative',
-                      transition: 'background 0.25s ease'
+                      transition: 'background 0.25s ease',
                     }}
                   >
                     <div
@@ -1690,7 +2093,7 @@ export default function Settings() {
                         top: 2,
                         left: soundEnabled ? 22 : 2,
                         boxShadow: '0 2px 5px rgba(0,0,0,0.2)',
-                        transition: 'left 0.25s ease'
+                        transition: 'left 0.25s ease',
                       }}
                     />
                   </div>
@@ -1699,17 +2102,11 @@ export default function Settings() {
             </div>
           )}
         </div>
-        {/* {openSections['appearance'] && (
-          <div className="ios-group-footnote">
-            Personalize display theme and audio/haptic responses across the application.
-          </div>
-        )} */}
       </div>
 
-      {/* ── Section: Region & Currency ── */}
+      {/* ── ACCORDION 5: Currency, Region & Defaults (FUNCTIONAL DUMMY FIELDS) ── */}
       <div className="ios-group" style={{ marginBottom: 14 }}>
         <div className="ios-card-grouped" style={{ overflow: 'hidden' }}>
-          {/* Collapsible Header */}
           <div
             className="ios-cell"
             onClick={() => toggleSection('currency')}
@@ -1720,20 +2117,20 @@ export default function Settings() {
               alignItems: 'center',
               justifyContent: 'space-between',
               padding: '13px 16px',
-              minHeight: 52
+              minHeight: 54,
             }}
           >
             <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
               <div className="ios-glyph-badge" style={{ background: 'var(--ios-green)', flexShrink: 0 }}>
-                <Coins style={{ width: 18, height: 18, color: '#FFFFFF' }} />
+                <Coins size={18} color="#FFFFFF" />
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
                 <span style={{ fontSize: 16, fontWeight: 600, color: 'var(--label-primary)', letterSpacing: '-0.2px' }}>
-                  Currency & Region
+                  Currency & Number Standards
                 </span>
                 {!openSections['currency'] && (
                   <span style={{ fontSize: 12, color: 'var(--label-secondary)', marginTop: 1 }}>
-                    PKR (Rs.) · Pakistan (en-PK)
+                    {settings.currency || 'PKR (Rs.)'} · {settings.numberFormat === 'lakh' ? 'Lakhs' : 'Millions'}
                   </span>
                 )}
               </div>
@@ -1746,7 +2143,7 @@ export default function Settings() {
                   height: 18,
                   color: 'var(--label-tertiary)',
                   transform: openSections['currency'] ? 'rotate(180deg)' : 'rotate(0deg)',
-                  transition: 'transform 0.25s cubic-bezier(0.4, 0, 0.2, 1)'
+                  transition: 'transform 0.25s cubic-bezier(0.4, 0, 0.2, 1)',
                 }}
                 strokeWidth={2.4}
               />
@@ -1754,41 +2151,93 @@ export default function Settings() {
             {openSections['currency'] && <div className="ios-separator with-glyph" />}
           </div>
 
-          {/* Expanded Body */}
           {openSections['currency'] && (
             <div>
-              <div className="ios-cell" style={{ cursor: 'default' }}>
-                <div className="ios-glyph-badge" style={{ background: 'var(--ios-green)' }}>
-                  <Coins style={{ width: 18, height: 18 }} />
-                </div>
-                <span className="ios-cell-label">Operating Currency</span>
-                <span className="ios-cell-value" style={{ fontWeight: 600, color: 'var(--label-primary)' }}>
-                  PKR (Rs.)
-                </span>
+              {/* Operating Currency Picker (Custom iOS Dropdown) */}
+              <div style={{ position: 'relative' }}>
+                <IOSSelect
+                  glyphBadge={
+                    <div className="ios-glyph-badge" style={{ background: 'var(--ios-green)' }}>
+                      <Coins size={18} color="#FFFFFF" />
+                    </div>
+                  }
+                  label="Operating Currency"
+                  description="Rate per ton & settlements"
+                  value={settings.currency || 'PKR (Rs.)'}
+                  onChange={async (val) => {
+                    handleChange('currency', val);
+                    const updated = { ...settings, currency: val };
+                    await saveSettings(updated);
+                    playPopSound();
+                    showToast(`Currency set to ${val}`);
+                  }}
+                  options={CURRENCY_SELECT_OPTIONS}
+                  title="Select Operating Currency"
+                />
                 <div className="ios-separator with-glyph" />
               </div>
 
-              <div className="ios-cell" style={{ cursor: 'default' }}>
-                <div className="ios-glyph-badge" style={{ background: 'var(--ios-teal)' }}>
-                  <Globe style={{ width: 18, height: 18 }} />
+              {/* Number Format Style (Custom iOS Dropdown) */}
+              <div style={{ position: 'relative' }}>
+                <IOSSelect
+                  glyphBadge={
+                    <div className="ios-glyph-badge" style={{ background: 'var(--ios-teal)' }}>
+                      <Layers size={18} color="#FFFFFF" />
+                    </div>
+                  }
+                  label="Denomination Style"
+                  description="Comma formatting on totals"
+                  value={settings.numberFormat || 'million'}
+                  onChange={async (val) => {
+                    handleChange('numberFormat', val);
+                    const updated = { ...settings, numberFormat: val };
+                    await saveSettings(updated);
+                    playPopSound();
+                    showToast(`Formatted in ${val === 'lakh' ? 'Lakhs (10,00,000)' : 'Millions (1,000,000)'}`);
+                  }}
+                  options={NUMBER_FORMAT_OPTIONS}
+                  title="Number Denomination Style"
+                />
+                <div className="ios-separator with-glyph" />
+              </div>
+
+              {/* Default Tax Calculation Configuration Cell */}
+              <div
+                className="ios-cell"
+                onClick={() => {
+                  playPopSound();
+                  setShowTaxFormulaModal(true);
+                }}
+                style={{ cursor: 'pointer', padding: '13px 16px' }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12, flex: 1, minWidth: 0 }}>
+                  <div className="ios-glyph-badge" style={{ background: 'var(--ios-orange)' }}>
+                    <FileText size={18} color="#FFFFFF" />
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div className="ios-cell-label" style={{ fontSize: 16 }}>Default Tax Calculation</div>
+                    <div className="ios-cell-desc" style={{ marginTop: 2, fontSize: 13, color: 'var(--label-secondary)' }}>
+                      {settings.defaultTaxMethod === 'manual'
+                        ? 'Manual Tax Entry'
+                        : `Formula: (Rate + ${settings.taxFormulaSalesPercent ?? 18}%) × ${settings.taxFormulaIncomePercent ?? 5}%`}
+                    </div>
+                  </div>
                 </div>
-                <span className="ios-cell-label">Region / Locale</span>
-                <span className="ios-cell-value">Pakistan (en-PK)</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--label-tertiary)' }}>
+                  <span style={{ fontSize: 13, color: 'var(--ios-blue)', fontWeight: 500 }}>
+                    {settings.defaultTaxMethod === 'manual' ? 'Manual' : 'Formula'}
+                  </span>
+                  <ChevronRight size={18} />
+                </div>
               </div>
             </div>
           )}
         </div>
-        {/* {openSections['currency'] && (
-          <div className="ios-group-footnote">
-            All coal dispatch contracts, lab adjustments, tax calculations, and party ledgers are computed in Pakistani Rupee (PKR - Rs.).
-          </div>
-        )} */}
       </div>
 
-      {/* ── Section: Data & Backup ── */}
+      {/* ── ACCORDION 6: Data & Storage Management ── */}
       <div className="ios-group" style={{ marginBottom: 14 }}>
         <div className="ios-card-grouped" style={{ overflow: 'hidden' }}>
-          {/* Collapsible Header */}
           <div
             className="ios-cell"
             onClick={() => toggleSection('backup')}
@@ -1799,12 +2248,12 @@ export default function Settings() {
               alignItems: 'center',
               justifyContent: 'space-between',
               padding: '13px 16px',
-              minHeight: 52
+              minHeight: 54,
             }}
           >
             <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
               <div className="ios-glyph-badge" style={{ background: 'var(--ios-teal)', flexShrink: 0 }}>
-                <Download style={{ width: 18, height: 18, color: '#FFFFFF' }} />
+                <Download size={18} color="#FFFFFF" />
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
                 <span style={{ fontSize: 16, fontWeight: 600, color: 'var(--label-primary)', letterSpacing: '-0.2px' }}>
@@ -1812,7 +2261,7 @@ export default function Settings() {
                 </span>
                 {!openSections['backup'] && (
                   <span style={{ fontSize: 12, color: 'var(--label-secondary)', marginTop: 1 }}>
-                    Offline Storage · Export & Restore
+                    {stats.dispatches} Trucks · {stats.parties} Parties · {stats.payments} Payments
                   </span>
                 )}
               </div>
@@ -1825,7 +2274,7 @@ export default function Settings() {
                   height: 18,
                   color: 'var(--label-tertiary)',
                   transform: openSections['backup'] ? 'rotate(180deg)' : 'rotate(0deg)',
-                  transition: 'transform 0.25s cubic-bezier(0.4, 0, 0.2, 1)'
+                  transition: 'transform 0.25s cubic-bezier(0.4, 0, 0.2, 1)',
                 }}
                 strokeWidth={2.4}
               />
@@ -1833,81 +2282,163 @@ export default function Settings() {
             {openSections['backup'] && <div className="ios-separator with-glyph" />}
           </div>
 
-          {/* Expanded Body */}
           {openSections['backup'] && (
             <div>
-              {/* Export JSON */}
-              <div className="ios-cell" onClick={handleExportData}>
+              {/* Record Metrics Counter */}
+              <div style={{ padding: '14px 16px', background: 'var(--bg-card)' }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--label-secondary)', marginBottom: 8 }}>
+                  OFFLINE DATABASE RECORDS
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 }}>
+                  <div style={{ background: 'var(--fill-tertiary)', padding: '10px 8px', borderRadius: 10, textAlign: 'center' }}>
+                    <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--label-primary)' }}>{stats.dispatches}</div>
+                    <div style={{ fontSize: 11, color: 'var(--label-secondary)' }}>Dispatches</div>
+                  </div>
+                  <div style={{ background: 'var(--fill-tertiary)', padding: '10px 8px', borderRadius: 10, textAlign: 'center' }}>
+                    <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--label-primary)' }}>{stats.parties}</div>
+                    <div style={{ fontSize: 11, color: 'var(--label-secondary)' }}>Parties</div>
+                  </div>
+                  <div style={{ background: 'var(--fill-tertiary)', padding: '10px 8px', borderRadius: 10, textAlign: 'center' }}>
+                    <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--label-primary)' }}>{stats.payments}</div>
+                    <div style={{ fontSize: 11, color: 'var(--label-secondary)' }}>Payments</div>
+                  </div>
+                  <div style={{ background: 'var(--fill-tertiary)', padding: '10px 8px', borderRadius: 10, textAlign: 'center' }}>
+                    <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--label-primary)' }}>{stats.pos}</div>
+                    <div style={{ fontSize: 11, color: 'var(--label-secondary)' }}>Orders</div>
+                  </div>
+                </div>
+                <div className="ios-separator with-glyph" style={{ marginTop: 14 }} />
+              </div>
+
+              {/* Export Full Backup */}
+              <div className="ios-cell" onClick={handleTriggerExport} style={{ cursor: 'pointer' }}>
                 <div className="ios-glyph-badge" style={{ background: 'var(--ios-blue)' }}>
-                  <Download style={{ width: 18, height: 18 }} />
+                  <Download size={18} color="#FFFFFF" />
                 </div>
-                <span className="ios-cell-label">Export Full Backup (JSON)</span>
-                <ChevronRight className="ios-chevron" strokeWidth={2.5} />
+                <div style={{ flex: 1 }}>
+                  <span className="ios-cell-label">Export Full Backup (JSON)</span>
+                  <div style={{ fontSize: 12, color: 'var(--label-secondary)' }}>Download full encrypted ledger file</div>
+                </div>
+                <span style={{ fontSize: 14, color: 'var(--ios-blue)', fontWeight: 600 }}>Export</span>
                 <div className="ios-separator with-glyph" />
               </div>
 
-              {/* Import JSON */}
-              <div className="ios-cell" onClick={() => fileInputRef.current?.click()}>
+              {/* Import Full Backup */}
+              <div className="ios-cell" onClick={handleTriggerImport} style={{ cursor: 'pointer' }}>
                 <div className="ios-glyph-badge" style={{ background: 'var(--ios-purple)' }}>
-                  <Upload style={{ width: 18, height: 18 }} />
+                  <Upload size={18} color="#FFFFFF" />
                 </div>
-                <span className="ios-cell-label">Import & Restore Backup (JSON)</span>
-                <ChevronRight className="ios-chevron" strokeWidth={2.5} />
+                <div style={{ flex: 1 }}>
+                  <span className="ios-cell-label">Import & Restore Backup</span>
+                  <div style={{ fontSize: 12, color: 'var(--label-secondary)' }}>Restore from JSON database file</div>
+                </div>
+                <span style={{ fontSize: 14, color: 'var(--ios-blue)', fontWeight: 600 }}>Import</span>
                 <div className="ios-separator with-glyph" />
               </div>
 
-              {/* Clear All */}
-              <div className="ios-cell" onClick={handleClear}>
+              {/* Erase All Data */}
+              <div
+                className="ios-cell"
+                onClick={() => {
+                  playPopSound();
+                  setShowClearConfirm(true);
+                }}
+                style={{ cursor: 'pointer' }}
+              >
                 <div className="ios-glyph-badge" style={{ background: 'var(--ios-red)' }}>
-                  <Trash2 style={{ width: 18, height: 18 }} />
+                  <Trash2 size={18} color="#FFFFFF" />
                 </div>
-                <span className="ios-cell-label" style={{ color: 'var(--ios-red)' }}>
-                  Erase All Data
+                <div style={{ flex: 1 }}>
+                  <span className="ios-cell-label" style={{ color: 'var(--ios-red)' }}>
+                    Erase All Database Records
+                  </span>
+                  <div style={{ fontSize: 12, color: 'var(--label-secondary)' }}>Clear local storage & start fresh</div>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ── ACCORDION 7: About & Diagnostics ── 
+      <div className="ios-group" style={{ marginBottom: 14 }}>
+        <div className="ios-card-grouped" style={{ overflow: 'hidden' }}>
+          <div
+            className="ios-cell"
+            onClick={() => toggleSection('about')}
+            style={{
+              cursor: 'pointer',
+              userSelect: 'none',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              padding: '13px 16px',
+              minHeight: 54,
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
+              <div className="ios-glyph-badge" style={{ background: '#636366', flexShrink: 0 }}>
+                <Info size={18} color="#FFFFFF" />
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+                <span style={{ fontSize: 16, fontWeight: 600, color: 'var(--label-primary)', letterSpacing: '-0.2px' }}>
+                  About & Diagnostics
+                </span>
+                {!openSections['about'] && (
+                  <span style={{ fontSize: 12, color: 'var(--label-secondary)', marginTop: 1 }}>
+                    Version 2.5.0 · Apple iOS 18 Design Framework
+                  </span>
+                )}
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+              <ChevronDown
+                style={{
+                  width: 18,
+                  height: 18,
+                  color: 'var(--label-tertiary)',
+                  transform: openSections['about'] ? 'rotate(180deg)' : 'rotate(0deg)',
+                  transition: 'transform 0.25s cubic-bezier(0.4, 0, 0.2, 1)',
+                }}
+                strokeWidth={2.4}
+              />
+            </div>
+            {openSections['about'] && <div className="ios-separator with-glyph" />}
+          </div>
+
+          {openSections['about'] && (
+            <div>
+              <div className="ios-cell" style={{ cursor: 'default' }}>
+                <span className="ios-cell-label">Application</span>
+                <span style={{ fontSize: 15, color: 'var(--label-secondary)' }}>Factory Ledger iOS</span>
+                <div className="ios-separator" />
+              </div>
+
+              <div className="ios-cell" style={{ cursor: 'default' }}>
+                <span className="ios-cell-label">Software Version</span>
+                <span style={{ fontSize: 15, color: 'var(--label-secondary)' }}>2.5.0 (Build 2026.10)</span>
+                <div className="ios-separator" />
+              </div>
+
+              <div className="ios-cell" style={{ cursor: 'default' }}>
+                <span className="ios-cell-label">Architecture</span>
+                <span style={{ fontSize: 15, color: 'var(--label-secondary)' }}>IndexedDB Offline + Firebase</span>
+                <div className="ios-separator" />
+              </div>
+
+              <div className="ios-cell" style={{ cursor: 'default' }}>
+                <span className="ios-cell-label">Security Protocol</span>
+                <span style={{ fontSize: 15, color: 'var(--label-secondary)' }}>
+                  {appLockActive ? 'Biometric + SHA-256 PIN' : 'Unprotected'}
                 </span>
               </div>
             </div>
           )}
         </div>
-        {/* {openSections['backup'] && (
-          <div className="ios-group-footnote">
-            All records are stored securely in local browser offline storage. Use Export & Restore to transfer your data between devices.
-          </div>
-        )} */}
-      </div>
-
-      {/* ── Section: About ── 
-      <div className="ios-group">
-        <div className="ios-group-title">About</div>
-        <div className="ios-card-grouped">
-          <div className="ios-cell" style={{ cursor: 'default' }}>
-            <div className="ios-glyph-badge" style={{ background: '#636366' }}>
-              <Info style={{ width: 18, height: 18 }} />
-            </div>
-            <span className="ios-cell-label">Application</span>
-            <span className="ios-cell-value">Factory Ledger iOS</span>
-            <div className="ios-separator with-glyph" />
-          </div>
-
-          <div className="ios-cell" style={{ cursor: 'default' }}>
-            <div className="ios-glyph-badge" style={{ background: '#8E8E93' }}>
-              <Smartphone style={{ width: 18, height: 18 }} />
-            </div>
-            <span className="ios-cell-label">Design Specification</span>
-            <span className="ios-cell-value">Apple iOS 18 HIG</span>
-            <div className="ios-separator with-glyph" />
-          </div>
-
-          <div className="ios-cell" style={{ cursor: 'default' }}>
-            <div className="ios-glyph-badge" style={{ background: 'var(--ios-green)' }}>
-              <ShieldCheck style={{ width: 18, height: 18 }} />
-            </div>
-            <span className="ios-cell-label">Version</span>
-            <span className="ios-cell-value">2.4.0 (Build 2026.10)</span>
-          </div>
-        </div>
       </div> */}
 
-      {/* ── iOS Liquid Glass Confirmation Modal ── */}
+      {/* ── Confirmation Modals ── */}
       <IOSConfirmModal
         isOpen={showClearConfirm}
         title="Clear All Data?"
@@ -1921,7 +2452,6 @@ export default function Settings() {
         onCancel={() => setShowClearConfirm(false)}
       />
 
-      {/* ── iOS Liquid Glass Remove Logo Confirmation Modal (Instant / No 2s timer) ── */}
       <IOSConfirmModal
         isOpen={showRemoveLogoConfirm}
         title="Remove Company Logo?"
@@ -1935,7 +2465,6 @@ export default function Settings() {
         onCancel={() => setShowRemoveLogoConfirm(false)}
       />
 
-      {/* ── iOS Liquid Glass Remove Signature Confirmation Modal (Instant / No 2s timer) ── */}
       <IOSConfirmModal
         isOpen={showRemoveSignatureConfirm}
         title="Remove Authorized Signature?"
@@ -1947,6 +2476,33 @@ export default function Settings() {
         icon="trash"
         onConfirm={handleConfirmRemoveSignature}
         onCancel={() => setShowRemoveSignatureConfirm(false)}
+      />
+
+      <IOSConfirmModal
+        isOpen={showDisableLockConfirm}
+        title="Turn Off App Lock?"
+        message="Are you sure you want to disable passcode protection? Anyone who opens the app will be able to access the business ledgers."
+        confirmText="Turn Off"
+        cancelText="Cancel"
+        destructive
+        countdownSeconds={0}
+        icon="warning"
+        onConfirm={handleConfirmDisableLock}
+        onCancel={() => setShowDisableLockConfirm(false)}
+      />
+
+      {/* ── Set / Change Passcode PIN Modal ── */}
+      <IOSSetPasscodeModal
+        isOpen={showPasscodeModal}
+        isChangingExisting={isChangingPasscode}
+        onSuccess={handlePasscodeSuccess}
+        onCancel={() => setShowPasscodeModal(false)}
+      />
+
+      {/* ── Master Recovery Key Viewer Modal ── */}
+      <IOSRecoveryKeyViewerModal
+        isOpen={showRecoveryKeyViewer}
+        onClose={() => setShowRecoveryKeyViewer(false)}
       />
 
       {/* ── Real-World Account & Sync Modals ── */}
@@ -1963,9 +2519,7 @@ export default function Settings() {
             playSuccessSound();
             triggerConfetti();
             showToast(res.message);
-            const [s, d, p] = await Promise.all([getSettings(), getDispatches(), getParties()]);
-            setSettings(s);
-            setStats({ dispatches: d.length, parties: p.length });
+            loadAllData();
           }}
           onMergeIntoNewAccount={async () => {
             const res = await resolveLoginDecision('merge', switchScenario);
@@ -1973,9 +2527,7 @@ export default function Settings() {
             playSuccessSound();
             triggerConfetti();
             showToast(res.message);
-            const [s, d, p] = await Promise.all([getSettings(), getDispatches(), getParties()]);
-            setSettings(s);
-            setStats({ dispatches: d.length, parties: p.length });
+            loadAllData();
           }}
           onCancel={async () => {
             await resolveLoginDecision('cancel', switchScenario);
@@ -1997,9 +2549,7 @@ export default function Settings() {
             playSuccessSound();
             triggerConfetti();
             showToast(res.message);
-            const [s, d, p] = await Promise.all([getSettings(), getDispatches(), getParties()]);
-            setSettings(s);
-            setStats({ dispatches: d.length, parties: p.length });
+            loadAllData();
           }}
           onUseCloud={async () => {
             const res = await resolveLoginDecision('use_cloud', conflictScenario);
@@ -2007,9 +2557,7 @@ export default function Settings() {
             playSuccessSound();
             triggerConfetti();
             showToast(res.message);
-            const [s, d, p] = await Promise.all([getSettings(), getDispatches(), getParties()]);
-            setSettings(s);
-            setStats({ dispatches: d.length, parties: p.length });
+            loadAllData();
           }}
           onCancel={async () => {
             await resolveLoginDecision('cancel', conflictScenario);
@@ -2028,6 +2576,72 @@ export default function Settings() {
           onCancel={() => setIsSignOutSheetOpen(false)}
         />
       )}
+
+      {/* iOS Tax Formula Configuration Modal */}
+      <IOSTaxFormulaModal
+        isOpen={showTaxFormulaModal}
+        initialMethod={settings.defaultTaxMethod || 'formula_18_5'}
+        initialSalesPercent={settings.taxFormulaSalesPercent ?? 18}
+        initialIncomePercent={settings.taxFormulaIncomePercent ?? 5}
+        onSave={async (method, salesPct, incomePct) => {
+          const updated: AppSettings = {
+            ...settings,
+            defaultTaxMethod: method,
+            taxFormulaSalesPercent: salesPct,
+            taxFormulaIncomePercent: incomePct,
+          };
+          setSettings(updated);
+          await saveSettings(updated);
+          setShowTaxFormulaModal(false);
+          showToast('Tax formula configuration updated');
+        }}
+        onCancel={() => setShowTaxFormulaModal(false)}
+      />
+
+      {/* ── Verify Passcode before Disabling Lock Modal ── */}
+      <IOSVerifyPasscodeModal
+        isOpen={showVerifyPinForDisable}
+        title="Verify Passcode to Turn Off Lock"
+        subtitle="Enter your current passcode to disable App Lock"
+        onSuccess={handlePasscodeVerifiedForDisable}
+        onCancel={() => setShowVerifyPinForDisable(false)}
+      />
+
+      {/* ── Verify Passcode before Export Modal ── */}
+      <IOSVerifyPasscodeModal
+        isOpen={showVerifyPinForExport}
+        title="Verify Passcode to Export"
+        subtitle="Enter your passcode to download confidential ledger backup"
+        onSuccess={() => {
+          setShowVerifyPinForExport(false);
+          executeExport();
+        }}
+        onCancel={() => setShowVerifyPinForExport(false)}
+      />
+
+      {/* ── Verify Passcode before Import Modal ── */}
+      <IOSVerifyPasscodeModal
+        isOpen={showVerifyPinForImport}
+        title="Verify Passcode to Import"
+        subtitle="Enter your passcode to authorize database import"
+        onSuccess={() => {
+          setShowVerifyPinForImport(false);
+          fileInputRef.current?.click();
+        }}
+        onCancel={() => setShowVerifyPinForImport(false)}
+      />
+
+      {/* ── Import Decision & Stats Modal ── */}
+      <IOSImportConfirmModal
+        isOpen={showImportConfirmModal}
+        fileName={pendingImportFile?.name || 'backup.json'}
+        backupData={pendingImportFile?.data || null}
+        onConfirm={handleConfirmImport}
+        onCancel={() => {
+          setShowImportConfirmModal(false);
+          setPendingImportFile(null);
+        }}
+      />
     </div>
   );
 }

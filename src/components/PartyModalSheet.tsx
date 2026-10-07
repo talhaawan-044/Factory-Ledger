@@ -177,6 +177,7 @@ function PartyModalContent({
           <div
             style={{
               display: 'flex',
+              color: 'black',
               flexDirection: 'column',
               alignItems: 'center',
               padding: '20px 16px 12px'
@@ -187,8 +188,7 @@ function PartyModalContent({
                 width: 76,
                 height: 76,
                 borderRadius: '50%',
-                background: 'var(--tint-blue)',
-                border: '1.5px solid var(--ios-blue)',
+                background: 'white',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',

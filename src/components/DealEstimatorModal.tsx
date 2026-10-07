@@ -1,9 +1,12 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { Calculator, Share2, Copy, Check, Truck, Info } from 'lucide-react';
 import { playPopSound, playSuccessSound } from '../utils/delight';
 import { Share } from '@capacitor/share';
 import { Capacitor } from '@capacitor/core';
 import NumericInput from './NumericInput';
+import { getSettings } from '../lib/db';
+import type { AppSettings } from '../types';
+import { getCurrencySymbol, formatAmountNumber } from '../utils/currency';
 
 interface DealEstimatorModalProps {
   isOpen: boolean;
@@ -17,6 +20,13 @@ export default function DealEstimatorModal({ isOpen, onClose }: DealEstimatorMod
 }
 
 function DealEstimatorContent({ onClose }: { onClose: () => void }) {
+  const [settings, setSettings] = useState<AppSettings | undefined>(undefined);
+  const curSym = getCurrencySymbol(settings?.currency);
+
+  useEffect(() => {
+    getSettings().then(s => setSettings(s));
+  }, []);
+
   const [tons, setTons] = useState<number>(50);
   // Purchase rate & selling rate are strictly per ton
   const [purchaseRate, setPurchaseRate] = useState<number>(18500);
@@ -149,21 +159,21 @@ function DealEstimatorContent({ onClose }: { onClose: () => void }) {
 
   const dealSummaryText = `*DEAL ESTIMATE (Factory Ledger)*\n` +
     `• Load Weight: ${calc.loadedTons.toFixed(2)} Tons\n` +
-    `• Purchase Rate: Rs. ${calc.buyRate.toLocaleString()}/ton\n` +
-    `• Freight: Rs. ${Math.round(calc.freightTotal).toLocaleString()} (${freightMode === 'total' ? `Flat Total, ≈ Rs. ${Math.round(calc.freightPerTon).toLocaleString()}/ton` : `Rs. ${calc.freightPerTon.toLocaleString()}/ton`})\n` +
+    `• Purchase Rate: ${curSym} ${formatAmountNumber(calc.buyRate, settings)}/ton\n` +
+    `• Freight: ${curSym} ${formatAmountNumber(calc.freightTotal, settings)} (${freightMode === 'total' ? `Flat Total, ≈ ${curSym} ${formatAmountNumber(calc.freightPerTon, settings)}/ton` : `${curSym} ${formatAmountNumber(calc.freightPerTon, settings)}/ton`})\n` +
     (calc.miscTotal > 0
-      ? `• Misc/Kanta: Rs. ${Math.round(calc.miscTotal).toLocaleString()} (${miscMode === 'total' ? `Flat Total, ≈ Rs. ${Math.round(calc.miscPerTon).toLocaleString()}/ton` : `Rs. ${calc.miscPerTon.toLocaleString()}/ton`})\n`
+      ? `• Misc/Kanta: ${curSym} ${formatAmountNumber(calc.miscTotal, settings)} (${miscMode === 'total' ? `Flat Total, ≈ ${curSym} ${formatAmountNumber(calc.miscPerTon, settings)}/ton` : `${curSym} ${formatAmountNumber(calc.miscPerTon, settings)}/ton`})\n`
       : '') +
-    `• Total Cost: Rs. ${Math.round(calc.totalCost).toLocaleString()} (Rs. ${Math.round(calc.costPerLoadedTon).toLocaleString()}/ton)\n` +
-    `• Factory Selling Rate: Rs. ${calc.sellRate.toLocaleString()}/ton\n` +
+    `• Total Cost: ${curSym} ${formatAmountNumber(calc.totalCost, settings)} (${curSym} ${formatAmountNumber(calc.costPerLoadedTon, settings)}/ton)\n` +
+    `• Factory Selling Rate: ${curSym} ${formatAmountNumber(calc.sellRate, settings)}/ton\n` +
     (calc.shortagePercent > 0
       ? `• Transit Loss: ${calc.shortagePercent}% (-${calc.shortageTons.toFixed(2)}t shortage, Billed: ${calc.billedTons.toFixed(2)}t)\n`
       : `• Transit Loss: 0% (Full ${calc.loadedTons.toFixed(2)}t Billed)\n`) +
     `────────────────────\n` +
-    `*Net Profit: Rs. ${Math.round(calc.netProfit).toLocaleString()}*\n` +
-    `*Profit/Ton: Rs. ${Math.round(calc.profitPerLoadedTon).toLocaleString()}/ton (${calc.marginPercent.toFixed(1)}% margin)*\n` +
-    `• Breakeven Rate: Rs. ${calc.breakevenRate.toLocaleString()}/ton\n` +
-    `• Total Deal Value: Rs. ${Math.round(calc.totalRevenue).toLocaleString()}`;
+    `*Net Profit: ${curSym} ${formatAmountNumber(calc.netProfit, settings)}*\n` +
+    `*Profit/Ton: ${curSym} ${formatAmountNumber(calc.profitPerLoadedTon, settings)}/ton (${calc.marginPercent.toFixed(1)}% margin)*\n` +
+    `• Breakeven Rate: ${curSym} ${formatAmountNumber(calc.breakevenRate, settings)}/ton\n` +
+    `• Total Deal Value: ${curSym} ${formatAmountNumber(calc.totalRevenue, settings)}`;
 
   const handleCopy = async () => {
     try {
@@ -309,13 +319,13 @@ function DealEstimatorContent({ onClose }: { onClose: () => void }) {
               {isProfitable ? 'Projected Net Profit' : 'Projected Net Loss'}
             </div>
             <div style={{ fontSize: 32, fontWeight: 700, letterSpacing: -0.5, marginTop: 4 }}>
-              {isProfitable ? '+Rs. ' : '-Rs. '}{Math.abs(Math.round(calc.netProfit)).toLocaleString()}
+              {isProfitable ? `+${curSym} ` : `-${curSym} `}{formatAmountNumber(Math.abs(calc.netProfit), settings)}
             </div>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 12, paddingTop: 12, borderTop: '1px solid rgba(255, 255, 255, 0.2)' }}>
               <div>
                 <div style={{ fontSize: 11, opacity: 0.85 }}>Profit / Ton</div>
                 <div style={{ fontSize: 16, fontWeight: 700 }}>
-                  Rs. {Math.round(calc.profitPerLoadedTon).toLocaleString()}
+                  {curSym} {formatAmountNumber(calc.profitPerLoadedTon, settings)}
                 </div>
               </div>
               <div>
@@ -327,7 +337,7 @@ function DealEstimatorContent({ onClose }: { onClose: () => void }) {
               <div>
                 <div style={{ fontSize: 11, opacity: 0.85 }}>Breakeven Rate</div>
                 <div style={{ fontSize: 16, fontWeight: 700 }}>
-                  Rs. {calc.breakevenRate.toLocaleString()}
+                  {curSym} {formatAmountNumber(calc.breakevenRate, settings)}
                 </div>
               </div>
             </div>
@@ -421,7 +431,7 @@ function DealEstimatorContent({ onClose }: { onClose: () => void }) {
                     color: 'var(--text-main)',
                   }}
                 />
-                <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-secondary)' }}>Rs/ton</span>
+                <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-secondary)' }}>{curSym}/ton</span>
               </div>
             </div>
 
@@ -451,7 +461,7 @@ function DealEstimatorContent({ onClose }: { onClose: () => void }) {
                         cursor: 'pointer',
                       }}
                     >
-                      Total Rs
+                      Total {curSym}
                     </button>
                     <button
                       type="button"
@@ -467,7 +477,7 @@ function DealEstimatorContent({ onClose }: { onClose: () => void }) {
                         cursor: 'pointer',
                       }}
                     >
-                      Rs/ton
+                      {curSym}/ton
                     </button>
                   </div>
 
@@ -489,7 +499,7 @@ function DealEstimatorContent({ onClose }: { onClose: () => void }) {
                       }}
                     />
                     <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', minWidth: 38 }}>
-                      {freightMode === 'total' ? 'Rs' : 'Rs/t'}
+                      {freightMode === 'total' ? curSym : `${curSym}/t`}
                     </span>
                   </div>
                 </div>
@@ -498,8 +508,8 @@ function DealEstimatorContent({ onClose }: { onClose: () => void }) {
               <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 4 }}>
                 <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
                   {freightMode === 'total'
-                    ? `≈ Rs. ${Math.round(calc.freightPerTon).toLocaleString()}/ton`
-                    : `≈ Rs. ${Math.round(calc.freightTotal).toLocaleString()} total`}
+                    ? `≈ ${curSym} ${formatAmountNumber(calc.freightPerTon, settings)}/ton`
+                    : `≈ ${curSym} ${formatAmountNumber(calc.freightTotal, settings)} total`}
                 </span>
               </div>
             </div>
@@ -530,7 +540,7 @@ function DealEstimatorContent({ onClose }: { onClose: () => void }) {
                         cursor: 'pointer',
                       }}
                     >
-                      Total Rs
+                      Total {curSym}
                     </button>
                     <button
                       type="button"
@@ -546,7 +556,7 @@ function DealEstimatorContent({ onClose }: { onClose: () => void }) {
                         cursor: 'pointer',
                       }}
                     >
-                      Rs/ton
+                      {curSym}/ton
                     </button>
                   </div>
 
@@ -568,7 +578,7 @@ function DealEstimatorContent({ onClose }: { onClose: () => void }) {
                       }}
                     />
                     <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', minWidth: 38 }}>
-                      {miscMode === 'total' ? 'Rs' : 'Rs/t'}
+                      {miscMode === 'total' ? curSym : `${curSym}/t`}
                     </span>
                   </div>
                 </div>
@@ -577,13 +587,13 @@ function DealEstimatorContent({ onClose }: { onClose: () => void }) {
               <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 4 }}>
                 <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
                   {miscMode === 'total'
-                    ? `≈ Rs. ${Math.round(calc.miscPerTon).toLocaleString()}/ton`
-                    : `≈ Rs. ${Math.round(calc.miscTotal).toLocaleString()} total`}
+                    ? `≈ ${curSym} ${formatAmountNumber(calc.miscPerTon, settings)}/ton`
+                    : `≈ ${curSym} ${formatAmountNumber(calc.miscTotal, settings)} total`}
                 </span>
               </div>
             </div>
 
-            {/* 5. Factory Selling Rate (strictly Rs/ton) */}
+            {/* 5. Factory Selling Rate (strictly curSym/ton) */}
             <div style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid var(--separator)' }}>
               <div>
                 <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--ios-blue)' }}>Factory Selling Rate</div>
@@ -605,7 +615,7 @@ function DealEstimatorContent({ onClose }: { onClose: () => void }) {
                     color: 'var(--ios-blue)',
                   }}
                 />
-                <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--ios-blue)' }}>Rs/ton</span>
+                <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--ios-blue)' }}>{curSym}/ton</span>
               </div>
             </div>
 
@@ -717,15 +727,15 @@ function DealEstimatorContent({ onClose }: { onClose: () => void }) {
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 14 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-secondary)' }}>
-                <span>Coal ({calc.loadedTons.toFixed(2)}t @ Rs. {calc.buyRate.toLocaleString()}):</span>
-                <span style={{ fontWeight: 600, color: 'var(--text-main)' }}>Rs. {Math.round(calc.coalCost).toLocaleString()}</span>
+                <span>Coal ({calc.loadedTons.toFixed(2)}t @ {curSym} {formatAmountNumber(calc.buyRate, settings)}):</span>
+                <span style={{ fontWeight: 600, color: 'var(--text-main)' }}>{curSym} {formatAmountNumber(calc.coalCost, settings)}</span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-secondary)' }}>
                 <span>Transport:</span>
                 <span style={{ fontWeight: 600, color: 'var(--text-main)' }}>
-                  Rs. {Math.round(calc.freightTotal).toLocaleString()}
+                  {curSym} {formatAmountNumber(calc.freightTotal, settings)}
                   <span style={{ fontSize: 12, opacity: 0.75, marginLeft: 4 }}>
-                    ({freightMode === 'total' ? 'Lump Sum' : `@ Rs. ${calc.freightPerTon.toLocaleString()}/t`})
+                    ({freightMode === 'total' ? 'Lump Sum' : `@ ${curSym} ${formatAmountNumber(calc.freightPerTon, settings)}/t`})
                   </span>
                 </span>
               </div>
@@ -733,9 +743,9 @@ function DealEstimatorContent({ onClose }: { onClose: () => void }) {
                 <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-secondary)' }}>
                   <span>Kanta / Bilty:</span>
                   <span style={{ fontWeight: 600, color: 'var(--text-main)' }}>
-                    Rs. {Math.round(calc.miscTotal).toLocaleString()}
+                    {curSym} {formatAmountNumber(calc.miscTotal, settings)}
                     <span style={{ fontSize: 12, opacity: 0.75, marginLeft: 4 }}>
-                      ({miscMode === 'total' ? 'Lump Sum' : `@ Rs. ${calc.miscPerTon.toLocaleString()}/t`})
+                      ({miscMode === 'total' ? 'Lump Sum' : `@ ${curSym} ${formatAmountNumber(calc.miscPerTon, settings)}/t`})
                     </span>
                   </span>
                 </div>
@@ -745,9 +755,9 @@ function DealEstimatorContent({ onClose }: { onClose: () => void }) {
               <div style={{ display: 'flex', justifyContent: 'space-between', paddingTop: 6, borderTop: '1px dashed var(--separator)' }}>
                 <span style={{ fontWeight: 600, color: 'var(--text-main)' }}>Total Cost:</span>
                 <span style={{ fontWeight: 700, color: 'var(--ios-red)' }}>
-                  Rs. {Math.round(calc.totalCost).toLocaleString()}
+                  {curSym} {formatAmountNumber(calc.totalCost, settings)}
                   <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-secondary)', marginLeft: 4 }}>
-                    (Rs. {Math.round(calc.costPerLoadedTon).toLocaleString()}/t)
+                    ({curSym} {formatAmountNumber(calc.costPerLoadedTon, settings)}/t)
                   </span>
                 </span>
               </div>
@@ -757,17 +767,17 @@ function DealEstimatorContent({ onClose }: { onClose: () => void }) {
                 <div style={{ display: 'flex', flexDirection: 'column' }}>
                   <span style={{ fontWeight: 600, color: 'var(--text-main)' }}>Factory Gross Billed</span>
                   <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-secondary)', marginTop: 1 }}>
-                    ({calc.billedTons.toFixed(2)}t @ Rs. {calc.sellRate.toLocaleString()})
+                    ({calc.billedTons.toFixed(2)}t @ {curSym} {formatAmountNumber(calc.sellRate, settings)})
                   </span>
                 </div>
-                <span style={{ fontWeight: 700, color: 'var(--ios-blue)' }}>Rs. {Math.round(calc.totalRevenue).toLocaleString()}</span>
+                <span style={{ fontWeight: 700, color: 'var(--ios-blue)' }}>{curSym} {formatAmountNumber(calc.totalRevenue, settings)}</span>
               </div>
 
               {/* Shortage deduction note if shortage > 0 */}
               {calc.shortagePercent > 0 && (
                 <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--ios-red)', fontSize: 12 }}>
                   <span>↳ Transit Shortage ({calc.shortagePercent}% = -{calc.shortageTons.toFixed(2)} tons):</span>
-                  <span>-Rs. {Math.round(calc.shortageValueLost).toLocaleString()} lost</span>
+                  <span>-{curSym} {formatAmountNumber(calc.shortageValueLost, settings)} lost</span>
                 </div>
               )}
 
@@ -777,7 +787,7 @@ function DealEstimatorContent({ onClose }: { onClose: () => void }) {
                   {isProfitable ? 'Net Profit Margin:' : 'Net Loss Margin:'}
                 </span>
                 <span style={{ fontWeight: 700, color: isProfitable ? 'var(--ios-green)' : 'var(--ios-red)' }}>
-                  {isProfitable ? '+Rs. ' : '-Rs. '}{Math.abs(Math.round(calc.netProfit)).toLocaleString()} ({calc.marginPercent.toFixed(1)}%)
+                  {isProfitable ? `+${curSym} ` : `-${curSym} `}{formatAmountNumber(Math.abs(calc.netProfit), settings)} ({calc.marginPercent.toFixed(1)}%)
                 </span>
               </div>
             </div>

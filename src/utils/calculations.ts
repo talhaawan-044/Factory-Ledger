@@ -1,4 +1,5 @@
-import type { Dispatch, Payment, TaxMethod } from "../types";
+import type { Dispatch, Payment, TaxMethod, AppSettings } from "../types";
+import { getCachedSettings } from "../lib/db";
 
 export interface SettlementResult {
   gcvDeduction: number;
@@ -41,7 +42,7 @@ function cleanNum(val: any, fallback = 0): number {
   return isNaN(p) || !isFinite(p) ? fallback : p;
 }
 
-export function calculateSettlement(dispatch: Dispatch): SettlementResult {
+export function calculateSettlement(dispatch: Dispatch, settings?: AppSettings | null): SettlementResult {
   if (!dispatch) {
     return {
       gcvDeduction: 0,
@@ -70,12 +71,32 @@ export function calculateSettlement(dispatch: Dispatch): SettlementResult {
   const adjustedRate = baseRate - manualDeduction + manualPremium;
 
   // 2. Determine Tax Deduction:
-  //    - If taxMethod === 'manual', use the manualTax value provided by the user.
-  //    - If taxMethod === 'formula_18_5', automatically calculate it using this exact formula: (Adjusted Rate * 1.18) * 0.05
+  //    - If taxMethod === 'manual', use manualTax.
+  //    - If taxMethod === 'formula_18_5', automatically calculate using (Adjusted Rate + salesTax%) * incomeTax%.
+  //    - Prioritize the dispatch's own frozen snapshot factors to preserve historical immutability.
+  const appSettings = settings || getCachedSettings();
+  const isExistingSaved = Boolean(dispatch.id);
+
+  const salesPercent = typeof dispatch.taxSalesPercent === 'number'
+    ? dispatch.taxSalesPercent
+    : (isExistingSaved
+        ? 18
+        : (typeof appSettings?.taxFormulaSalesPercent === 'number'
+            ? appSettings.taxFormulaSalesPercent
+            : 18));
+
+  const incomePercent = typeof dispatch.taxIncomePercent === 'number'
+    ? dispatch.taxIncomePercent
+    : (isExistingSaved
+        ? 5
+        : (typeof appSettings?.taxFormulaIncomePercent === 'number'
+            ? appSettings.taxFormulaIncomePercent
+            : 5));
+
   const activeTaxMethod: TaxMethod = dispatch.taxMethod || 'manual';
   const taxDeduction =
     activeTaxMethod === 'formula_18_5'
-      ? (adjustedRate * 1.18) * 0.05
+      ? (adjustedRate * (1 + salesPercent / 100)) * (incomePercent / 100)
       : manualTax;
 
   // 3. Calculate Payable Rate: Adjusted Rate - Tax Deduction - Commission

@@ -1,5 +1,6 @@
 import React from 'react';
 import type { Payment, Party, AppSettings } from '../types';
+import { getCurrencySymbol, formatAmountNumber } from '../utils/currency';
 
 interface PaymentReceiptProps {
   payment: Payment;
@@ -13,7 +14,7 @@ interface PaymentReceiptProps {
  */
 function numberToWords(num: number): string {
   const rounded = Math.round(Math.abs(num));
-  if (rounded === 0) return 'Zero Rupees Only';
+  if (rounded === 0) return 'Zero Only';
 
   const a = [
     '', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten',
@@ -30,7 +31,7 @@ function numberToWords(num: number): string {
     return inWords(Math.floor(n / 10000000)) + ' Crore' + (n % 10000000 !== 0 ? ' ' + inWords(n % 10000000) : '');
   }
 
-  return inWords(rounded) + ' Rupees Only';
+  return inWords(rounded) + ' Only';
 }
 
 export const PaymentReceipt = React.forwardRef<HTMLDivElement, PaymentReceiptProps>(
@@ -38,6 +39,7 @@ export const PaymentReceipt = React.forwardRef<HTMLDivElement, PaymentReceiptPro
     const businessName = settings?.businessName || 'AWAN COAL LOGISTICS';
     const partyName = party?.name || 'Client Account';
     const isReceived = payment.type === 'received';
+    const curSym = getCurrencySymbol(settings?.currency);
     const voucherId = `RCP-${(payment.id || '00000000').slice(0, 8).toUpperCase()}`;
     const amountWords = numberToWords(payment.amount);
 
@@ -191,7 +193,7 @@ export const PaymentReceipt = React.forwardRef<HTMLDivElement, PaymentReceiptPro
               fontFamily: 'monospace',
             }}
           >
-            Rs. {Math.round(payment.amount).toLocaleString('en-PK')}
+            {curSym} {formatAmountNumber(payment.amount, settings)}
           </div>
           <div
             style={{
@@ -242,7 +244,7 @@ export const PaymentReceipt = React.forwardRef<HTMLDivElement, PaymentReceiptPro
                       fontSize: 12,
                     }}
                   >
-                    Rs. {Math.abs(Math.round(currentBalance)).toLocaleString('en-PK')}{' '}
+                    {curSym} {formatAmountNumber(currentBalance, settings)}{' '}
                     <span style={{ fontSize: 10, fontWeight: 600 }}>
                       ({currentBalance > 0 ? 'Receivable' : 'Settled'})
                     </span>

@@ -22,6 +22,8 @@ import {
   VolumeX,
   Palette
 } from 'lucide-react';
+import IOSAppLockScreen from './IOSAppLockScreen';
+import { recordActivity, evaluateLockOnResume } from '../utils/securityLock';
 
 const ACCENT_PRESETS = [
   { id: 'blue', label: 'Sapphire', color: '#007AFF', className: '' },
@@ -125,6 +127,46 @@ export default function Layout() {
       window.removeEventListener('app_settings_changed', onSettingsChanged);
     };
   }, [location.pathname]);
+
+  // Security Lock & Biometrics Lifecycle Management
+  useEffect(() => {
+    evaluateLockOnResume();
+
+    const handleTouchOrKey = () => recordActivity();
+    window.addEventListener('touchstart', handleTouchOrKey, { passive: true });
+    window.addEventListener('mousedown', handleTouchOrKey, { passive: true });
+    window.addEventListener('keydown', handleTouchOrKey, { passive: true });
+
+    const handleVisibility = () => {
+      if (document.hidden) {
+        recordActivity();
+      } else {
+        evaluateLockOnResume();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+
+    let appStateHandle: any = null;
+    if (Capacitor.isNativePlatform()) {
+      CapApp.addListener('appStateChange', ({ isActive }) => {
+        if (!isActive) {
+          recordActivity();
+        } else {
+          evaluateLockOnResume();
+        }
+      }).then(handle => {
+        appStateHandle = handle;
+      });
+    }
+
+    return () => {
+      window.removeEventListener('touchstart', handleTouchOrKey);
+      window.removeEventListener('mousedown', handleTouchOrKey);
+      window.removeEventListener('keydown', handleTouchOrKey);
+      document.removeEventListener('visibilitychange', handleVisibility);
+      if (appStateHandle) appStateHandle.remove();
+    };
+  }, []);
 
   // Apply theme accent class to root
   useEffect(() => {
@@ -456,6 +498,9 @@ export default function Layout() {
 
         {/* iOS Bottom Home Indicator (Desktop Simulator Frame) */}
         {!isNative && <div className="home-indicator" />}
+
+        {/* Global Security Passcode & Biometric Lock Screen */}
+        <IOSAppLockScreen />
       </div>
     </div>
   );

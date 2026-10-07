@@ -3,6 +3,7 @@ import IOSDatePicker from '../components/IOSDatePicker';
 import { getDispatches, getParties, getPurchaseOrders, getSettings } from '../lib/db';
 import type { Dispatch, Party, PurchaseOrder, AppSettings } from '../types';
 import { calculateSettlement } from '../utils/calculations';
+import { formatCurrency, formatCompactFinancial } from '../utils/currency';
 import { useLedgerListener } from '../hooks/useLedgerListener';
 import {
     Truck,
@@ -92,16 +93,16 @@ export default function AllEntries() {
     }, [filteredDispatches]);
 
     const filteredRevenue = useMemo(() => {
-        return filteredDispatches.reduce((sum, d) => sum + calculateSettlement(d).totalRevenue, 0);
-    }, [filteredDispatches]);
+        return filteredDispatches.reduce((sum, d) => sum + calculateSettlement(d, settings).totalRevenue, 0);
+    }, [filteredDispatches, settings]);
 
     const filteredProfit = useMemo(() => {
-        return filteredDispatches.reduce((sum, d) => sum + calculateSettlement(d).netProfit, 0);
-    }, [filteredDispatches]);
+        return filteredDispatches.reduce((sum, d) => sum + calculateSettlement(d, settings).netProfit, 0);
+    }, [filteredDispatches, settings]);
 
     const formattedProfit = useMemo(() => {
-        return `${filteredProfit >= 0 ? '+' : ''}Rs. ${Math.round(filteredProfit).toLocaleString('en-PK')}`;
-    }, [filteredProfit]);
+        return formatCurrency(filteredProfit, settings, { showSign: true });
+    }, [filteredProfit, settings]);
 
     /* const handleAddNew = () => {
         playPopSound();
@@ -343,8 +344,8 @@ export default function AllEntries() {
                                 style={{
                                     border: 'none',
                                     cursor: 'pointer',
-                                    background: filteredProfit >= 0 ? 'var(--tint-green)' : 'var(--tint-red)',
-                                    color: filteredProfit >= 0 ? 'var(--ios-green)' : 'var(--ios-red)',
+                                    background: filteredProfit >= 0 ? 'var(--ios-green)' : 'var(--ios-red)',
+                                    color: filteredProfit >= 0 ? 'white' : 'white',
                                     borderWidth: 0.5,
                                     borderStyle: 'solid',
                                     borderColor: filteredProfit >= 0 ? 'rgba(52, 199, 89, 0.25)' : 'rgba(255, 59, 48, 0.25)',
@@ -424,7 +425,14 @@ export default function AllEntries() {
                                 }}
                                 className="tabular-nums"
                             >
-                                Rs. {(filteredRevenue / 100000).toFixed(2)} <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--label-secondary)' }}>Lakh</span>
+                                {(() => {
+                                    const rev = formatCompactFinancial(filteredRevenue, settings, 2);
+                                    return (
+                                        <>
+                                            {rev.symbol} {rev.value} <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--label-secondary)' }}>{rev.unit === 'M' ? 'Million' : 'Lakh'}</span>
+                                        </>
+                                    );
+                                })()}
                             </div>
                         </div>
                     </div>
@@ -444,7 +452,7 @@ export default function AllEntries() {
                         filteredDispatches.map((dispatch, idx) => {
                             const party = parties.find((p) => p.id === dispatch.partyId);
                             const po = pos.find(p => p.id === dispatch.poId);
-                            const settlement = calculateSettlement(dispatch);
+                            const settlement = calculateSettlement(dispatch, settings);
                             const isProfit = settlement.netProfit >= 0;
 
                             const dateObj = new Date(dispatch.date);
@@ -496,7 +504,7 @@ export default function AllEntries() {
                                                 }}
                                                 className="tabular-nums"
                                             >
-                                                {isProfit ? '+Rs. ' : '-Rs. '}{Math.abs(Math.round(settlement.netProfit)).toLocaleString('en-PK')}
+                                                {formatCurrency(settlement.netProfit, settings, { showSign: true })}
                                             </span>
                                         </div>
 
@@ -507,10 +515,10 @@ export default function AllEntries() {
                                         </div>
 
                                         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
-                                            <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--ios-blue)', background: 'var(--tint-blue)', padding: '1px 6px', borderRadius: 4 }}>
+                                            <span style={{ fontSize: 11, fontWeight: 600, color: 'white', background: 'var(--ios-blue)', padding: '1px 6px', borderRadius: 4 }}>
                                                 {dispatch.labReceivedWeight} t
                                             </span>
-                                            <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--ios-orange)', background: 'var(--tint-orange)', padding: '1px 6px', borderRadius: 4 }}>
+                                            <span style={{ fontSize: 11, fontWeight: 600, color: 'white', background: 'var(--ios-orange)', padding: '1px 6px', borderRadius: 4 }}>
                                                 GCV: {dispatch.labActualGcv}
                                             </span>
                                         </div>

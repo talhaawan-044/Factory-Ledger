@@ -19,6 +19,10 @@ import {
   getLocalRecordCounts,
   type LedgerMutationDetail,
 } from './db';
+import {
+  applyCloudSecuritySettings,
+  disableAppLock,
+} from '../utils/securityLock';
 import { useState, useEffect } from 'react';
 
 export type SyncStatus = 'idle' | 'syncing' | 'synced' | 'pending' | 'offline' | 'error';
@@ -324,6 +328,9 @@ class SyncManager {
         // Auto-restore immediately from cloud!
         console.log(`[SyncManager] Empty local database. Auto-restoring ${cloudCount} records from cloud...`);
         const restoreRes = await restoreBackup(cloudData);
+        if (cloudData.settings?.appLockEnabled && cloudData.settings?.pinHash) {
+          applyCloudSecuritySettings(cloudData.settings, true);
+        }
         if (restoreRes.success) {
           const timestamp = cloudData.lastCloudSync || new Date().toISOString();
           localStorage.setItem(STORAGE_KEY_LAST_SYNC, timestamp);
@@ -406,6 +413,9 @@ class SyncManager {
     if (localCount === 0) {
       if (cloudCount > 0 && cloudData) {
         await restoreBackup(cloudData, { silent: false });
+        if (cloudData.settings?.appLockEnabled && cloudData.settings?.pinHash) {
+          applyCloudSecuritySettings(cloudData.settings, true);
+        }
         const timestamp = cloudData.lastCloudSync || new Date().toISOString();
         if (typeof localStorage !== 'undefined') {
           localStorage.setItem(STORAGE_KEY_LAST_SYNC, timestamp);
@@ -423,6 +433,9 @@ class SyncManager {
     // Scenario 2: Same user re-authenticating
     if (owner.uid === user.uid) {
       setLedgerOwner(user.uid, user.email);
+      if (cloudData?.settings?.appLockEnabled && cloudData?.settings?.pinHash) {
+        applyCloudSecuritySettings(cloudData.settings, false);
+      }
       await this.reconcileWithCloud(user.uid);
       return {
         type: 'ready',
@@ -500,10 +513,17 @@ class SyncManager {
       await clearAllData({ resetSettings: true });
       if (cloudData) {
         await restoreBackup(cloudData, { silent: false });
+        if (cloudData.settings?.appLockEnabled && cloudData.settings?.pinHash) {
+          applyCloudSecuritySettings(cloudData.settings, true);
+        } else {
+          disableAppLock();
+        }
         const timestamp = cloudData.lastCloudSync || new Date().toISOString();
         if (typeof localStorage !== 'undefined') {
           localStorage.setItem(STORAGE_KEY_LAST_SYNC, timestamp);
         }
+      } else {
+        disableAppLock();
       }
       setLedgerOwner(user.uid, user.email);
       this.updateState({ currentUser: user, status: 'synced' });
@@ -557,6 +577,9 @@ class SyncManager {
       }
 
       const res = await restoreBackup(cloudData);
+      if (cloudData.settings?.appLockEnabled && cloudData.settings?.pinHash) {
+        applyCloudSecuritySettings(cloudData.settings, false);
+      }
       if (res.success) {
         const timestamp = cloudData.lastCloudSync || new Date().toISOString();
         localStorage.setItem(STORAGE_KEY_LAST_SYNC, timestamp);
@@ -598,10 +621,11 @@ class SyncManager {
       }
 
       if (mode === 'clear_data') {
+        disableAppLock();
         await clearAllData({ resetSettings: true, resetOwner: true });
         return {
           success: true,
-          message: 'Signed out. Device data cleared. Cloud backup remains secure.',
+          message: 'Signed out. Device data and passcode cleared. Cloud backup remains secure.',
         };
       } else {
         return {

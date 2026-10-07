@@ -19,6 +19,8 @@ export interface IOSSelectProps<T extends string | number = string> {
   placeholder?: string;
   title?: string;
   floating?: boolean;
+  glyphBadge?: React.ReactNode;
+  description?: string;
   searchable?: boolean;
   searchPlaceholder?: string;
   disabled?: boolean;
@@ -44,6 +46,8 @@ export default function IOSSelect<T extends string | number = string>({
   placeholder,
   title,
   floating = false,
+  glyphBadge,
+  description,
   searchable,
   searchPlaceholder,
   disabled = false,
@@ -231,10 +235,20 @@ export default function IOSSelect<T extends string | number = string>({
           aria-expanded={isOpen}
           aria-label={label}
         >
-          <span style={{ fontSize: 16, color: 'var(--label-primary)', fontWeight: 400, flexShrink: 0 }}>
-            {label}
-          </span>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0, flex: 1, paddingRight: 8 }}>
+            {glyphBadge}
+            <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+              <span style={{ fontSize: 16, color: 'var(--label-primary)', fontWeight: 400 }}>
+                {label}
+              </span>
+              {description && (
+                <span style={{ fontSize: 12, color: 'var(--label-secondary)', marginTop: 1 }}>
+                  {description}
+                </span>
+              )}
+            </div>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
             {selectedOption?.icon && (
               <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center' }}>
                 {selectedOption.icon}

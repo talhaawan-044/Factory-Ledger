@@ -20,8 +20,17 @@ export const INITIAL_SETTINGS: AppSettings = {
   signatureUrl: "",
   theme: "light",
   currency: "PKR (Rs.)",
+  numberFormat: "million",
+  defaultTaxMethod: "formula_18_5",
+  taxFormulaSalesPercent: 18,
+  taxFormulaIncomePercent: 5,
+  accountType: "Commercial Coal Trader",
   companyAddress: "",
   ntnNumber: "",
+  appLockEnabled: false,
+  pinHash: "",
+  pinLength: 5,
+  lockTimeout: 0,
 };
 
 const DATA_VERSION_KEY = "coal_ledger_version";
@@ -239,6 +248,16 @@ export function sanitizeDispatch(d: Partial<Dispatch>): Dispatch {
     manualPremium: d.manualPremium !== undefined ? cleanNumber(d.manualPremium) : undefined,
     manualTax: d.manualTax !== undefined ? cleanNumber(d.manualTax) : undefined,
     taxMethod: d.taxMethod || 'manual',
+    taxSalesPercent: d.taxSalesPercent !== undefined
+      ? cleanNumber(d.taxSalesPercent)
+      : (d.taxMethod === 'formula_18_5'
+          ? (getCachedSettings()?.taxFormulaSalesPercent ?? 18)
+          : undefined),
+    taxIncomePercent: d.taxIncomePercent !== undefined
+      ? cleanNumber(d.taxIncomePercent)
+      : (d.taxMethod === 'formula_18_5'
+          ? (getCachedSettings()?.taxFormulaIncomePercent ?? 5)
+          : undefined),
     overheads: {
       loading: cleanNumber(d.overheads?.loading),
       freight: cleanNumber(d.overheads?.freight),
@@ -368,7 +387,15 @@ function ensureSeeded() {
 // -- Dispatches --
 export async function getDispatches(): Promise<Dispatch[]> {
   ensureSeeded();
-  return safeParseStorage<Dispatch>(DISPATCHES_KEY, 'coal_ledger_safety_dispatches_bak');
+  const rawList = safeParseStorage<Dispatch>(DISPATCHES_KEY, 'coal_ledger_safety_dispatches_bak');
+  // Normalize historical dispatches: freeze any legacy formula dispatches to 18% & 5% so settings updates never shift them
+  return rawList.map((d) => {
+    if (d.taxMethod === 'formula_18_5') {
+      if (typeof d.taxSalesPercent !== 'number') d.taxSalesPercent = 18;
+      if (typeof d.taxIncomePercent !== 'number') d.taxIncomePercent = 5;
+    }
+    return d;
+  });
 }
 
 export async function getDispatch(id: string): Promise<Dispatch | null> {
@@ -554,13 +581,55 @@ export async function deletePurchaseOrder(id: string): Promise<void> {
 }
 
 // -- Settings --
+let cachedSettings: AppSettings = INITIAL_SETTINGS;
+
+export function getCachedSettings(): AppSettings {
+  if (typeof window !== 'undefined' && (!cachedSettings.updatedAt || cachedSettings === INITIAL_SETTINGS)) {
+    const data = localStorage.getItem(SETTINGS_KEY);
+    if (data) {
+      try {
+        const parsed = JSON.parse(data);
+        cachedSettings = {
+          ...INITIAL_SETTINGS,
+          ...parsed,
+          numberFormat: parsed.numberFormat || 'million',
+          taxFormulaSalesPercent: typeof parsed.taxFormulaSalesPercent === 'number' ? parsed.taxFormulaSalesPercent : 18,
+          taxFormulaIncomePercent: typeof parsed.taxFormulaIncomePercent === 'number' ? parsed.taxFormulaIncomePercent : 5,
+          appLockEnabled: Boolean(parsed.appLockEnabled),
+          pinHash: parsed.pinHash || '',
+          pinLength: typeof parsed.pinLength === 'number' ? parsed.pinLength : (parsed.pinHash ? 4 : 5),
+          lockTimeout: typeof parsed.lockTimeout === 'number' ? parsed.lockTimeout : 0,
+        };
+      } catch {}
+    }
+  }
+  return cachedSettings;
+}
+
 export async function getSettings(): Promise<AppSettings> {
   ensureSeeded();
   const data = localStorage.getItem(SETTINGS_KEY);
-  if (!data) return INITIAL_SETTINGS;
+  if (!data) {
+    cachedSettings = INITIAL_SETTINGS;
+    return INITIAL_SETTINGS;
+  }
   try {
-    return JSON.parse(data);
+    const parsed = JSON.parse(data);
+    const merged: AppSettings = {
+      ...INITIAL_SETTINGS,
+      ...parsed,
+      numberFormat: parsed.numberFormat || 'million',
+      taxFormulaSalesPercent: typeof parsed.taxFormulaSalesPercent === 'number' ? parsed.taxFormulaSalesPercent : 18,
+      taxFormulaIncomePercent: typeof parsed.taxFormulaIncomePercent === 'number' ? parsed.taxFormulaIncomePercent : 5,
+      appLockEnabled: Boolean(parsed.appLockEnabled),
+      pinHash: parsed.pinHash || '',
+      pinLength: typeof parsed.pinLength === 'number' ? parsed.pinLength : (parsed.pinHash ? 4 : 5),
+      lockTimeout: typeof parsed.lockTimeout === 'number' ? parsed.lockTimeout : 0,
+    };
+    cachedSettings = merged;
+    return merged;
   } catch {
+    cachedSettings = INITIAL_SETTINGS;
     return INITIAL_SETTINGS;
   }
 }
@@ -568,8 +637,16 @@ export async function getSettings(): Promise<AppSettings> {
 export async function saveSettings(settings: AppSettings): Promise<void> {
   const updatedSettings: AppSettings = {
     ...settings,
+    numberFormat: settings.numberFormat || 'million',
+    taxFormulaSalesPercent: typeof settings.taxFormulaSalesPercent === 'number' ? settings.taxFormulaSalesPercent : 18,
+    taxFormulaIncomePercent: typeof settings.taxFormulaIncomePercent === 'number' ? settings.taxFormulaIncomePercent : 5,
+    appLockEnabled: Boolean(settings.appLockEnabled),
+    pinHash: settings.pinHash || '',
+    pinLength: typeof settings.pinLength === 'number' ? settings.pinLength : (settings.pinHash ? 4 : 5),
+    lockTimeout: typeof settings.lockTimeout === 'number' ? settings.lockTimeout : 0,
     updatedAt: Date.now(),
   };
+  cachedSettings = updatedSettings;
   safeSetStorage(SETTINGS_KEY, JSON.stringify(updatedSettings));
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent('app_settings_changed', { detail: updatedSettings }));
@@ -610,6 +687,27 @@ export async function getAllBackupData(): Promise<BackupPayload> {
   };
 }
 
+/**
+ * Generate sanitized backup payload for file export / sharing.
+ * Exports EVERYTHING (parties, dispatches, payments, purchase orders, business branding & tax formula settings)
+ * but STRIPS sensitive PIN hash and device lock credentials.
+ */
+export async function getExportBackupData(): Promise<BackupPayload> {
+  const full = await getAllBackupData();
+  const sanitizedSettings: AppSettings = {
+    ...full.settings,
+    appLockEnabled: false,
+  };
+  delete (sanitizedSettings as any).pinHash;
+  delete (sanitizedSettings as any).pinLength;
+  delete (sanitizedSettings as any).lockTimeout;
+
+  return {
+    ...full,
+    settings: sanitizedSettings,
+  };
+}
+
 export async function restoreBackup(
   backup: Partial<BackupPayload>,
   options?: { silent?: boolean }
@@ -623,7 +721,18 @@ export async function restoreBackup(
     const dispatches = Array.isArray(backup.dispatches) ? backup.dispatches : [];
     const payments = Array.isArray(backup.payments) ? backup.payments : [];
     const pos = Array.isArray(backup.pos) ? backup.pos : [];
-    const settings = backup.settings && typeof backup.settings === 'object' ? backup.settings : INITIAL_SETTINGS;
+    const rawSettings = backup.settings && typeof backup.settings === 'object' ? backup.settings : INITIAL_SETTINGS;
+    // CRITICAL SECURITY PRESERVATION:
+    // When restoring a backup file, never overwrite active device PIN or App Lock credentials
+    const currentSettings = getCachedSettings();
+    const settings: AppSettings = {
+      ...INITIAL_SETTINGS,
+      ...rawSettings,
+      appLockEnabled: currentSettings.appLockEnabled ?? false,
+      pinHash: currentSettings.pinHash ?? '',
+      pinLength: currentSettings.pinLength ?? 5,
+      lockTimeout: currentSettings.lockTimeout ?? 0,
+    };
 
     safeSetStorage(PARTIES_KEY, JSON.stringify(parties));
     safeSetStorage(DISPATCHES_KEY, JSON.stringify(dispatches));
@@ -693,9 +802,16 @@ export function mergeLedgerData(
 
   // 1. Parties
   const partyMap = new Map<string, Party>();
+  const partyNameMap = new Map<string, Party>();
+  const partyIdRemap = new Map<string, string>(); // incoming partyId -> local partyId
+
   for (const p of local.parties || []) {
     partyMap.set(p.id, p);
+    if (p.name) {
+      partyNameMap.set(p.name.trim().toLowerCase(), p);
+    }
   }
+
   for (const cp of cloud.parties || []) {
     const deletedAt = tombstones[cp.id];
     const cloudTime = cp.updatedAt || cp.createdAt || 0;
@@ -704,18 +820,29 @@ export function mergeLedgerData(
       hasCloudChanges = true;
       continue;
     }
-    const existing = partyMap.get(cp.id);
-    if (!existing) {
-      partyMap.set(cp.id, cp);
-      hasLocalChanges = true;
-    } else {
-      const localTime = existing.updatedAt || existing.createdAt || 0;
+
+    const existingById = partyMap.get(cp.id);
+    const existingByName = cp.name ? partyNameMap.get(cp.name.trim().toLowerCase()) : undefined;
+
+    if (existingById) {
+      const localTime = existingById.updatedAt || existingById.createdAt || 0;
       if (cloudTime > localTime) {
         partyMap.set(cp.id, cp);
         hasLocalChanges = true;
       } else if (localTime > cloudTime) {
         hasCloudChanges = true;
       }
+    } else if (existingByName) {
+      // Identical party name with different UUID (e.g. independently created on another device)
+      // Remap incoming entries to link to existing party card cleanly
+      partyIdRemap.set(cp.id, existingByName.id);
+      hasLocalChanges = true;
+    } else {
+      partyMap.set(cp.id, cp);
+      if (cp.name) {
+        partyNameMap.set(cp.name.trim().toLowerCase(), cp);
+      }
+      hasLocalChanges = true;
     }
   }
 
@@ -731,14 +858,18 @@ export function mergeLedgerData(
       hasCloudChanges = true;
       continue;
     }
+
+    const targetPartyId = partyIdRemap.get(cd.partyId) || cd.partyId;
+    const resolvedDispatch = targetPartyId !== cd.partyId ? { ...cd, partyId: targetPartyId } : cd;
+
     const existing = dispatchMap.get(cd.id);
     if (!existing) {
-      dispatchMap.set(cd.id, cd);
+      dispatchMap.set(cd.id, resolvedDispatch);
       hasLocalChanges = true;
     } else {
       const localTime = existing.updatedAt || existing.createdAt || 0;
       if (cloudTime > localTime) {
-        dispatchMap.set(cd.id, cd);
+        dispatchMap.set(cd.id, resolvedDispatch);
         hasLocalChanges = true;
       } else if (localTime > cloudTime) {
         hasCloudChanges = true;
@@ -758,14 +889,18 @@ export function mergeLedgerData(
       hasCloudChanges = true;
       continue;
     }
+
+    const targetPartyId = partyIdRemap.get(cp.partyId) || cp.partyId;
+    const resolvedPayment = targetPartyId !== cp.partyId ? { ...cp, partyId: targetPartyId } : cp;
+
     const existing = paymentMap.get(cp.id);
     if (!existing) {
-      paymentMap.set(cp.id, cp);
+      paymentMap.set(cp.id, resolvedPayment);
       hasLocalChanges = true;
     } else {
       const localTime = existing.updatedAt || existing.createdAt || 0;
       if (cloudTime > localTime) {
-        paymentMap.set(cp.id, cp);
+        paymentMap.set(cp.id, resolvedPayment);
         hasLocalChanges = true;
       } else if (localTime > cloudTime) {
         hasCloudChanges = true;
@@ -785,14 +920,18 @@ export function mergeLedgerData(
       hasCloudChanges = true;
       continue;
     }
+
+    const targetPartyId = partyIdRemap.get(cpo.partyId) || cpo.partyId;
+    const resolvedPo = targetPartyId !== cpo.partyId ? { ...cpo, partyId: targetPartyId } : cpo;
+
     const existing = poMap.get(cpo.id);
     if (!existing) {
-      poMap.set(cpo.id, cpo);
+      poMap.set(cpo.id, resolvedPo);
       hasLocalChanges = true;
     } else {
       const localTime = existing.updatedAt || existing.createdAt || 0;
       if (cloudTime > localTime) {
-        poMap.set(cpo.id, cpo);
+        poMap.set(cpo.id, resolvedPo);
         hasLocalChanges = true;
       } else if (localTime > cloudTime) {
         hasCloudChanges = true;
@@ -819,6 +958,15 @@ export function mergeLedgerData(
       hasCloudChanges = true;
     }
   }
+
+  // Always protect current device security credentials during merge
+  mergedSettings = {
+    ...mergedSettings,
+    appLockEnabled: local.settings?.appLockEnabled ?? false,
+    pinHash: local.settings?.pinHash ?? '',
+    pinLength: local.settings?.pinLength ?? 5,
+    lockTimeout: local.settings?.lockTimeout ?? 0,
+  };
 
   const mergedParties = Array.from(partyMap.values());
   const mergedDispatches = Array.from(dispatchMap.values());

@@ -1,6 +1,7 @@
 import React from 'react';
 import type { Dispatch, Party, PurchaseOrder, AppSettings } from '../types';
 import { calculateSettlement } from '../utils/calculations';
+import { getCurrencySymbol, formatAmountNumber } from '../utils/currency';
 
 interface DispatchReceiptProps {
   dispatch: Dispatch;
@@ -11,9 +12,12 @@ interface DispatchReceiptProps {
 
 export const DispatchReceipt = React.forwardRef<HTMLDivElement, DispatchReceiptProps>(
   ({ dispatch, party, po, settings }, ref) => {
-    const settlement = calculateSettlement(dispatch);
+    const settlement = calculateSettlement(dispatch, settings);
     const businessName = settings?.businessName || 'AWAN COAL LOGISTICS';
     const factoryName = party?.name || dispatch.factoryName || 'Factory Client';
+    const curSym = getCurrencySymbol(settings?.currency);
+    const salesPct = dispatch.taxSalesPercent ?? settings?.taxFormulaSalesPercent ?? 18;
+    const incomePct = dispatch.taxIncomePercent ?? settings?.taxFormulaIncomePercent ?? 5;
 
     const voucherId = `VCH-${(dispatch.id || '00000000').slice(0, 8).toUpperCase()}`;
 
@@ -284,7 +288,7 @@ export const DispatchReceipt = React.forwardRef<HTMLDivElement, DispatchReceiptP
               <tr style={{ borderBottom: '1px solid #F1F5F9' }}>
                 <td style={{ padding: '5px 0', color: '#64748B' }}>Contract Base Rate</td>
                 <td style={{ padding: '5px 0', textAlign: 'right', color: '#334155' }}>
-                  Rs. {Math.round(dispatch.baseRate || 0).toLocaleString('en-PK')} / ton
+                  {curSym} {formatAmountNumber(dispatch.baseRate || 0, settings)} / ton
                 </td>
               </tr>
 
@@ -292,7 +296,7 @@ export const DispatchReceipt = React.forwardRef<HTMLDivElement, DispatchReceiptP
                 <tr style={{ borderBottom: '1px solid #F1F5F9' }}>
                   <td style={{ padding: '5px 0', color: '#DC2626' }}>GCV Quality Deduction</td>
                   <td style={{ padding: '5px 0', textAlign: 'right', color: '#DC2626' }}>
-                    - Rs. {dispatch.manualDeduction} / ton
+                    - {curSym} {dispatch.manualDeduction} / ton
                   </td>
                 </tr>
               )}
@@ -301,7 +305,7 @@ export const DispatchReceipt = React.forwardRef<HTMLDivElement, DispatchReceiptP
                 <tr style={{ borderBottom: '1px solid #F1F5F9' }}>
                   <td style={{ padding: '5px 0', color: '#16A34A' }}>Quality Premium</td>
                   <td style={{ padding: '5px 0', textAlign: 'right', color: '#16A34A' }}>
-                    + Rs. {dispatch.manualPremium} / ton
+                    + {curSym} {dispatch.manualPremium} / ton
                   </td>
                 </tr>
               )}
@@ -309,10 +313,10 @@ export const DispatchReceipt = React.forwardRef<HTMLDivElement, DispatchReceiptP
               {Boolean(settlement.taxDeduction && settlement.taxDeduction > 0) && (
                 <tr style={{ borderBottom: '1px solid #F1F5F9' }}>
                   <td style={{ padding: '5px 0', color: '#64748B' }}>
-                    Tax Withholding {dispatch.taxMethod === 'formula_18_5' ? '((Rate + 18%) × 5%)' : ''}
+                    Tax Withholding {dispatch.taxMethod === 'formula_18_5' ? `((Rate + ${salesPct}%) × ${incomePct}%)` : ''}
                   </td>
                   <td style={{ padding: '5px 0', textAlign: 'right', color: '#475569' }}>
-                    - Rs. {settlement.taxDeduction.toFixed(2)} / ton
+                    - {curSym} {settlement.taxDeduction.toFixed(2)} / ton
                   </td>
                 </tr>
               )}
@@ -321,7 +325,7 @@ export const DispatchReceipt = React.forwardRef<HTMLDivElement, DispatchReceiptP
                 <tr style={{ borderBottom: '1px solid #F1F5F9' }}>
                   <td style={{ padding: '5px 0', color: '#64748B' }}>Commission / Margin</td>
                   <td style={{ padding: '5px 0', textAlign: 'right', color: '#475569' }}>
-                    - Rs. {dispatch.commissionPerTon} / ton
+                    - {curSym} {dispatch.commissionPerTon} / ton
                   </td>
                 </tr>
               )}
@@ -339,7 +343,7 @@ export const DispatchReceipt = React.forwardRef<HTMLDivElement, DispatchReceiptP
                     fontSize: 12,
                   }}
                 >
-                  Rs. {settlement.payableRate.toFixed(2)} / ton
+                  {curSym} {settlement.payableRate.toFixed(2)} / ton
                 </td>
               </tr>
             </tbody>
@@ -377,10 +381,10 @@ export const DispatchReceipt = React.forwardRef<HTMLDivElement, DispatchReceiptP
               fontFamily: 'monospace',
             }}
           >
-            Rs. {Math.round(settlement.totalRevenue).toLocaleString('en-PK')}
+            {curSym} {formatAmountNumber(settlement.totalRevenue, settings)}
           </div>
           <div style={{ fontSize: 10, color: '#CBD5E1', marginTop: 3 }}>
-            ({(dispatch.labReceivedWeight || 0).toFixed(2)} Tons × Rs. {settlement.payableRate.toFixed(2)}/t)
+            ({(dispatch.labReceivedWeight || 0).toFixed(2)} Tons × {curSym} {settlement.payableRate.toFixed(2)}/t)
           </div>
         </div>
 

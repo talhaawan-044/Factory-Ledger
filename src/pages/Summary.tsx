@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { getDispatches, getParties, getPayments, getPurchaseOrders, getSettings } from '../lib/db';
 import type { Dispatch, Party, Payment, PurchaseOrder, AppSettings } from '../types';
 import { calculateSettlement, calculatePartyBalance } from '../utils/calculations';
+import { formatCurrency, formatCompactFinancial } from '../utils/currency';
 import { playPopSound, triggerConfetti } from '../utils/delight';
 import { useLedgerListener } from '../hooks/useLedgerListener';
 import {
@@ -87,12 +88,12 @@ export default function Summary() {
     });
 
     // Calculations based on filtered dispatches
-    const totalProfit = filteredDispatches.reduce((sum, d) => sum + calculateSettlement(d).netProfit, 0);
-    const totalRevenue = filteredDispatches.reduce((sum, d) => sum + calculateSettlement(d).totalRevenue, 0);
-    const totalCost = filteredDispatches.reduce((sum, d) => sum + calculateSettlement(d).totalCost, 0);
+    const totalProfit = filteredDispatches.reduce((sum, d) => sum + calculateSettlement(d, settings).netProfit, 0);
+    const totalRevenue = filteredDispatches.reduce((sum, d) => sum + calculateSettlement(d, settings).totalRevenue, 0);
+    const totalCost = filteredDispatches.reduce((sum, d) => sum + calculateSettlement(d, settings).totalCost, 0);
     const totalTons = filteredDispatches.reduce((sum, d) => sum + (d.labReceivedWeight || 0), 0);
     const profitMargin = totalRevenue > 0 ? (totalProfit / totalRevenue) * 100 : 0;
-    const formattedProfit = `${totalProfit >= 0 ? '+Rs.\u00A0' : '-Rs.\u00A0'}${Math.abs(Math.round(totalProfit)).toLocaleString('en-PK')}`;
+    const formattedProfit = formatCurrency(totalProfit, settings, { showSign: true });
 
     // Recent Dispatches
     const recentDispatches = [...filteredDispatches]
@@ -254,7 +255,7 @@ export default function Summary() {
                                 borderRadius: '4px 0 0 4px',
                                 transition: 'width 0.4s ease'
                             }}
-                            title={`Cost: Rs. ${Math.round(totalCost).toLocaleString('en-PK')}`}
+                            title={`Cost: ${formatCurrency(totalCost, settings)}`}
                         />
                         {/* Net Margin Segment */}
                         <div
@@ -264,17 +265,17 @@ export default function Summary() {
                                 borderRadius: '0 4px 4px 0',
                                 transition: 'all 0.4s ease'
                             }}
-                            title={`Margin: Rs. ${Math.round(totalProfit).toLocaleString('en-PK')}`}
+                            title={`Margin: ${formatCurrency(totalProfit, settings)}`}
                         />
                     </div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--label-tertiary)', marginTop: 5 }}>
                         <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                             <span style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--ios-blue)' }} />
-                            Total Costs: Rs. {(totalCost / 100000).toFixed(1)}L
+                            Total Costs: {formatCompactFinancial(totalCost, settings, 1).fullString}
                         </span>
                         <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                             <span style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--ios-green)' }} />
-                            Net Spread: Rs. {(totalProfit / 100000).toFixed(1)}L
+                            Net Spread: {formatCompactFinancial(totalProfit, settings, 1).fullString}
                         </span>
                     </div>
                 </div>
@@ -299,7 +300,14 @@ export default function Summary() {
                         */}
                     </div>
                     <div className="ios-widget-value">
-                        Rs. {(totalRevenue / 100000).toFixed(2)}<span style={{ fontSize: 13, fontWeight: 600, color: 'var(--label-secondary)', marginLeft: 3 }}>L</span>
+                        {(() => {
+                            const rev = formatCompactFinancial(totalRevenue, settings, 2);
+                            return (
+                                <>
+                                    {rev.symbol} {rev.value}<span style={{ fontSize: 13, fontWeight: 600, color: 'var(--label-secondary)', marginLeft: 3 }}>{rev.unit}</span>
+                                </>
+                            );
+                        })()}
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: 'var(--label-secondary)', marginTop: -2 }}>
                         <TrendingUp style={{ width: 12, height: 12, color: 'var(--ios-green)' }} />
@@ -323,7 +331,14 @@ export default function Summary() {
                         </div> */}
                     </div>
                     <div className="ios-widget-value">
-                        Rs. {(totalCost / 100000).toFixed(2)}<span style={{ fontSize: 13, fontWeight: 600, color: 'var(--label-secondary)', marginLeft: 3 }}>L</span>
+                        {(() => {
+                            const cost = formatCompactFinancial(totalCost, settings, 2);
+                            return (
+                                <>
+                                    {cost.symbol} {cost.value}<span style={{ fontSize: 13, fontWeight: 600, color: 'var(--label-secondary)', marginLeft: 3 }}>{cost.unit}</span>
+                                </>
+                            );
+                        })()}
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: 'var(--label-secondary)', marginTop: -2 }}>
                         <span>Procurement + freight</span>
@@ -495,7 +510,7 @@ export default function Summary() {
                                                 }}
                                                 className="tabular-nums"
                                             >
-                                                {isProfit ? '+Rs. ' : '-Rs. '}{Math.abs(Math.round(settlement.netProfit)).toLocaleString('en-PK')}
+                                                {formatCurrency(settlement.netProfit, settings, { showSign: true })}
                                             </span>
                                         </div>
 
@@ -535,8 +550,8 @@ export default function Summary() {
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                         <div className="ios-group-title">Active Factory Accounts</div>
                         {totalReceivables > 0 && (
-                            <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--ios-amber)', background: 'var(--tint-amber)', padding: '2px 8px', borderRadius: 8, marginRight: 16 }}>
-                                Rs. {(totalReceivables / 100000).toFixed(2)}L Dues ({partiesWithDues.length})
+                            <span style={{ fontSize: 11, fontWeight: 700, color: 'white', background: 'var(--ios-amber)', padding: '2px 8px', borderRadius: 8, marginRight: 16 }}>
+                                {formatCompactFinancial(totalReceivables, settings, 2).fullString} Dues ({partiesWithDues.length})
                             </span>
                         )}
                     </div>
@@ -576,7 +591,7 @@ export default function Summary() {
                                             }}
                                             className="tabular-nums"
                                         >
-                                            {isDues ? 'Due ' : balance < 0 ? 'Adv ' : ''}Rs. {Math.abs(Math.round(balance)).toLocaleString('en-PK')}
+                                            {isDues ? 'Due ' : balance < 0 ? 'Adv ' : ''}{formatCurrency(Math.abs(balance), settings)}
                                         </div>
                                         <div style={{ fontSize: 11, color: 'var(--label-tertiary)' }}>
                                             {isDues ? 'Receivable' : balance < 0 ? 'Overpaid' : 'Settled'}

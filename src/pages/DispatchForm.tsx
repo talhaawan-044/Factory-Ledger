@@ -15,9 +15,10 @@ import {
   Calculator,
   Plus,
 } from 'lucide-react';
-import type { Dispatch, CoalInput, Party, PurchaseOrder } from '../types';
-import { getDispatch, saveDispatch, deleteDispatch, getParties, getPartyPurchaseOrders, getDispatches, saveParty } from '../lib/db';
+import type { Dispatch, CoalInput, Party, PurchaseOrder, AppSettings } from '../types';
+import { getDispatch, saveDispatch, deleteDispatch, getParties, getPartyPurchaseOrders, getDispatches, saveParty, getSettings } from '../lib/db';
 import { calculateSettlement } from '../utils/calculations';
+import { getCurrencySymbol, formatAmountNumber } from '../utils/currency';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import IOSDatePicker from '../components/IOSDatePicker';
 import IOSConfirmModal from '../components/IOSConfirmModal';
@@ -57,6 +58,8 @@ const emptyDispatch: Omit<Dispatch, 'id' | 'createdAt' | 'updatedAt'> = {
   manualPremium: 0,
   manualTax: 0,
   taxMethod: 'manual',
+  taxSalesPercent: undefined,
+  taxIncomePercent: undefined,
   notes: '',
 };
 
@@ -79,12 +82,30 @@ export default function DispatchForm() {
   const [parties, setParties] = useState<Party[]>([]);
   const [pos, setPos] = useState<PurchaseOrder[]>([]);
   const [allDispatches, setAllDispatches] = useState<Dispatch[]>([]);
+  const [settings, setSettings] = useState<AppSettings | undefined>(undefined);
   const [isLoading, setIsLoading] = useState(() => dispatchId !== 'new');
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [isPartyModalOpen, setIsPartyModalOpen] = useState(false);
 
+  const curSym = getCurrencySymbol(settings?.currency);
+  const salesPct = settings?.taxFormulaSalesPercent ?? 18;
+  const incomePct = settings?.taxFormulaIncomePercent ?? 5;
+
   useEffect(() => {
     let active = true;
+    getSettings().then((s) => {
+      if (active) {
+        setSettings(s);
+        if (dispatchId === 'new') {
+          setDispatch(prev => prev ? {
+            ...prev,
+            taxMethod: s.defaultTaxMethod || 'manual',
+            taxSalesPercent: s.taxFormulaSalesPercent ?? 18,
+            taxIncomePercent: s.taxFormulaIncomePercent ?? 5,
+          } : null);
+        }
+      }
+    });
     getParties().then((p) => {
       if (active) setParties(p);
     });
@@ -106,6 +127,12 @@ export default function DispatchForm() {
           const cleanDispatch: Omit<Dispatch, 'createdAt' | 'updatedAt'> = {
             ...emptyDispatch,
             ...data,
+            taxSalesPercent: data.taxSalesPercent !== undefined
+              ? data.taxSalesPercent
+              : (data.taxMethod === 'formula_18_5' ? 18 : undefined),
+            taxIncomePercent: data.taxIncomePercent !== undefined
+              ? data.taxIncomePercent
+              : (data.taxMethod === 'formula_18_5' ? 5 : undefined),
             coalInputs: Array.isArray(data.coalInputs) && data.coalInputs.length > 0
               ? data.coalInputs
               : [{ id: uuidv4(), sourceName: '', weight: 0, purchaseRate: 0 }],
@@ -138,7 +165,7 @@ export default function DispatchForm() {
   }
 
   // Calculate live settlement
-  const settlement = calculateSettlement(dispatch as Dispatch);
+  const settlement = calculateSettlement(dispatch as Dispatch, settings);
   const isProfit = settlement.netProfit >= 0;
 
   // Blend metrics
@@ -322,7 +349,7 @@ export default function DispatchForm() {
               }}
               className="tabular-nums"
             >
-              {isProfit ? '+Rs. ' : '-Rs. '}{Math.abs(Math.round(settlement.netProfit)).toLocaleString('en-PK')}
+              {isProfit ? `+${curSym} ` : `-${curSym} `}{formatAmountNumber(Math.abs(settlement.netProfit), settings)}
             </div>
           </div>
         </div>
@@ -338,13 +365,13 @@ export default function DispatchForm() {
           <div>
             <div style={{ fontSize: 11, color: 'var(--label-secondary)', textTransform: 'uppercase' }}>Payable Rate</div>
             <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--ios-blue)', marginTop: 1 }} className="tabular-nums">
-              Rs. {settlement.payableRate.toFixed(2)}<span style={{ fontSize: 11, fontWeight: 400 }}>/t</span>
+              {curSym} {settlement.payableRate.toFixed(2)}<span style={{ fontSize: 11, fontWeight: 400 }}>/t</span>
             </div>
           </div>
           <div>
             <div style={{ fontSize: 11, color: 'var(--label-secondary)', textTransform: 'uppercase' }}>Total Revenue</div>
             <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--label-primary)', marginTop: 1 }} className="tabular-nums">
-              Rs. {Math.round(settlement.totalRevenue).toLocaleString('en-PK')}
+              {curSym} {formatAmountNumber(settlement.totalRevenue, settings)}
             </div>
           </div>
         </div>
@@ -387,7 +414,7 @@ export default function DispatchForm() {
               options={pos.map((p) => ({
                 value: p.id,
                 label: `PO #${p.poNumber}`,
-                subtitle: `Base: Rs. ${p.baseRate.toLocaleString()} • Target GCV: ${p.targetGcv}${p.commissionPerTon ? ` • Comm: Rs. ${p.commissionPerTon}/t` : ''}`,
+                subtitle: `Base: ${curSym} ${formatAmountNumber(p.baseRate, settings)} • Target GCV: ${p.targetGcv}${p.commissionPerTon ? ` • Comm: ${curSym} ${p.commissionPerTon}/t` : ''}`,
                 badge: p.isActive ? 'Active' : undefined,
               }))}
               placeholder="Select Purchase Order"
@@ -423,8 +450,8 @@ export default function DispatchForm() {
                 gap: 8,
                 padding: '9px 12px',
                 borderRadius: 10,
-                background: 'var(--tint-orange)',
-                color: 'var(--ios-orange)',
+                background: 'var(--ios-orange)',
+                color: 'white',
                 fontSize: 12,
                 fontWeight: 600,
                 marginTop: -4,
@@ -460,7 +487,7 @@ export default function DispatchForm() {
             value={dispatch.baseRate || ''}
             onChange={(v) => handleChange('baseRate', parseFloat(v) || 0)}
             placeholder="8500"
-            suffix="Rs./t"
+            suffix={`${curSym}/t`}
           />
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 10, padding: '0 16px' }}>
@@ -470,7 +497,7 @@ export default function DispatchForm() {
             value={dispatch.commissionPerTon || ''}
             onChange={(v) => handleChange('commissionPerTon', parseFloat(v) || 0)}
             placeholder="0"
-            suffix="Rs./t"
+            suffix={`${curSym}/t`}
           />
         </div>
       </div>
@@ -562,7 +589,7 @@ export default function DispatchForm() {
                   </span>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                     <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--label-primary)' }} className="tabular-nums">
-                      Rs. {Math.round(rowCost).toLocaleString('en-PK')}
+                      {curSym} {formatAmountNumber(rowCost, settings)}
                     </span>
                     {dispatch.coalInputs.length > 1 && (
                       <button
@@ -601,7 +628,7 @@ export default function DispatchForm() {
                   <FloatingField
                     label="Buy Price"
                     type="number"
-                    suffix="Rs./t"
+                    suffix={`${curSym}/t`}
                     value={input.purchaseRate || ''}
                     onChange={(val) => updateCoalInput(input.id, 'purchaseRate', parseFloat(val) || 0)}
                   />
@@ -612,7 +639,7 @@ export default function DispatchForm() {
         </div>
 
         <div className="ios-group-footnote" style={{ padding: '8px 18px 0' }}>
-          Total Blend Weight: <strong>{totalInputWeight.toFixed(1)} tons</strong> · Avg Coal Purchase Rate: <strong>Rs. {Math.round(avgCoalPurchaseRate).toLocaleString('en-PK')}/t</strong>
+          Total Blend Weight: <strong>{totalInputWeight.toFixed(1)} tons</strong> · Avg Coal Purchase Rate: <strong>{curSym} {formatAmountNumber(avgCoalPurchaseRate, settings)}/t</strong>
         </div>
       </div>
 
@@ -626,14 +653,14 @@ export default function DispatchForm() {
             <FloatingField
               label="Loading Amnt"
               type="number"
-              suffix="Rs."
+              suffix={curSym}
               value={dispatch.overheads.loading || ''}
               onChange={(v) => handleOverheadChange('loading', parseFloat(v) || 0)}
             />
             <FloatingField
               label="Transport"
               type="number"
-              suffix="Rs."
+              suffix={curSym}
               value={dispatch.overheads.freight || ''}
               onChange={(v) => handleOverheadChange('freight', parseFloat(v) || 0)}
             />
@@ -643,14 +670,14 @@ export default function DispatchForm() {
             <FloatingField
               label="Crushing Amnt"
               type="number"
-              suffix="Rs."
+              suffix={curSym}
               value={dispatch.overheads.crush || ''}
               onChange={(v) => handleOverheadChange('crush', parseFloat(v) || 0)}
             />
             <FloatingField
               label="Royalty / Taxes"
               type="number"
-              suffix="Rs."
+              suffix={curSym}
               value={dispatch.overheads.royalty || ''}
               onChange={(v) => handleOverheadChange('royalty', parseFloat(v) || 0)}
             />
@@ -659,7 +686,7 @@ export default function DispatchForm() {
           <FloatingField
             label="Other Expenses"
             type="number"
-            suffix="Rs."
+            suffix={curSym}
             value={dispatch.overheads.other || ''}
             onChange={(v) => handleOverheadChange('other', parseFloat(v) || 0)}
           />
@@ -758,8 +785,8 @@ export default function DispatchForm() {
                   padding: '6px 12px',
                   borderRadius: 8,
                   border: 'none',
-                  background: 'var(--tint-blue)',
-                  color: 'var(--ios-blue)',
+                  background: 'var(--ios-blue)',
+                  color: 'white',
                   fontSize: 12,
                   fontWeight: 600,
                   cursor: 'pointer',
@@ -890,7 +917,7 @@ export default function DispatchForm() {
                     gap: 6
                   }}
                 >
-                  Auto Pro-Rata GCV Deduction: Rs. {proRataDeduction}/t
+                  Auto Pro-Rata GCV Deduction: {curSym} {proRataDeduction}/t
                 </button>
               )}
               {proRataPremium > 0 && (
@@ -901,8 +928,8 @@ export default function DispatchForm() {
                     padding: '6px 12px',
                     borderRadius: 8,
                     border: 'none',
-                    background: 'var(--tint-green)',
-                    color: 'var(--ios-green)',
+                    background: 'var(--ios-green)',
+                    color: 'white',
                     fontSize: 12,
                     fontWeight: 600,
                     cursor: 'pointer',
@@ -911,7 +938,7 @@ export default function DispatchForm() {
                     gap: 8
                   }}
                 >
-                  Auto Pro-Rata GCV Premium: Rs. {proRataPremium}/t
+                  Auto Pro-Rata GCV Premium: {curSym} {proRataPremium}/t
                 </button>
               )}
             </div>
@@ -921,7 +948,7 @@ export default function DispatchForm() {
             <FloatingField
               label="Deduction"
               type="number"
-              suffix="Rs./t"
+              suffix={`${curSym}/t`}
               value={dispatch.manualDeduction || ''}
               onChange={(v) => handleChange('manualDeduction', parseFloat(v) || 0)}
               placeholder="0"
@@ -929,75 +956,99 @@ export default function DispatchForm() {
             <FloatingField
               label="Premium"
               type="number"
-              suffix="Rs./t"
+              suffix={`${curSym}/t`}
               value={dispatch.manualPremium || ''}
               onChange={(v) => handleChange('manualPremium', parseFloat(v) || 0)}
               placeholder="0"
             />
           </div>
           {/* Tax Calculation Method */}
-          <IOSSelect
-            label="Tax Calculation Method"
-            value={dispatch.taxMethod || 'manual'}
-            onChange={(val) => handleChange('taxMethod', val as 'manual' | 'formula_18_5')}
-            options={[
-              {
-                value: 'manual',
-                label: 'Manual Entry',
-                subtitle: 'Enter sales tax and income tax values directly',
-              },
-              {
-                value: 'formula_18_5',
-                label: 'Formula: (Rate + 18%) * 5%',
-                subtitle: 'Rate + 18% sales tax, then 5% advance income tax',
-              },
-            ]}
-            title="Tax Calculation Method"
-            floating
-          />
+          {(() => {
+            const activeDispatchSalesPct = dispatch.taxSalesPercent ?? salesPct;
+            const activeDispatchIncomePct = dispatch.taxIncomePercent ?? incomePct;
+            return (
+              <>
+                <IOSSelect
+                  label="Tax Calculation Method"
+                  value={dispatch.taxMethod || 'manual'}
+                  onChange={(val) => {
+                    setDispatch((prev) => {
+                      if (!prev) return null;
+                      if (val === 'formula_18_5') {
+                        return {
+                          ...prev,
+                          taxMethod: 'formula_18_5',
+                          taxSalesPercent: prev.taxSalesPercent ?? salesPct,
+                          taxIncomePercent: prev.taxIncomePercent ?? incomePct,
+                        };
+                      }
+                      return {
+                        ...prev,
+                        taxMethod: 'manual',
+                      };
+                    });
+                  }}
+                  options={[
+                    {
+                      value: 'manual',
+                      label: 'Manual Entry',
+                      subtitle: 'Enter sales tax and income tax values directly',
+                    },
+                    {
+                      value: 'formula_18_5',
+                      label: `Formula: (Rate + ${activeDispatchSalesPct}%) * ${activeDispatchIncomePct}%`,
+                      subtitle: `Rate + ${activeDispatchSalesPct}% sales tax, then ${activeDispatchIncomePct}% advance income tax`,
+                    },
+                  ]}
+                  title="Tax Calculation Method"
+                  floating
+                />
 
-          {/* Dynamic UI: Manual Number Input or Read-Only Auto Formula Value */}
-          {(dispatch.taxMethod || 'manual') === 'manual' ? (
-            <FloatingField
-              label="Tax Deduction"
-              type="number"
-              suffix="Rs./t"
-              value={dispatch.manualTax || ''}
-              onChange={(v) => handleChange('manualTax', parseFloat(v) || 0)}
-              placeholder="0"
-            />
-          ) : (
-            <div className="floating-field is-floated has-suffix" style={{ marginBottom: 12 }}>
-              <input
-                type="text"
-                readOnly
-                disabled
-                value={settlement.taxDeduction.toFixed(2)}
-                className="floating-input"
-                style={{
-                  color: 'var(--label-primary)',
-                  fontWeight: 600,
-                  cursor: 'not-allowed',
-                  opacity: 0.9,
-                  background: 'transparent',
-                }}
-              />
-              <label
-                className="floating-label"
-                style={{
-                  top: 0,
-                  transform: 'translateY(-50%)',
-                  fontSize: 12,
-                  fontWeight: 500,
-                  background: 'var(--bg-card)',
-                  color: 'var(--label-secondary)',
-                }}
-              >
-                Tax Deduction (Auto: (Rate + 18%) * 5%)
-              </label>
-              <span className="floating-suffix">Rs./t</span>
-            </div>
-          )}
+                {/* Dynamic UI: Manual Number Input or Read-Only Auto Formula Value */}
+                {(dispatch.taxMethod || 'manual') === 'manual' ? (
+                  <FloatingField
+                    label="Tax Deduction"
+                    type="number"
+                    suffix={`${curSym}/t`}
+                    value={dispatch.manualTax || ''}
+                    onChange={(v) => handleChange('manualTax', parseFloat(v) || 0)}
+                    placeholder="0"
+                  />
+                ) : (
+                  <div className="floating-field is-floated has-suffix" style={{ marginBottom: 12 }}>
+                    <input
+                      type="text"
+                      readOnly
+                      disabled
+                      value={settlement.taxDeduction.toFixed(2)}
+                      className="floating-input"
+                      style={{
+                        color: 'var(--label-primary)',
+                        fontWeight: 600,
+                        cursor: 'not-allowed',
+                        opacity: 0.9,
+                        background: 'transparent',
+                      }}
+                    />
+                    <label
+                      className="floating-label"
+                      style={{
+                        top: 0,
+                        transform: 'translateY(-50%)',
+                        fontSize: 12,
+                        fontWeight: 500,
+                        background: 'var(--bg-card)',
+                        color: 'var(--label-secondary)',
+                      }}
+                    >
+                      Tax Deduction (Auto: (Rate + ${activeDispatchSalesPct}%) * ${activeDispatchIncomePct}%)
+                    </label>
+                    <span className="floating-suffix">{curSym}/t</span>
+                  </div>
+                )}
+              </>
+            );
+          })()}
         </div>
       </div>
 
@@ -1043,39 +1094,39 @@ export default function DispatchForm() {
 
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 8 }}>
             <span style={{ color: 'var(--label-secondary)' }}>Base Agreement Rate</span>
-            <span style={{ fontWeight: 600 }} className="tabular-nums">Rs. {dispatch.baseRate.toFixed(2)}</span>
+            <span style={{ fontWeight: 600 }} className="tabular-nums">{curSym} {dispatch.baseRate.toFixed(2)}</span>
           </div>
 
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 8, color: 'var(--ios-red)' }}>
             <span>- Manual Deduction</span>
-            <span className="tabular-nums">- Rs. {settlement.gcvDeduction.toFixed(2)}</span>
+            <span className="tabular-nums">- {curSym} {settlement.gcvDeduction.toFixed(2)}</span>
           </div>
 
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 8, color: 'var(--ios-green)' }}>
             <span>+ Manual Premium</span>
-            <span className="tabular-nums">+ Rs. {(dispatch.manualPremium || 0).toFixed(2)}</span>
+            <span className="tabular-nums">+ {curSym} {(dispatch.manualPremium || 0).toFixed(2)}</span>
           </div>
 
           <div style={{ height: 0.5, background: 'var(--separator)', margin: '10px 0' }} />
 
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 8 }}>
             <span style={{ fontWeight: 600 }}>Adjusted Rate</span>
-            <span style={{ fontWeight: 600 }} className="tabular-nums">Rs. {settlement.adjustedRate.toFixed(2)}</span>
+            <span style={{ fontWeight: 600 }} className="tabular-nums">{curSym} {settlement.adjustedRate.toFixed(2)}</span>
           </div>
 
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 8, color: 'var(--ios-red)' }}>
             <span>- Tax Deduction</span>
-            <span className="tabular-nums">- Rs. {settlement.taxDeduction.toFixed(2)}</span>
+            <span className="tabular-nums">- {curSym} {settlement.taxDeduction.toFixed(2)}</span>
           </div>
 
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 8 }}>
             <span style={{ color: 'var(--label-secondary)' }}>Net Rate</span>
-            <span className="tabular-nums">Rs. {settlement.netRate.toFixed(2)}</span>
+            <span className="tabular-nums">{curSym} {settlement.netRate.toFixed(2)}</span>
           </div>
 
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 8, color: 'var(--ios-red)' }}>
             <span>- Commission</span>
-            <span className="tabular-nums">- Rs. {(dispatch.commissionPerTon || 0).toFixed(2)}</span>
+            <span className="tabular-nums">- {curSym} {(dispatch.commissionPerTon || 0).toFixed(2)}</span>
           </div>
 
           <div style={{ height: 0.5, background: 'var(--separator)', margin: '10px 0' }} />
@@ -1083,18 +1134,18 @@ export default function DispatchForm() {
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 16, marginBottom: 12 }}>
             <span style={{ fontWeight: 700, color: 'var(--ios-blue)' }}>Payable Rate (per ton)</span>
             <span style={{ fontWeight: 700, color: 'var(--ios-blue)' }} className="tabular-nums">
-              Rs. {settlement.payableRate.toFixed(2)}
+              {curSym} {settlement.payableRate.toFixed(2)}
             </span>
           </div>
 
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, color: 'var(--label-secondary)', marginBottom: 6 }}>
-            <span>Total Revenue ({dispatch.labReceivedWeight || 0} t × Rs. {settlement.payableRate.toFixed(2)})</span>
-            <span className="tabular-nums">Rs. {Math.round(settlement.totalRevenue).toLocaleString('en-PK')}</span>
+            <span>Total Revenue ({dispatch.labReceivedWeight || 0} t × {curSym} {settlement.payableRate.toFixed(2)})</span>
+            <span className="tabular-nums">{curSym} {formatAmountNumber(settlement.totalRevenue, settings)}</span>
           </div>
 
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, color: 'var(--label-secondary)', marginBottom: 12 }}>
             <span>Total Cost (Coal + Overheads)</span>
-            <span className="tabular-nums">Rs. {Math.round(settlement.totalCost).toLocaleString('en-PK')}</span>
+            <span className="tabular-nums">{curSym} {formatAmountNumber(settlement.totalCost, settings)}</span>
           </div>
 
           <div style={{
@@ -1109,7 +1160,7 @@ export default function DispatchForm() {
               {isProfit ? 'Net Profit' : 'Net Loss'}
             </span>
             <span style={{ fontSize: 20, fontWeight: 800, color: 'white' }} className="tabular-nums">
-              {isProfit ? 'Rs. ' : 'Rs. '}{Math.abs(Math.round(settlement.netProfit)).toLocaleString('en-PK')}
+              {isProfit ? `+${curSym} ` : `-${curSym} `}{formatAmountNumber(Math.abs(settlement.netProfit), settings)}
             </span>
           </div>
 

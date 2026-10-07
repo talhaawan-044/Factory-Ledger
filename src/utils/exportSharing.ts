@@ -7,7 +7,8 @@ import autoTable from 'jspdf-autotable';
 import ExcelJS from 'exceljs';
 import type { Dispatch, Party, Payment, PurchaseOrder, AppSettings } from '../types';
 import { calculateSettlement, calculatePartyBalance, calculateTransitLoss } from './calculations';
-import { getSettings } from '../lib/db';
+import { getSettings, getExportBackupData } from '../lib/db';
+import { getCurrencySymbol, formatAmountNumber, getCurrencyExcelFormat } from './currency';
 
 export interface ShareFileOptions {
   /** Base64 string (with or without data URI prefix) */
@@ -146,12 +147,16 @@ export async function sharePaymentImage(
   const safeParty = (party?.name || 'Party').replace(/[^a-zA-Z0-9_-]/g, '_');
   const fileName = `PaymentVoucher-${safeParty}-${safeId}-${payment.date}.png`;
 
+  const dbSettings = await getSettings();
+  const curSym = getCurrencySymbol(dbSettings.currency);
+  const formattedAmt = formatAmountNumber(payment.amount, dbSettings);
+
   await shareBase64File({
     data: dataUrl,
     fileName,
     mimeType: 'image/png',
     title: `Payment Voucher - ${party?.name || 'Voucher'}`,
-    text: `Official Payment Voucher for ${party?.name || 'Party'}: Rs. ${Math.round(payment.amount).toLocaleString('en-PK')} (${payment.mode.toUpperCase()}) on ${payment.date}.`,
+    text: `Official Payment Voucher for ${party?.name || 'Party'}: ${curSym} ${formattedAmt} (${payment.mode.toUpperCase()}) on ${payment.date}.`,
     dialogTitle: 'Share Payment Voucher',
   });
 }
@@ -305,13 +310,15 @@ async function exportPartyStatementPdf(options: ExportDispatchesPdfOptions & { s
   const kpiGap = 3;
   const kpiWidth = (contentWidth - kpiGap * 3) / 4;
 
+  const curSym = getCurrencySymbol(settings.currency);
+
   const kpis = [
     { label: 'COAL DELIVERED', value: `${totalTons.toFixed(2)} t`, sub: `${dispatches.length} Trucks`, color: [15, 23, 42] },
-    { label: 'TOTAL INVOICED', value: `Rs. ${Math.round(totalBilled).toLocaleString('en-PK')}`, sub: 'Billed Deliveries', color: [15, 23, 42] },
-    { label: 'PAYMENTS CREDITED', value: `Rs. ${Math.round(totalReceived).toLocaleString('en-PK')}`, sub: `${payments.filter((p) => p.type === 'received').length} Payments`, color: [5, 150, 105] },
+    { label: 'TOTAL INVOICED', value: `${curSym} ${formatAmountNumber(totalBilled, settings)}`, sub: 'Billed Deliveries', color: [15, 23, 42] },
+    { label: 'PAYMENTS CREDITED', value: `${curSym} ${formatAmountNumber(totalReceived, settings)}`, sub: `${payments.filter((p) => p.type === 'received').length} Payments`, color: [5, 150, 105] },
     {
       label: 'NET BALANCE DUE',
-      value: `Rs. ${Math.abs(Math.round(outstanding)).toLocaleString('en-PK')}`,
+      value: `${curSym} ${formatAmountNumber(outstanding, settings)}`,
       sub: outstanding > 0 ? 'Receivable' : 'Settled',
       color: outstanding > 0 ? [220, 38, 38] : [5, 150, 105],
     },
@@ -374,9 +381,9 @@ async function exportPartyStatementPdf(options: ExportDispatchesPdfOptions & { s
       // Line 1: Primary logistics & commercial settlement rate
       const truckPart = d.truckNumber ? `Truck: ${d.truckNumber}` : 'Direct Delivery';
       const destPart = d.factoryName ? ` • ${d.factoryName}` : '';
-      const ratePart = ` • Rs. ${Math.round(s.payableRate).toLocaleString('en-PK')}/t${
+      const ratePart = ` • ${curSym} ${formatAmountNumber(s.payableRate, settings)}/t${
         d.baseRate && Math.round(d.baseRate) !== Math.round(s.payableRate)
-          ? ` (Base: Rs. ${Math.round(d.baseRate).toLocaleString('en-PK')})`
+          ? ` (Base: ${curSym} ${formatAmountNumber(d.baseRate, settings)})`
           : ''
       }`;
       lines.push(`DELIVERY: ${truckPart}${destPart}${ratePart}`);
@@ -398,10 +405,10 @@ async function exportPartyStatementPdf(options: ExportDispatchesPdfOptions & { s
 
       // Line 3: Commercial & Rate Adjustments
       const adjParts: string[] = [];
-      if (d.manualPremium) adjParts.push(`Bonus: +Rs.${d.manualPremium}/t`);
-      if (d.manualDeduction) adjParts.push(`GCV Ded: -Rs.${d.manualDeduction}/t`);
-      if (s.taxDeduction) adjParts.push(`Tax: -Rs.${s.taxDeduction.toFixed(2)}/t`);
-      if (d.commissionPerTon) adjParts.push(`Comm: -Rs.${d.commissionPerTon}/t`);
+      if (d.manualPremium) adjParts.push(`Bonus: +${curSym}${d.manualPremium}/t`);
+      if (d.manualDeduction) adjParts.push(`GCV Ded: -${curSym}${d.manualDeduction}/t`);
+      if (s.taxDeduction) adjParts.push(`Tax: -${curSym}${s.taxDeduction.toFixed(2)}/t`);
+      if (d.commissionPerTon) adjParts.push(`Comm: -${curSym}${d.commissionPerTon}/t`);
       lines.push(`RATE AUDIT: ${adjParts.length > 0 ? adjParts.join('  •  ') : 'Standard Settlement Rate'}`);
 
       // Line 4: Sourcing, Transit Loss & Delivery Notes
@@ -464,9 +471,9 @@ async function exportPartyStatementPdf(options: ExportDispatchesPdfOptions & { s
       `${dispatches.length} Deliveries • ${payments.length} Payments`,
       '',
       totalTons.toFixed(2),
-      Math.round(totalBilled).toLocaleString('en-PK'),
-      Math.round(totalReceived).toLocaleString('en-PK'),
-      `Rs. ${Math.round(outstanding).toLocaleString('en-PK')}`,
+      formatAmountNumber(totalBilled, settings),
+      formatAmountNumber(totalReceived, settings),
+      `${curSym} ${formatAmountNumber(outstanding, settings)}`,
     ],
   ];
 
@@ -661,7 +668,7 @@ async function exportPartyStatementPdf(options: ExportDispatchesPdfOptions & { s
     fileName,
     mimeType: 'application/pdf',
     title: `Account Statement - ${partyName}`,
-    text: `Official Statement of Account for ${partyName}. Net Balance Due: Rs. ${Math.round(outstanding).toLocaleString('en-PK')}.`,
+    text: `Official Statement of Account for ${partyName}. Net Balance Due: ${curSym} ${formatAmountNumber(outstanding, settings)}.`,
     dialogTitle: 'Share Statement PDF',
   });
 }
@@ -755,12 +762,13 @@ async function exportFleetAuditPdf(options: ExportDispatchesPdfOptions & { setti
   doc.setDrawColor(226, 232, 240);
   doc.roundedRect(margin, bannerY, bannerWidth, bannerHeight, 2, 2, 'FD');
 
+  const curSym = getCurrencySymbol(settings.currency);
   const colWidth = bannerWidth / 4;
   const kpiItems = [
     { label: 'TOTAL DELIVERED', value: `${totalTons.toFixed(2)} Tons` },
-    { label: 'TOTAL REVENUE', value: `Rs. ${Math.round(totalRevenue).toLocaleString('en-PK')}` },
-    { label: 'TOTAL COST', value: `Rs. ${Math.round(totalCost).toLocaleString('en-PK')}` },
-    { label: 'NET PROFIT', value: `Rs. ${Math.round(totalProfit).toLocaleString('en-PK')}` },
+    { label: 'TOTAL REVENUE', value: `${curSym} ${formatAmountNumber(totalRevenue, settings)}` },
+    { label: 'TOTAL COST', value: `${curSym} ${formatAmountNumber(totalCost, settings)}` },
+    { label: 'NET PROFIT', value: `${curSym} ${formatAmountNumber(totalProfit, settings)}` },
   ];
 
   kpiItems.forEach((kpi, idx) => {
@@ -830,10 +838,10 @@ async function exportFleetAuditPdf(options: ExportDispatchesPdfOptions & { setti
 
     // Line 3: Commercial adjustments, pricing audit & sourcing
     const adjList = [
-      d.manualDeduction ? `GCV Ded: -Rs.${d.manualDeduction}/t` : null,
-      d.manualPremium ? `Bonus: +Rs.${d.manualPremium}/t` : null,
-      s.taxDeduction ? `Tax: -Rs.${s.taxDeduction.toFixed(2)}/t` : null,
-      d.commissionPerTon ? `Comm: -Rs.${d.commissionPerTon}/t` : null,
+      d.manualDeduction ? `GCV Ded: -${curSym}${d.manualDeduction}/t` : null,
+      d.manualPremium ? `Bonus: +${curSym}${d.manualPremium}/t` : null,
+      s.taxDeduction ? `Tax: -${curSym}${s.taxDeduction.toFixed(2)}/t` : null,
+      d.commissionPerTon ? `Comm: -${curSym}${d.commissionPerTon}/t` : null,
     ].filter(Boolean);
 
     const adjText = adjList.length > 0 ? `RATE AUDIT: ${adjList.join('  •  ')}` : 'RATE AUDIT: Standard Settlement';
@@ -1306,6 +1314,9 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
   wb.created = new Date();
   wb.modified = new Date();
 
+  const xlCurFmt = getCurrencyExcelFormat(settings.currency);
+  const curSym = getCurrencySymbol(settings.currency);
+
   const dateStamp = new Date().toISOString().split('T')[0];
   const companyName = settings.businessName || 'AWAN COAL LOGISTICS';
   const companySubline = [
@@ -1382,7 +1393,7 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
 
     wsStatement.mergeCells('F6:J6');
     const rh6 = wsStatement.getCell('F6');
-    rh6.value = `Currency: PKR (Rs.)   •   Status: ${netBalance > 0 ? 'Payment Due' : 'Settled'}`;
+    rh6.value = `Currency: ${settings.currency || 'PKR (Rs.)'}   •   Status: ${netBalance > 0 ? 'Payment Due' : 'Settled'}`;
     rh6.font = { name: 'Calibri', size: 9, color: { argb: XL_PALETTE.TEXT_SECONDARY } };
     rh6.alignment = { vertical: 'middle', horizontal: 'right' };
 
@@ -1420,7 +1431,7 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
         label: 'Total Invoiced (Debit)',
         value: Math.round(totalBilled),
         sub: 'Gross Deliveries Billed',
-        numFmt: '"Rs. "#,##0',
+        numFmt: xlCurFmt,
         fillColor: XL_PALETTE.KPI_BLUE_FILL,
         borderColor: XL_PALETTE.KPI_BLUE_BORDER,
         valColor: XL_PALETTE.TEXT_BLUE,
@@ -1430,7 +1441,7 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
         label: 'Payments Credited',
         value: Math.round(totalReceived),
         sub: `${payments.filter((p) => p.type === 'received').length} Receipts Cleared`,
-        numFmt: '"Rs. "#,##0',
+        numFmt: xlCurFmt,
         fillColor: XL_PALETTE.KPI_GREEN_FILL,
         borderColor: XL_PALETTE.KPI_GREEN_BORDER,
         valColor: XL_PALETTE.TEXT_GREEN,
@@ -1440,7 +1451,7 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
         label: 'Net Balance Due',
         value: Math.round(netBalance),
         sub: netBalance > 0 ? 'Receivable from Party' : 'Account Fully Settled',
-        numFmt: '"Rs. "#,##0',
+        numFmt: xlCurFmt,
         fillColor: netBalance > 0 ? XL_PALETTE.KPI_RED_FILL : XL_PALETTE.KPI_GREEN_FILL,
         borderColor: netBalance > 0 ? XL_PALETTE.KPI_RED_BORDER : XL_PALETTE.KPI_GREEN_BORDER,
         valColor: netBalance > 0 ? XL_PALETTE.TEXT_RED : XL_PALETTE.TEXT_GREEN,
@@ -1749,7 +1760,7 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
         label: 'Gross Invoiced Value',
         value: Math.round(totalBilled),
         sub: 'Total Delivery Revenue',
-        numFmt: '"Rs. "#,##0',
+        numFmt: xlCurFmt,
         fillColor: XL_PALETTE.KPI_BLUE_FILL,
         borderColor: XL_PALETTE.KPI_BLUE_BORDER,
         valColor: XL_PALETTE.TEXT_BLUE,
@@ -1968,7 +1979,7 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
           label: 'Total Receipts (Inflow)',
           value: Math.round(totInflow),
           sub: `${payments.filter((p) => p.type === 'received').length} Payments Inflow`,
-          numFmt: '"Rs. "#,##0',
+          numFmt: xlCurFmt,
           fillColor: XL_PALETTE.KPI_GREEN_FILL,
           borderColor: XL_PALETTE.KPI_GREEN_BORDER,
           valColor: XL_PALETTE.TEXT_GREEN,
@@ -1978,7 +1989,7 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
           label: 'Total Paid (Outflow)',
           value: Math.round(totOutflow),
           sub: `${payments.filter((p) => p.type !== 'received').length} Payments Outflow`,
-          numFmt: '"Rs. "#,##0',
+          numFmt: xlCurFmt,
           fillColor: XL_PALETTE.KPI_RED_FILL,
           borderColor: XL_PALETTE.KPI_RED_BORDER,
           valColor: XL_PALETTE.TEXT_RED,
@@ -1988,7 +1999,7 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
           label: 'Net Financial Volume',
           value: Math.round(totInflow - totOutflow),
           sub: 'Total Cash & Bank Movement',
-          numFmt: '"Rs. "#,##0',
+          numFmt: xlCurFmt,
           fillColor: XL_PALETTE.KPI_BLUE_FILL,
           borderColor: XL_PALETTE.KPI_BLUE_BORDER,
           valColor: XL_PALETTE.TEXT_BLUE,
@@ -2001,7 +2012,7 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
         'Voucher Ref #',
         'Direction / Flow',
         'Payment Mode',
-        'Amount (Rs)',
+        `Amount (${curSym.trim()})`,
         'Reference Note / Cheque Details',
       ];
 
@@ -2152,7 +2163,7 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
         label: 'Total Gross Revenue',
         value: Math.round(totalFleetRevenue),
         sub: 'Billed Realized Revenue',
-        numFmt: '"Rs. "#,##0',
+        numFmt: xlCurFmt,
         fillColor: XL_PALETTE.KPI_BLUE_FILL,
         borderColor: XL_PALETTE.KPI_BLUE_BORDER,
         valColor: XL_PALETTE.TEXT_BLUE,
@@ -2162,7 +2173,7 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
         label: 'Procurement & Logistics Cost',
         value: Math.round(totalFleetCost),
         sub: 'Coal Purchase + Overheads',
-        numFmt: '"Rs. "#,##0',
+        numFmt: xlCurFmt,
         fillColor: XL_PALETTE.KPI_SLATE_FILL,
         borderColor: XL_PALETTE.KPI_SLATE_BORDER,
         valColor: XL_PALETTE.TEXT_PRIMARY,
@@ -2172,7 +2183,7 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
         label: 'Net Trading Profit',
         value: Math.round(totalFleetProfit),
         sub: `Overall Margin: ${fleetMargin.toFixed(1)}%`,
-        numFmt: '"Rs. "#,##0',
+        numFmt: xlCurFmt,
         fillColor: totalFleetProfit >= 0 ? XL_PALETTE.KPI_GREEN_FILL : XL_PALETTE.KPI_RED_FILL,
         borderColor: totalFleetProfit >= 0 ? XL_PALETTE.KPI_GREEN_BORDER : XL_PALETTE.KPI_RED_BORDER,
         valColor: totalFleetProfit >= 0 ? XL_PALETTE.TEXT_GREEN : XL_PALETTE.TEXT_RED,
@@ -2432,7 +2443,7 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
       const profitPerTon = (d.labReceivedWeight || 0) > 0 ? Math.round(s.netProfit / (d.labReceivedWeight || 1)) : 0;
       const blendsStr = (d.coalInputs || [])
         .filter((c) => (c.weight || 0) > 0)
-        .map((c) => `${c.sourceName || 'Coal'}: ${c.weight}t @ Rs.${c.purchaseRate}`)
+        .map((c) => `${c.sourceName || 'Coal'}: ${c.weight}t @ ${curSym}${c.purchaseRate}`)
         .join('  •  ');
 
       row.values = [
@@ -2720,5 +2731,48 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
     text: `Official Factory Ledger Excel Workbook containing ${dispatches.length} dispatch deliveries.`,
     dialogTitle: 'Share Excel Spreadsheet',
   });
+}
+
+/**
+ * Universal JSON database backup exporter:
+ * Exports all ledger entities (parties, dispatches, payments, POs, business settings)
+ * with the security PIN and lock credentials completely omitted.
+ * Triggers native Android/iOS system share or direct browser file download.
+ */
+export async function exportDatabaseBackupJson(): Promise<{
+  success: boolean;
+  counts: { parties: number; dispatches: number; payments: number; pos: number };
+}> {
+  const exportData = await getExportBackupData();
+  const jsonString = JSON.stringify(exportData, null, 2);
+  const dateStamp = new Date().toISOString().split('T')[0];
+  const fileName = `factory-ledger-full-backup-${dateStamp}.json`;
+
+  // Safe UTF-8 to Base64 conversion (handles Unicode characters reliably)
+  const utf8Bytes = new TextEncoder().encode(jsonString);
+  let binary = '';
+  for (let i = 0; i < utf8Bytes.length; i++) {
+    binary += String.fromCharCode(utf8Bytes[i]);
+  }
+  const base64Data = btoa(binary);
+
+  await shareBase64File({
+    data: base64Data,
+    fileName,
+    mimeType: 'application/json',
+    title: 'Factory Ledger Database Backup',
+    text: `Factory Ledger full backup (${exportData.parties.length} parties, ${exportData.dispatches.length} dispatches, ${exportData.payments.length} payments, ${exportData.pos.length} orders).`,
+    dialogTitle: 'Export / Share Ledger Backup',
+  });
+
+  return {
+    success: true,
+    counts: {
+      parties: exportData.parties.length,
+      dispatches: exportData.dispatches.length,
+      payments: exportData.payments.length,
+      pos: exportData.pos.length,
+    },
+  };
 }
 

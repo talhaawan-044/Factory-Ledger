@@ -1,7 +1,8 @@
 import { useEffect, useState, useMemo } from 'react';
-import { getParties, saveParty, deleteParty, getDispatches, getPayments } from '../lib/db';
-import type { Party, Dispatch, Payment } from '../types';
+import { getParties, saveParty, deleteParty, getDispatches, getPayments, getSettings } from '../lib/db';
+import type { Party, Dispatch, Payment, AppSettings } from '../types';
 import { calculatePartyBalance } from '../utils/calculations';
+import { getCurrencySymbol, formatAmountNumber } from '../utils/currency';
 import { playPopSound, triggerConfetti } from '../utils/delight';
 import { useLedgerListener } from '../hooks/useLedgerListener';
 import { v4 as uuidv4 } from 'uuid';
@@ -26,9 +27,12 @@ export default function PartiesList() {
   const [parties, setParties] = useState<Party[]>([]);
   const [dispatches, setDispatches] = useState<Dispatch[]>([]);
   const [payments, setPayments] = useState<Payment[]>([]);
+  const [settings, setSettings] = useState<AppSettings | undefined>(undefined);
   const [loading, setLoading] = useState(true);
   const [isAdding, setIsAdding] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+
+  const curSym = getCurrencySymbol(settings?.currency);
 
   // Persistent List / Grid view state
   const [viewMode, setViewMode] = useState<'list' | 'grid'>(() => {
@@ -38,19 +42,21 @@ export default function PartiesList() {
   const navigate = useNavigate();
 
   const refreshData = async () => {
-    const [p, d, pay] = await Promise.all([getParties(), getDispatches(), getPayments()]);
+    const [p, d, pay, s] = await Promise.all([getParties(), getDispatches(), getPayments(), getSettings()]);
     setParties(p);
     setDispatches(d);
     setPayments(pay);
+    setSettings(s);
   };
 
   useEffect(() => {
     let current = true;
-    Promise.all([getParties(), getDispatches(), getPayments()]).then(([p, d, pay]) => {
+    Promise.all([getParties(), getDispatches(), getPayments(), getSettings()]).then(([p, d, pay, s]) => {
       if (current) {
         setParties(p);
         setDispatches(d);
         setPayments(pay);
+        setSettings(s);
         setLoading(false);
       }
     });
@@ -385,7 +391,7 @@ export default function PartiesList() {
                             whiteSpace: 'nowrap',
                             flexShrink: 0
                           }} className="tabular-nums">
-                            Due&nbsp;:&nbsp;Rs.&nbsp;{outstandingBalance.toLocaleString('en-PK')}
+                            Due&nbsp;:&nbsp;{curSym}&nbsp;{formatAmountNumber(outstandingBalance, settings)}
                           </span>
                         ) : outstandingBalance < 0 ? (
                           <span style={{
@@ -401,7 +407,7 @@ export default function PartiesList() {
                             whiteSpace: 'nowrap',
                             flexShrink: 0
                           }} className="tabular-nums">
-                            Adv&nbsp;:&nbsp;Rs.&nbsp;{Math.abs(outstandingBalance).toLocaleString('en-PK')}
+                            Adv&nbsp;:&nbsp;{curSym}&nbsp;{formatAmountNumber(Math.abs(outstandingBalance), settings)}
                           </span>
                         ) : isCleared ? (
                           <span style={{
@@ -481,7 +487,7 @@ export default function PartiesList() {
                             }}
                             className="tabular-nums"
                           >
-                            +Rs.&nbsp;{Math.round(partyProfit).toLocaleString('en-PK')}&nbsp;Profit
+                            +{curSym}&nbsp;{formatAmountNumber(Math.round(partyProfit), settings)}&nbsp;Profit
                           </span>
                         ) : partyProfit < 0 ? (
                           <span
@@ -497,7 +503,7 @@ export default function PartiesList() {
                             }}
                             className="tabular-nums"
                           >
-                            -Rs.&nbsp;{Math.abs(Math.round(partyProfit)).toLocaleString('en-PK')}&nbsp;Loss
+                            -{curSym}&nbsp;{formatAmountNumber(Math.abs(Math.round(partyProfit)), settings)}&nbsp;Loss
                           </span>
                         ) : null}
                       </div>
@@ -642,11 +648,11 @@ export default function PartiesList() {
                       <div>
                         {outstandingBalance > 0 ? (
                           <span style={{ fontSize: 11, fontWeight: 700, color: 'white', background: 'var(--ios-orange)', padding: '0px 9px', borderRadius: 7, display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }} className="tabular-nums">
-                            Due&nbsp;:&nbsp;Rs.&nbsp;{outstandingBalance.toLocaleString('en-PK')}
+                            Due&nbsp;:&nbsp;{curSym}&nbsp;{formatAmountNumber(outstandingBalance, settings)}
                           </span>
                         ) : outstandingBalance < 0 ? (
                           <span style={{ fontSize: 11, fontWeight: 700, color: 'white', background: 'var(--ios-blue)', padding: '3px 9px', borderRadius: 7, display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }} className="tabular-nums">
-                            Adv&nbsp;:&nbsp;Rs.&nbsp;{Math.abs(outstandingBalance).toLocaleString('en-PK')}
+                            Adv&nbsp;:&nbsp;{curSym}&nbsp;{formatAmountNumber(Math.abs(outstandingBalance), settings)}
                           </span>
                         ) : isCleared ? (
                           <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--ios-green)', display: 'inline-flex', alignItems: 'center', gap: 7, whiteSpace: 'nowrap' }}>
