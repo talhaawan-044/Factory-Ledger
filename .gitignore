@@ -49,6 +49,8 @@ venv/
 # Android & Native build artifacts
 android/local.properties
 local.properties
+android/keystore.properties
+keystore.properties
 android/.gradle/
 android/.kotlin/
 android/build/
