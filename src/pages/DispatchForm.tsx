@@ -2,7 +2,6 @@ import React, { useState, useEffect } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import {
   ChevronLeft,
-  ChevronDown,
   Save,
   Trash2,
   AlertTriangle,
@@ -14,13 +13,17 @@ import {
   SlidersHorizontal,
   AlignLeft,
   Calculator,
+  Plus,
 } from 'lucide-react';
 import type { Dispatch, CoalInput, Party, PurchaseOrder } from '../types';
-import { getDispatch, saveDispatch, deleteDispatch, getParties, getPartyPurchaseOrders, getDispatches } from '../lib/db';
+import { getDispatch, saveDispatch, deleteDispatch, getParties, getPartyPurchaseOrders, getDispatches, saveParty } from '../lib/db';
 import { calculateSettlement } from '../utils/calculations';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import IOSDatePicker from '../components/IOSDatePicker';
 import IOSConfirmModal from '../components/IOSConfirmModal';
+import IOSSelect from '../components/IOSSelect';
+import PartyGlyph from '../components/PartyGlyph';
+import PartyModalSheet from '../components/PartyModalSheet';
 import { triggerConfetti, playSuccessSound, playPopSound } from '../utils/delight';
 
 const defaultOverheads = {
@@ -78,6 +81,7 @@ export default function DispatchForm() {
   const [allDispatches, setAllDispatches] = useState<Dispatch[]>([]);
   const [isLoading, setIsLoading] = useState(() => dispatchId !== 'new');
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [isPartyModalOpen, setIsPartyModalOpen] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -306,7 +310,7 @@ export default function DispatchForm() {
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
             <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--label-secondary)', textTransform: 'uppercase', letterSpacing: 0.3 }}>
-              Live Calculated Profit
+              {isProfit ? 'Live Calculated Profit' : 'Live Calculated Loss'}
             </span>
             <div
               style={{
@@ -318,7 +322,7 @@ export default function DispatchForm() {
               }}
               className="tabular-nums"
             >
-              {isProfit ? '+' : ''}Rs. {Math.round(settlement.netProfit).toLocaleString('en-PK')}
+              {isProfit ? '+Rs. ' : '-Rs. '}{Math.abs(Math.round(settlement.netProfit)).toLocaleString('en-PK')}
             </div>
           </div>
         </div>
@@ -352,57 +356,44 @@ export default function DispatchForm() {
           <ClipboardList size={16} /> Dispatch Details
         </div>
         <div style={{ padding: '0 16px' }}>
-          {/* Party Picker */}
-          <div className="floating-field is-floated" style={{ marginBottom: 12 }}>
-            <select
-              value={dispatch.partyId}
-              onChange={(e) => handlePartyChange(e.target.value)}
-              className="floating-input"
-              style={{
-                cursor: 'pointer',
-                color: 'var(--label-primary)',
-                fontWeight: 600,
-                appearance: 'none',
-                WebkitAppearance: 'none'
-              }}
-            >
-              <option value="" disabled>Select Factory</option>
-              {parties.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
-            <label className="floating-label" style={{ top: 0, transform: 'translateY(-50%)', fontSize: 12, fontWeight: 500, background: 'var(--bg-card)', color: 'var(--label-secondary)' }}>
-              Factory
-            </label>
-          </div>
+          {/* Party / Factory Picker */}
+          <IOSSelect
+            label="Factory"
+            value={dispatch.partyId}
+            onChange={handlePartyChange}
+            options={parties.map((p) => ({
+              value: p.id,
+              label: p.name,
+              subtitle: [p.contactPerson, p.phone, p.address].filter(Boolean).join(' • '),
+              icon: <PartyGlyph name={p.name} size={32} borderRadius={8} iconSize={16} />,
+            }))}
+            placeholder="Select Factory"
+            title="Select Factory"
+            floating
+            searchable
+            searchPlaceholder="Search factory by name..."
+            actionButton={{
+              label: 'New Party',
+              icon: <Plus size={16} />,
+              onClick: () => setIsPartyModalOpen(true),
+            }}
+          />
 
           {pos.length > 0 && (
-            <div className="floating-field is-floated" style={{ marginBottom: 12 }}>
-              <select
-                value={dispatch.poId || ''}
-                onChange={(e) => handlePOChange(e.target.value)}
-                className="floating-input"
-                style={{
-                  cursor: 'pointer',
-                  color: 'var(--label-primary)',
-                  fontWeight: 600,
-                  appearance: 'none',
-                  WebkitAppearance: 'none'
-                }}
-              >
-                <option value="" disabled>Select PO</option>
-                {pos.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.poNumber} (Base: {p.baseRate}, GCV: {p.targetGcv})
-                  </option>
-                ))}
-              </select>
-              <label className="floating-label" style={{ top: 0, transform: 'translateY(-50%)', fontSize: 12, fontWeight: 500, background: 'var(--bg-card)', color: 'var(--label-secondary)' }}>
-                Purchase Order (PO)
-              </label>
-            </div>
+            <IOSSelect
+              label="Purchase Order (PO)"
+              value={dispatch.poId || ''}
+              onChange={handlePOChange}
+              options={pos.map((p) => ({
+                value: p.id,
+                label: `PO #${p.poNumber}`,
+                subtitle: `Base: Rs. ${p.baseRate.toLocaleString()} • Target GCV: ${p.targetGcv}${p.commissionPerTon ? ` • Comm: Rs. ${p.commissionPerTon}/t` : ''}`,
+                badge: p.isActive ? 'Active' : undefined,
+              }))}
+              placeholder="Select Purchase Order"
+              title="Select Purchase Order"
+              floating
+            />
           )}
 
           <div style={{ display: 'grid', gridTemplateColumns: '1.1fr 1fr', gap: 10 }}>
@@ -711,11 +702,11 @@ export default function DispatchForm() {
                         fontWeight: 700,
                         padding: '2px 8px',
                         borderRadius: 10,
-                        background: isSurplus ? 'var(--tint-green)' : 'var(--tint-red)',
-                        color: isSurplus ? 'var(--ios-green)' : 'var(--ios-red)'
+                        background: isSurplus ? 'var(--ios-green)' : 'var(--ios-red)',
+                        color: isSurplus ? 'white' : 'white'
                       }}
                     >
-                      {isSurplus ? 'Quality Bonus' : 'Caloric Deduction'}
+                      {isSurplus ? 'Quality Bonus' : 'Deduction'}
                     </span>
                   </div>
                   <span style={{ fontSize: 13, fontWeight: 700, color: gaugeColor }} className="tabular-nums">
@@ -849,12 +840,12 @@ export default function DispatchForm() {
               alignItems: 'center',
               gap: 8,
               padding: '10px 14px',
-              background: 'var(--tint-orange)',
-              borderRadius: 12,
+              background: 'var(--ios-orange)',
+              borderRadius: 8,
               marginTop: 4,
-              color: 'var(--ios-orange)',
+              color: 'white',
               fontSize: 13,
-              fontWeight: 500
+              fontWeight: 600
             }}>
               <AlertTriangle style={{ width: 16, height: 16, flexShrink: 0 }} />
               <span>
@@ -885,11 +876,12 @@ export default function DispatchForm() {
                   type="button"
                   onClick={() => handleChange('manualDeduction', proRataDeduction)}
                   style={{
-                    padding: '6px 12px',
+                    flex: 1,
+                    padding: '10px 14px',
                     borderRadius: 8,
                     border: 'none',
-                    background: 'var(--tint-red)',
-                    color: 'var(--ios-red)',
+                    background: 'var(--ios-blue)',
+                    color: 'white',
                     fontSize: 12,
                     fontWeight: 600,
                     cursor: 'pointer',
@@ -916,7 +908,7 @@ export default function DispatchForm() {
                     cursor: 'pointer',
                     display: 'flex',
                     alignItems: 'center',
-                    gap: 6
+                    gap: 8
                   }}
                 >
                   Auto Pro-Rata GCV Premium: Rs. {proRataPremium}/t
@@ -944,52 +936,25 @@ export default function DispatchForm() {
             />
           </div>
           {/* Tax Calculation Method */}
-          <div className="floating-field is-floated" style={{ marginBottom: 12, position: 'relative' }}>
-            <select
-              value={dispatch.taxMethod || 'manual'}
-              onChange={(e) => handleChange('taxMethod', e.target.value as 'manual' | 'formula_18_5')}
-              className="floating-input"
-              style={{
-                cursor: 'pointer',
-                color: 'var(--label-primary)',
-                fontWeight: 600,
-                appearance: 'none',
-                WebkitAppearance: 'none',
-                paddingRight: 36,
-                background: 'transparent',
-              }}
-            >
-              <option value="manual">Manual Entry</option>
-              <option value="formula_18_5">Formula: (Rate + 18%) * 5%</option>
-            </select>
-            <label
-              className="floating-label"
-              style={{
-                top: 0,
-                transform: 'translateY(-50%)',
-                fontSize: 12,
-                fontWeight: 500,
-                background: 'var(--bg-card)',
-                color: 'var(--label-secondary)',
-              }}
-            >
-              Tax Calculation Method
-            </label>
-            <div
-              style={{
-                position: 'absolute',
-                right: 14,
-                top: '50%',
-                transform: 'translateY(-50%)',
-                pointerEvents: 'none',
-                color: 'var(--label-secondary)',
-                display: 'flex',
-                alignItems: 'center',
-              }}
-            >
-              <ChevronDown size={18} />
-            </div>
-          </div>
+          <IOSSelect
+            label="Tax Calculation Method"
+            value={dispatch.taxMethod || 'manual'}
+            onChange={(val) => handleChange('taxMethod', val as 'manual' | 'formula_18_5')}
+            options={[
+              {
+                value: 'manual',
+                label: 'Manual Entry',
+                subtitle: 'Enter sales tax and income tax values directly',
+              },
+              {
+                value: 'formula_18_5',
+                label: 'Formula: (Rate + 18%) * 5%',
+                subtitle: 'Rate + 18% sales tax, then 5% advance income tax',
+              },
+            ]}
+            title="Tax Calculation Method"
+            floating
+          />
 
           {/* Dynamic UI: Manual Number Input or Read-Only Auto Formula Value */}
           {(dispatch.taxMethod || 'manual') === 'manual' ? (
@@ -1099,7 +1064,7 @@ export default function DispatchForm() {
           </div>
 
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 8, color: 'var(--ios-red)' }}>
-            <span>- Tax Deduction {dispatch.taxMethod === 'formula_18_5' ? '((Rate + 18%) × 5%)' : ''}</span>
+            <span>- Tax Deduction</span>
             <span className="tabular-nums">- Rs. {settlement.taxDeduction.toFixed(2)}</span>
           </div>
 
@@ -1140,11 +1105,11 @@ export default function DispatchForm() {
             justifyContent: 'space-between',
             alignItems: 'center'
           }}>
-            <span style={{ fontSize: 16, fontWeight: 700, color: isProfit ? 'white' : 'red' }}>
-              Final Net Profit
+            <span style={{ fontSize: 16, fontWeight: 700, color: 'white' }}>
+              {isProfit ? 'Net Profit' : 'Net Loss'}
             </span>
-            <span style={{ fontSize: 20, fontWeight: 800, color: isProfit ? 'white' : 'red' }} className="tabular-nums">
-              {isProfit ? '+' : ''}Rs. {Math.round(settlement.netProfit).toLocaleString('en-PK')}
+            <span style={{ fontSize: 20, fontWeight: 800, color: 'white' }} className="tabular-nums">
+              {isProfit ? 'Rs. ' : 'Rs. '}{Math.abs(Math.round(settlement.netProfit)).toLocaleString('en-PK')}
             </span>
           </div>
 
@@ -1185,6 +1150,28 @@ export default function DispatchForm() {
         countdownSeconds={2}
         onConfirm={handleConfirmDelete}
         onCancel={() => setShowDeleteConfirm(false)}
+      />
+
+      {/* ── Quick Add Party Apple iOS Modal Sheet ── */}
+      <PartyModalSheet
+        isOpen={isPartyModalOpen}
+        mode="add"
+        onClose={() => setIsPartyModalOpen(false)}
+        onSave={async (data) => {
+          const newParty: Party = {
+            id: uuidv4(),
+            name: data.name,
+            contactPerson: data.contactPerson,
+            phone: data.phone,
+            address: data.address,
+            createdAt: Date.now(),
+          };
+          await saveParty(newParty);
+          const updatedParties = await getParties();
+          setParties(updatedParties);
+          setIsPartyModalOpen(false);
+          await handlePartyChange(newParty.id);
+        }}
       />
     </div>
   );

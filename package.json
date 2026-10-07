@@ -19,6 +19,7 @@
     "@capacitor/share": "^8.0.3",
     "@capacitor/status-bar": "^8.0.4",
     "date-fns": "^4.4.0",
+    "exceljs": "^4.4.0",
     "firebase": "^12.19.0",
     "html2canvas": "^1.4.1",
     "jspdf": "^4.2.1",

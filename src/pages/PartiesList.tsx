@@ -279,8 +279,12 @@ export default function PartiesList() {
               </div>
             ) : (
               filteredParties.map((party, i) => {
-                const partyDispatches = dispatches.filter((d) => d.partyId === party.id);
-                const partyPayments = payments.filter((p) => p.partyId === party.id);
+                const partyDispatches = dispatches.filter((d) =>
+                  d.partyId === party.id || (!d.partyId && d.factoryName?.trim().toLowerCase() === party.name.trim().toLowerCase())
+                );
+                const partyPayments = payments.filter((p) =>
+                  p.partyId === party.id || (!p.partyId && (p as any).partyName?.trim().toLowerCase() === party.name.trim().toLowerCase())
+                );
                 const balanceResult = calculatePartyBalance(partyDispatches, partyPayments);
                 const partyProfit = balanceResult.totalProfit;
                 const outstandingBalance = balanceResult.outstandingBalance;
@@ -367,23 +371,7 @@ export default function PartiesList() {
 
                       {/* Row 2: Outstanding / Advance Balance Pill + Quick Call Button */}
                       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 10, gap: 8 }}>
-                        {isCleared ? (
-                          <span style={{
-                            fontSize: 12,
-                            fontWeight: 700,
-                            color: 'white',
-                            background: 'var(--ios-green)',
-                            padding: '3px 9px',
-                            borderRadius: 7,
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            gap: 5,
-                            whiteSpace: 'nowrap',
-                            flexShrink: 0
-                          }}>
-                            <span className="pulse-dot green" /> Settled
-                          </span>
-                        ) : outstandingBalance > 0 ? (
+                        {outstandingBalance > 0 ? (
                           <span style={{
                             fontSize: 12,
                             fontWeight: 700,
@@ -397,7 +385,7 @@ export default function PartiesList() {
                             whiteSpace: 'nowrap',
                             flexShrink: 0
                           }} className="tabular-nums">
-                            <span className="pulse-dot orange" /> Due Rs.&nbsp;{outstandingBalance.toLocaleString('en-PK')}
+                            Due&nbsp;:&nbsp;Rs.&nbsp;{outstandingBalance.toLocaleString('en-PK')}
                           </span>
                         ) : outstandingBalance < 0 ? (
                           <span style={{
@@ -413,7 +401,23 @@ export default function PartiesList() {
                             whiteSpace: 'nowrap',
                             flexShrink: 0
                           }} className="tabular-nums">
-                            <span className="pulse-dot blue" /> Adv Rs.&nbsp;{Math.abs(outstandingBalance).toLocaleString('en-PK')}
+                            Adv&nbsp;:&nbsp;Rs.&nbsp;{Math.abs(outstandingBalance).toLocaleString('en-PK')}
+                          </span>
+                        ) : isCleared ? (
+                          <span style={{
+                            fontSize: 12,
+                            fontWeight: 700,
+                            color: 'white',
+                            background: 'var(--ios-green)',
+                            padding: '3px 9px',
+                            borderRadius: 7,
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 5,
+                            whiteSpace: 'nowrap',
+                            flexShrink: 0
+                          }}>
+                            Settled
                           </span>
                         ) : (
                           <span style={{
@@ -459,22 +463,11 @@ export default function PartiesList() {
 
                       {/* Row 3: Operational Metrics (Dispatches & Net Profit) */}
                       <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8 }}>
-                        <span
-                          style={{
-                            fontSize: 11,
-                            fontWeight: 600,
-                            color: 'white',
-                            background: 'black',
-                            padding: '2px 8px',
-                            borderRadius: 6,
-                            whiteSpace: 'nowrap',
-                            flexShrink: 0
-                          }}
-                        >
+                        <span className="dispatch-status-badge">
                           {partyDispatches.length} {partyDispatches.length === 1 ? 'Dispatch' : 'Dispatches'}
                         </span>
 
-                        {partyProfit > 0 && (
+                        {partyProfit > 0 ? (
                           <span
                             style={{
                               fontSize: 11,
@@ -490,7 +483,23 @@ export default function PartiesList() {
                           >
                             +Rs.&nbsp;{Math.round(partyProfit).toLocaleString('en-PK')}&nbsp;Profit
                           </span>
-                        )}
+                        ) : partyProfit < 0 ? (
+                          <span
+                            style={{
+                              fontSize: 11,
+                              fontWeight: 600,
+                              color: 'white',
+                              background: 'var(--ios-red)',
+                              padding: '2px 8px',
+                              borderRadius: 6,
+                              whiteSpace: 'nowrap',
+                              flexShrink: 0
+                            }}
+                            className="tabular-nums"
+                          >
+                            -Rs.&nbsp;{Math.abs(Math.round(partyProfit)).toLocaleString('en-PK')}&nbsp;Loss
+                          </span>
+                        ) : null}
                       </div>
                     </div>
 
@@ -514,8 +523,12 @@ export default function PartiesList() {
           ) : (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 12 }}>
               {filteredParties.map((party) => {
-                const partyDispatches = dispatches.filter((d) => d.partyId === party.id);
-                const partyPayments = payments.filter((p) => p.partyId === party.id);
+                const partyDispatches = dispatches.filter((d) =>
+                  d.partyId === party.id || (!d.partyId && d.factoryName?.trim().toLowerCase() === party.name.trim().toLowerCase())
+                );
+                const partyPayments = payments.filter((p) =>
+                  p.partyId === party.id || (!p.partyId && (p as any).partyName?.trim().toLowerCase() === party.name.trim().toLowerCase())
+                );
                 const balanceResult = calculatePartyBalance(partyDispatches, partyPayments);
                 const partyProfit = balanceResult.totalProfit;
                 const outstandingBalance = balanceResult.outstandingBalance;
@@ -615,25 +628,29 @@ export default function PartiesList() {
                           {partyDispatches.length} {partyDispatches.length === 1 ? 'truck' : 'trucks'}
                         </span>
 
-                        {partyProfit > 0 && (
+                        {partyProfit > 0 ? (
                           <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--ios-green)' }} className="tabular-nums">
                             +{(partyProfit / 1000).toFixed(0)}k
                           </span>
-                        )}
+                        ) : partyProfit < 0 ? (
+                          <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--ios-red)' }} className="tabular-nums">
+                            -{(Math.abs(partyProfit) / 1000).toFixed(0)}k
+                          </span>
+                        ) : null}
                       </div>
 
                       <div>
-                        {isCleared ? (
-                          <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--ios-green)', display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }}>
-                            <span className="pulse-dot green" /> Settled
-                          </span>
-                        ) : outstandingBalance > 0 ? (
-                          <span style={{ fontSize: 11, fontWeight: 700, color: 'white', background: 'var(--ios-orange)', padding: '3px 9px', borderRadius: 7, display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }} className="tabular-nums">
-                            <span className="pulse-dot orange" /> Due:&nbsp;Rs.&nbsp;{outstandingBalance.toLocaleString('en-PK')}
+                        {outstandingBalance > 0 ? (
+                          <span style={{ fontSize: 11, fontWeight: 700, color: 'white', background: 'var(--ios-orange)', padding: '0px 9px', borderRadius: 7, display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }} className="tabular-nums">
+                            Due&nbsp;:&nbsp;Rs.&nbsp;{outstandingBalance.toLocaleString('en-PK')}
                           </span>
                         ) : outstandingBalance < 0 ? (
                           <span style={{ fontSize: 11, fontWeight: 700, color: 'white', background: 'var(--ios-blue)', padding: '3px 9px', borderRadius: 7, display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }} className="tabular-nums">
-                            <span className="pulse-dot blue" /> Adv:&nbsp;Rs.&nbsp;{Math.abs(outstandingBalance).toLocaleString('en-PK')}
+                            Adv&nbsp;:&nbsp;Rs.&nbsp;{Math.abs(outstandingBalance).toLocaleString('en-PK')}
+                          </span>
+                        ) : isCleared ? (
+                          <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--ios-green)', display: 'inline-flex', alignItems: 'center', gap: 7, whiteSpace: 'nowrap' }}>
+                            Settled
                           </span>
                         ) : (
                           <span style={{ fontSize: 11, color: 'var(--label-tertiary)', whiteSpace: 'nowrap' }}>No ledger</span>

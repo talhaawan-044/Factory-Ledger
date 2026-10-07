@@ -626,27 +626,14 @@ Current Ledger Balance: Rs. ${Math.abs(outstandingBalance).toLocaleString('en-PK
       </div>
 
       {/* ── Factory Dashboard Summary Card ── */}
-      <div style={{ padding: '0 16px', marginBottom: 20 }}>
+      <div style={{ width: '100%', marginBottom: 20 }}>
         <div className="ios-hero-card" style={{ padding: '20px 22px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--label-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
               Ledger Settlement Status
             </span>
             <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-              <span
-                style={{
-                  fontSize: 12,
-                  fontWeight: 700,
-                  color: outstandingBalance <= 0 ? 'var(--ios-green)' : 'var(--ios-amber)',
-                  background: outstandingBalance <= 0 ? 'var(--tint-green)' : 'var(--tint-amber)',
-                  padding: '3px 10px',
-                  borderRadius: 12,
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: 5
-                }}
-              >
-                <span className="pulse-dot" style={{ background: outstandingBalance <= 0 ? 'var(--ios-green)' : 'var(--ios-amber)' }} />
+              <span className="settlement-status-badge">
                 {outstandingBalance > 0 ? 'Dues Outstanding' : outstandingBalance < 0 ? 'Advance Credit Held' : 'Account Settled'}
               </span>
             </div>
@@ -684,7 +671,7 @@ Current Ledger Balance: Rs. ${Math.abs(outstandingBalance).toLocaleString('en-PK
               </span>
             </div>
             <div className="ios-metric-widget">
-              <span className="metric-label">Payments Received</span>
+              <span className="metric-label">Payments Rcvd</span>
               <span className="metric-val" style={{ color: 'var(--ios-green)' }}>
                 Rs. {Math.round(totalPaymentsReceived).toLocaleString('en-PK')}
               </span>
@@ -696,7 +683,7 @@ Current Ledger Balance: Rs. ${Math.abs(outstandingBalance).toLocaleString('en-PK
               </span>
             </div>
             <div className="ios-metric-widget">
-              <span className="metric-label">Net Spread / Profit</span>
+              <span className="metric-label">Net Profit</span>
               <span className="metric-val" style={{ color: totalProfit >= 0 ? 'var(--ios-green)' : 'var(--ios-red)' }}>
                 {totalProfit >= 0 ? '+' : ''}Rs. {Math.round(totalProfit).toLocaleString('en-PK')}
               </span>
@@ -770,7 +757,7 @@ Current Ledger Balance: Rs. ${Math.abs(outstandingBalance).toLocaleString('en-PK
                       </div>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 2 }}>
                         <span style={{ fontSize: 13, color: 'var(--label-secondary)' }}>{d.labReceivedWeight || 0} t</span>
-                        <span style={{ fontSize: 12, fontWeight: 600, color: isProfit ? 'var(--ios-green)' : 'var(--ios-red)' }} className="tabular-nums">{isProfit ? '+' : ''}Rs. {Math.round(settlement.netProfit).toLocaleString('en-PK')} profit</span>
+                        <span style={{ fontSize: 12, fontWeight: 600, color: isProfit ? 'var(--ios-green)' : 'var(--ios-red)' }} className="tabular-nums">{isProfit ? '+Rs. ' : '-Rs. '}{Math.abs(Math.round(settlement.netProfit)).toLocaleString('en-PK')} {isProfit ? 'profit' : 'loss'}</span>
                       </div>
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 2, flexShrink: 0 }}>
@@ -827,10 +814,10 @@ Current Ledger Balance: Rs. ${Math.abs(outstandingBalance).toLocaleString('en-PK
                         {dayStr}
                       </span>
                     </div>
-                    <div style={{ flex: 1, minWidth: 0, paddingRight: 8 }}>
+                    <div style={{ flex: 1, minWidth: 0, paddingRight: 0 }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-                        <span style={{ fontSize: 16, fontWeight: 600, color: 'var(--label-primary)' }}>{isReceived ? 'Payment Rcvd' : 'Payment Made'}</span>
-                        <span style={{ fontSize: 16, fontWeight: 700, color: isReceived ? 'var(--ios-green)' : 'var(--label-primary)' }} className="tabular-nums">{isReceived ? '-' : '+'}Rs. {Math.round(pay.amount).toLocaleString('en-PK')}</span>
+                        <span style={{ fontSize: 16, fontWeight: 600, color: 'var(--label-primary)' }}>{isReceived ? 'Received' : 'Sent'}</span>
+                        <span style={{ fontSize: 16, fontWeight: 700, color: isReceived ? 'var(--ios-green)' : 'var(--ios-orange)' }} className="tabular-nums">{isReceived ? '-' : '+'}Rs. {Math.round(pay.amount).toLocaleString('en-PK')}</span>
                       </div>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 2 }}>
                         <span style={{ fontSize: 13, color: 'var(--label-secondary)' }}>{pay.mode.toUpperCase()}{pay.referenceNote ? ` · ${pay.referenceNote}` : ''}</span>
@@ -980,7 +967,7 @@ Current Ledger Balance: Rs. ${Math.abs(outstandingBalance).toLocaleString('en-PK
                       className={`ios-segmented-item ${paymentForm.type === 'received' ? 'active' : ''}`}
                       onClick={() => setPaymentForm({ ...paymentForm, type: 'received' })}
                     >
-                      Payment Received (Inflow)
+                      Payment Rcvd (Inflow)
                     </button>
                     <button
                       type="button"
@@ -1569,15 +1556,15 @@ Current Ledger Balance: Rs. ${Math.abs(outstandingBalance).toLocaleString('en-PK
           deleteTarget?.type === 'dispatch'
             ? 'Delete Dispatch Record?'
             : deleteTarget?.type === 'payment'
-            ? 'Delete Payment Entry?'
-            : 'Delete Purchase Order?'
+              ? 'Delete Payment Entry?'
+              : 'Delete Purchase Order?'
         }
         message={
           deleteTarget?.type === 'dispatch'
             ? `Are you sure you want to delete dispatch record${deleteTarget?.label ? ` for truck ${deleteTarget.label}` : ''}? This action cannot be undone.`
             : deleteTarget?.type === 'payment'
-            ? 'Are you sure you want to delete this payment entry? The ledger balance will be automatically updated.'
-            : `Are you sure you want to delete Purchase Order ${deleteTarget?.label || ''}? Related dispatches will remain in the database.`
+              ? 'Are you sure you want to delete this payment entry? The ledger balance will be automatically updated.'
+              : `Are you sure you want to delete Purchase Order ${deleteTarget?.label || ''}? Related dispatches will remain in the database.`
         }
         confirmText="Delete"
         cancelText="Cancel"

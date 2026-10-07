@@ -92,7 +92,7 @@ export default function Summary() {
     const totalCost = filteredDispatches.reduce((sum, d) => sum + calculateSettlement(d).totalCost, 0);
     const totalTons = filteredDispatches.reduce((sum, d) => sum + (d.labReceivedWeight || 0), 0);
     const profitMargin = totalRevenue > 0 ? (totalProfit / totalRevenue) * 100 : 0;
-    const formattedProfit = `${totalProfit >= 0 ? '+' : ''}Rs.\u00A0${Math.round(totalProfit).toLocaleString('en-PK')}`;
+    const formattedProfit = `${totalProfit >= 0 ? '+Rs.\u00A0' : '-Rs.\u00A0'}${Math.abs(Math.round(totalProfit)).toLocaleString('en-PK')}`;
 
     // Recent Dispatches
     const recentDispatches = [...filteredDispatches]
@@ -175,7 +175,7 @@ export default function Summary() {
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, flexWrap: 'wrap' }}>
                         <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--label-secondary)', textTransform: 'uppercase', letterSpacing: 0.4, whiteSpace: 'nowrap' }}>
-                            Total Profit
+                            {totalProfit >= 0 ? 'Total Profit' : 'Total Loss'}
                         </span>
                         {period !== 'all' && (
                             <span style={{
@@ -495,7 +495,7 @@ export default function Summary() {
                                                 }}
                                                 className="tabular-nums"
                                             >
-                                                {isProfit ? '+' : ''}Rs. {Math.round(settlement.netProfit).toLocaleString('en-PK')}
+                                                {isProfit ? '+Rs. ' : '-Rs. '}{Math.abs(Math.round(settlement.netProfit)).toLocaleString('en-PK')}
                                             </span>
                                         </div>
 

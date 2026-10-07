@@ -204,9 +204,11 @@ ${dispatch.notes ? `*Remarks:* ${dispatch.notes}\n\n` : ''}✓ E-Verified Dispat
                 <div style={{ fontSize: 14, color: 'var(--label-secondary)', marginTop: 4 }}>Date: {dispatch.date}</div>
               </div>
               <div style={{ textAlign: 'right' }}>
-                <div style={{ fontSize: 13, color: 'var(--label-secondary)', textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 600 }}>Net Profit</div>
+                <div style={{ fontSize: 13, color: 'var(--label-secondary)', textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 600 }}>
+                  {calculateSettlement(dispatch).netProfit >= 0 ? 'Net Profit' : 'Net Loss'}
+                </div>
                 <div style={{ fontSize: 20, fontWeight: 700, color: calculateSettlement(dispatch).netProfit >= 0 ? 'var(--ios-green)' : 'var(--ios-red)', marginTop: 2 }} className="tabular-nums">
-                  {calculateSettlement(dispatch).netProfit >= 0 ? '+' : ''}Rs. {Math.round(calculateSettlement(dispatch).netProfit).toLocaleString('en-PK')}
+                  {calculateSettlement(dispatch).netProfit >= 0 ? '+Rs. ' : '-Rs. '}{Math.abs(Math.round(calculateSettlement(dispatch).netProfit)).toLocaleString('en-PK')}
                 </div>
               </div>
             </div>
@@ -351,10 +353,10 @@ ${dispatch.notes ? `*Remarks:* ${dispatch.notes}\n\n` : ''}✓ E-Verified Dispat
                     alignItems: 'center'
                   }}>
                     <span style={{ fontSize: 16, fontWeight: 700, color: 'white' }}>
-                      Final Net Profit
+                      {isProfit ? 'Final Net Profit' : 'Final Net Loss'}
                     </span>
                     <span style={{ fontSize: 20, fontWeight: 800, color: 'white' }} className="tabular-nums">
-                      {isProfit ? '+' : ''}Rs. {Math.round(settlement.netProfit).toLocaleString('en-PK')}
+                      {isProfit ? '+Rs. ' : '-Rs. '}{Math.abs(Math.round(settlement.netProfit)).toLocaleString('en-PK')}
                     </span>
                   </div>
 

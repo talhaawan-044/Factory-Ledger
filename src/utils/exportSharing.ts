@@ -4,7 +4,7 @@ import { Capacitor } from '@capacitor/core';
 import html2canvas from 'html2canvas';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import * as XLSX from 'xlsx';
+import ExcelJS from 'exceljs';
 import type { Dispatch, Party, Payment, PurchaseOrder, AppSettings } from '../types';
 import { calculateSettlement, calculatePartyBalance, calculateTransitLoss } from './calculations';
 import { getSettings } from '../lib/db';
@@ -1099,15 +1099,199 @@ export interface ExportDispatchesExcelOptions {
 }
 
 /**
- * Generate a multi-sheet, beautifully formatted .xlsx workbook:
- * - If exporting for a single Party:
- *   - Sheet 1: "Account Statement" (Chronological statement with Debits, Credits & Running Balance)
- *   - Sheet 2: "Dispatches & Quality" (Full truck-by-truck technical log)
- *   - Sheet 3: "Payment Transactions" (Payment voucher receipts)
- * - If exporting All Dispatches:
- *   - Sheet 1: "Dispatches Master" (Comprehensive deliveries log)
- *   - Sheet 2: "Cost & Margin Analysis" (Procurement blends, overheads & margins)
- *   - Sheet 3: "Party Summary" (Aggregated performance per plant/customer)
+ * Helper to convert ExcelJS writeBuffer (ArrayBuffer) to Base64 string
+ * without stack overflow on large exports.
+ */
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  const len = bytes.byteLength;
+  const chunkSize = 0x8000; // 32KB
+  for (let i = 0; i < len; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Executive Styling Palette (Strictly 100% Solid Flat Colors, NO Gradients)
+// ─────────────────────────────────────────────────────────────────────────────
+const XL_PALETTE = {
+  NAVY_BANNER: 'FF0F172A',      // Slate 900
+  NAVY_SUBBANNER: 'FF1E293B',   // Slate 800
+  HEADER_PRIMARY: 'FF1E293B',   // Slate 800
+  HEADER_ACCENT: 'FF2563EB',    // Royal Blue 600
+  HEADER_TEXT: 'FFFFFFFF',      // White
+  
+  TEXT_PRIMARY: 'FF0F172A',     // Slate 900
+  TEXT_SECONDARY: 'FF475569',   // Slate 600
+  TEXT_MUTED: 'FF94A3B8',       // Slate 400
+  TEXT_GREEN: 'FF047857',       // Emerald 700
+  TEXT_RED: 'FFB91C1C',         // Rose 700
+  TEXT_BLUE: 'FF1D4ED8',        // Blue 700
+
+  CARD_FILL: 'FFF8FAFC',        // Slate 50
+  CARD_BORDER: 'FFE2E8F0',      // Slate 200
+
+  ZEBRA_EVEN: 'FFFFFFFF',       // Pure White
+  ZEBRA_ODD: 'FFF8FAFC',        // Slate 50
+  TOTAL_FILL: 'FFF1F5F9',       // Slate 100
+
+  PAYMENT_REC_FILL: 'FFF0FDF4', // Light Emerald 50
+  PAYMENT_REC_TEXT: 'FF047857', // Emerald 700
+  PAYMENT_PAID_FILL: 'FFFFF1F2',// Light Rose 50
+  PAYMENT_PAID_TEXT: 'FFB91C1C',// Rose 700
+
+  BORDER_LIGHT: 'FFE2E8F0',     // Slate 200
+  BORDER_MEDIUM: 'FFCBD5E1',    // Slate 300
+  BORDER_DARK: 'FF94A3B8',      // Slate 400
+  BORDER_DOUBLE: 'FF0F172A',    // Slate 900
+
+  KPI_SLATE_FILL: 'FFF1F5F9',
+  KPI_SLATE_BORDER: 'FFCBD5E1',
+  KPI_BLUE_FILL: 'FFEFF6FF',
+  KPI_BLUE_BORDER: 'FFBFDBFE',
+  KPI_GREEN_FILL: 'FFECFDF5',
+  KPI_GREEN_BORDER: 'FFA7F3D0',
+  KPI_RED_FILL: 'FFFEF2F2',
+  KPI_RED_BORDER: 'FFFECACA',
+};
+
+const BORDER_CELL_LIGHT: Partial<ExcelJS.Borders> = {
+  top: { style: 'thin', color: { argb: XL_PALETTE.BORDER_LIGHT } },
+  bottom: { style: 'thin', color: { argb: XL_PALETTE.BORDER_LIGHT } },
+  left: { style: 'thin', color: { argb: XL_PALETTE.BORDER_LIGHT } },
+  right: { style: 'thin', color: { argb: XL_PALETTE.BORDER_LIGHT } },
+};
+
+const BORDER_TOTAL_ACCOUNTING: Partial<ExcelJS.Borders> = {
+  top: { style: 'thin', color: { argb: XL_PALETTE.BORDER_DARK } },
+  bottom: { style: 'double', color: { argb: XL_PALETTE.BORDER_DOUBLE } },
+  left: { style: 'thin', color: { argb: XL_PALETTE.BORDER_LIGHT } },
+  right: { style: 'thin', color: { argb: XL_PALETTE.BORDER_LIGHT } },
+};
+
+/**
+ * Universal auto-fit column widths calculator
+ */
+function autoFitWorksheetColumns(ws: ExcelJS.Worksheet, minWidths: { [colIdx: number]: number } = {}) {
+  ws.columns.forEach((col, idx) => {
+    let maxLen = 0;
+    col.eachCell?.({ includeEmpty: false }, (cell) => {
+      // Exclude top merged header banners from skewing column width
+      if (Number(cell.row) <= 3) return;
+      const val = cell.value !== undefined && cell.value !== null ? String(cell.value) : '';
+      if (val.length > maxLen) {
+        maxLen = val.length;
+      }
+    });
+    const colNum = col.number || idx + 1;
+    const minW = minWidths[colNum] || 12;
+    col.width = Math.max(minW, Math.min(maxLen + 4, 46));
+  });
+}
+
+/**
+ * Adds an Executive Corporate Banner Header at Rows 1-2
+ */
+function addWorksheetBanner(
+  ws: ExcelJS.Worksheet,
+  lastColLetter: string,
+  companyName: string,
+  subline: string,
+  docBadge: string
+) {
+  // Row 1: Company Title
+  ws.mergeCells(`A1:${lastColLetter}1`);
+  const r1 = ws.getCell('A1');
+  r1.value = companyName.toUpperCase();
+  r1.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: XL_PALETTE.NAVY_BANNER } };
+  r1.font = { name: 'Calibri', size: 16, bold: true, color: { argb: XL_PALETTE.HEADER_TEXT } };
+  r1.alignment = { vertical: 'middle', horizontal: 'left', indent: 1 };
+  ws.getRow(1).height = 36;
+
+  // Row 2: Subline & Document Meta
+  ws.mergeCells(`A2:${lastColLetter}2`);
+  const r2 = ws.getCell('A2');
+  r2.value = `${docBadge ? `${docBadge.toUpperCase()}   •   ` : ''}${subline}`;
+  r2.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: XL_PALETTE.NAVY_SUBBANNER } };
+  r2.font = { name: 'Calibri', size: 9.5, color: { argb: XL_PALETTE.TEXT_MUTED } };
+  r2.alignment = { vertical: 'middle', horizontal: 'left', indent: 1 };
+  ws.getRow(2).height = 20;
+
+  // Row 3: Spacer
+  ws.getRow(3).height = 10;
+}
+
+/**
+ * Renders 4 Executive KPI Metric Cards in an Excel Worksheet
+ */
+function addKpiRowCards(
+  ws: ExcelJS.Worksheet,
+  rowStart: number,
+  cards: Array<{
+    colSpan: [string, string];
+    label: string;
+    value: string | number;
+    sub: string;
+    numFmt?: string;
+    fillColor: string;
+    borderColor: string;
+    valColor: string;
+  }>
+) {
+  ws.getRow(rowStart).height = 16;
+  ws.getRow(rowStart + 1).height = 24;
+  ws.getRow(rowStart + 2).height = 16;
+
+  cards.forEach((card) => {
+    const [cStart, cEnd] = card.colSpan;
+
+    // Merge for Label
+    ws.mergeCells(`${cStart}${rowStart}:${cEnd}${rowStart}`);
+    const cellLabel = ws.getCell(`${cStart}${rowStart}`);
+    cellLabel.value = card.label.toUpperCase();
+    cellLabel.font = { name: 'Calibri', size: 8, bold: true, color: { argb: XL_PALETTE.TEXT_SECONDARY } };
+    cellLabel.alignment = { vertical: 'middle', horizontal: 'center' };
+
+    // Merge for Big Hero Value
+    ws.mergeCells(`${cStart}${rowStart + 1}:${cEnd}${rowStart + 1}`);
+    const cellVal = ws.getCell(`${cStart}${rowStart + 1}`);
+    cellVal.value = card.value;
+    if (card.numFmt) cellVal.numFmt = card.numFmt;
+    cellVal.font = { name: 'Calibri', size: 14, bold: true, color: { argb: card.valColor } };
+    cellVal.alignment = { vertical: 'middle', horizontal: 'center' };
+
+    // Merge for Subtitle
+    ws.mergeCells(`${cStart}${rowStart + 2}:${cEnd}${rowStart + 2}`);
+    const cellSub = ws.getCell(`${cStart}${rowStart + 2}`);
+    cellSub.value = card.sub;
+    cellSub.font = { name: 'Calibri', size: 8, color: { argb: XL_PALETTE.TEXT_MUTED } };
+    cellSub.alignment = { vertical: 'middle', horizontal: 'center' };
+
+    // Apply card background and border styling to every cell in the block
+    const startColNum = ws.getColumn(cStart).number;
+    const endColNum = ws.getColumn(cEnd).number;
+    for (let r = rowStart; r <= rowStart + 2; r++) {
+      for (let c = startColNum; c <= endColNum; c++) {
+        const cell = ws.getRow(r).getCell(c);
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: card.fillColor } };
+        cell.border = {
+          top: r === rowStart ? { style: 'thin', color: { argb: card.borderColor } } : undefined,
+          bottom: r === rowStart + 2 ? { style: 'thin', color: { argb: card.borderColor } } : undefined,
+          left: c === startColNum ? { style: 'thin', color: { argb: card.borderColor } } : undefined,
+          right: c === endColNum ? { style: 'thin', color: { argb: card.borderColor } } : undefined,
+        };
+      }
+    }
+  });
+
+  // Spacer row after KPI row
+  ws.getRow(rowStart + 3).height = 12;
+}
+
+/**
+ * Generate a multi-sheet, beautifully formatted .xlsx workbook with executive styling.
  */
 export async function exportDispatchesExcel(options: ExportDispatchesExcelOptions): Promise<void> {
   const { dispatches, parties, pos, payments = [] } = options;
@@ -1116,13 +1300,23 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
   const partyName = party?.name || options.partyName;
   const isSingleParty = Boolean(party || (partyName && payments.length > 0));
 
-  const wb = XLSX.utils.book_new();
+  const wb = new ExcelJS.Workbook();
+  wb.creator = settings.businessName || 'Factory Ledger';
+  wb.lastModifiedBy = settings.userName || 'Factory Ledger';
+  wb.created = new Date();
+  wb.modified = new Date();
+
   const dateStamp = new Date().toISOString().split('T')[0];
   const companyName = settings.businessName || 'AWAN COAL LOGISTICS';
+  const companySubline = [
+    settings.phoneNumber ? `Tel: ${settings.phoneNumber}` : '',
+    settings.ntnNumber ? `NTN: ${settings.ntnNumber}` : '',
+    settings.companyAddress || '',
+  ].filter(Boolean).join('   •   ');
 
   if (isSingleParty) {
     // ════════════════════════════════════════════════════════════════════════
-    // SHEET 1: ACCOUNT STATEMENT (Chronological Running Balance)
+    // SHEET 1: OFFICIAL STATEMENT OF ACCOUNT (Chronological Running Balance)
     // ════════════════════════════════════════════════════════════════════════
     const balanceResult = calculatePartyBalance(dispatches, payments);
     const totalTons = balanceResult.totalTons;
@@ -1130,308 +1324,1258 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
     const totalReceived = balanceResult.totalPaymentsReceived;
     const netBalance = balanceResult.outstandingBalance;
 
-    type LedgerEntry =
+    const wsStatement = wb.addWorksheet('Statement of Account', {
+      views: [{ state: 'frozen', ySplit: 12, showGridLines: true }],
+      properties: { tabColor: { argb: 'FF007AFF' } },
+    });
+
+    // 1. Top Banner
+    addWorksheetBanner(
+      wsStatement,
+      'J',
+      companyName,
+      companySubline,
+      'OFFICIAL STATEMENT OF ACCOUNT'
+    );
+
+    // 2. Party & Document Profile Card (Rows 4-6)
+    wsStatement.getRow(4).height = 17;
+    wsStatement.getRow(5).height = 22;
+    wsStatement.getRow(6).height = 18;
+
+    // Left block: Account Holder Details (A4:E6)
+    wsStatement.mergeCells('A4:E4');
+    const ch4 = wsStatement.getCell('A4');
+    ch4.value = 'ACCOUNT HOLDER / FACTORY:';
+    ch4.font = { name: 'Calibri', size: 8, bold: true, color: { argb: XL_PALETTE.TEXT_MUTED } };
+    ch4.alignment = { vertical: 'middle', horizontal: 'left', indent: 1 };
+
+    wsStatement.mergeCells('A5:E5');
+    const ch5 = wsStatement.getCell('A5');
+    ch5.value = (partyName || 'Ledger Account').toUpperCase();
+    ch5.font = { name: 'Calibri', size: 13, bold: true, color: { argb: XL_PALETTE.TEXT_PRIMARY } };
+    ch5.alignment = { vertical: 'middle', horizontal: 'left', indent: 1 };
+
+    wsStatement.mergeCells('A6:E6');
+    const ch6 = wsStatement.getCell('A6');
+    const partyMetaParts = [
+      party?.contactPerson ? `Attn: ${party.contactPerson}` : '',
+      party?.phone ? `Tel: ${party.phone}` : '',
+      party?.address || '',
+    ].filter(Boolean);
+    ch6.value = partyMetaParts.join('   |   ') || 'Verified Party Ledger';
+    ch6.font = { name: 'Calibri', size: 9, color: { argb: XL_PALETTE.TEXT_SECONDARY } };
+    ch6.alignment = { vertical: 'middle', horizontal: 'left', indent: 1 };
+
+    // Right block: Document Meta (F4:J6)
+    wsStatement.mergeCells('F4:J4');
+    const rh4 = wsStatement.getCell('F4');
+    rh4.value = 'STATEMENT DETAILS:';
+    rh4.font = { name: 'Calibri', size: 8, bold: true, color: { argb: XL_PALETTE.TEXT_MUTED } };
+    rh4.alignment = { vertical: 'middle', horizontal: 'right' };
+
+    wsStatement.mergeCells('F5:J5');
+    const rh5 = wsStatement.getCell('F5');
+    rh5.value = `As of ${new Date().toLocaleDateString('en-PK', { day: '2-digit', month: 'short', year: 'numeric' })}`;
+    rh5.font = { name: 'Calibri', size: 12, bold: true, color: { argb: XL_PALETTE.TEXT_BLUE } };
+    rh5.alignment = { vertical: 'middle', horizontal: 'right' };
+
+    wsStatement.mergeCells('F6:J6');
+    const rh6 = wsStatement.getCell('F6');
+    rh6.value = `Currency: PKR (Rs.)   •   Status: ${netBalance > 0 ? 'Payment Due' : 'Settled'}`;
+    rh6.font = { name: 'Calibri', size: 9, color: { argb: XL_PALETTE.TEXT_SECONDARY } };
+    rh6.alignment = { vertical: 'middle', horizontal: 'right' };
+
+    // Fill & Borders for profile cards
+    for (let r = 4; r <= 6; r++) {
+      for (let c = 1; c <= 10; c++) {
+        const cell = wsStatement.getRow(r).getCell(c);
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: XL_PALETTE.CARD_FILL } };
+        cell.border = {
+          top: r === 4 ? { style: 'thin', color: { argb: XL_PALETTE.CARD_BORDER } } : undefined,
+          bottom: r === 6 ? { style: 'thin', color: { argb: XL_PALETTE.CARD_BORDER } } : undefined,
+          left: c === 1 || c === 6 ? { style: 'thin', color: { argb: XL_PALETTE.CARD_BORDER } } : undefined,
+          right: c === 5 || c === 10 ? { style: 'thin', color: { argb: XL_PALETTE.CARD_BORDER } } : undefined,
+        };
+      }
+    }
+
+    // Spacer row
+    wsStatement.getRow(7).height = 10;
+
+    // 3. Four Executive KPI Cards (Rows 8-10)
+    addKpiRowCards(wsStatement, 8, [
+      {
+        colSpan: ['A', 'B'],
+        label: 'Delivered Tonnage',
+        value: totalTons,
+        sub: `${dispatches.length} Trucks Completed`,
+        numFmt: '#,##0.00" t"',
+        fillColor: XL_PALETTE.KPI_SLATE_FILL,
+        borderColor: XL_PALETTE.KPI_SLATE_BORDER,
+        valColor: XL_PALETTE.TEXT_PRIMARY,
+      },
+      {
+        colSpan: ['C', 'E'],
+        label: 'Total Invoiced (Debit)',
+        value: Math.round(totalBilled),
+        sub: 'Gross Deliveries Billed',
+        numFmt: '"Rs. "#,##0',
+        fillColor: XL_PALETTE.KPI_BLUE_FILL,
+        borderColor: XL_PALETTE.KPI_BLUE_BORDER,
+        valColor: XL_PALETTE.TEXT_BLUE,
+      },
+      {
+        colSpan: ['F', 'G'],
+        label: 'Payments Credited',
+        value: Math.round(totalReceived),
+        sub: `${payments.filter((p) => p.type === 'received').length} Receipts Cleared`,
+        numFmt: '"Rs. "#,##0',
+        fillColor: XL_PALETTE.KPI_GREEN_FILL,
+        borderColor: XL_PALETTE.KPI_GREEN_BORDER,
+        valColor: XL_PALETTE.TEXT_GREEN,
+      },
+      {
+        colSpan: ['H', 'J'],
+        label: 'Net Balance Due',
+        value: Math.round(netBalance),
+        sub: netBalance > 0 ? 'Receivable from Party' : 'Account Fully Settled',
+        numFmt: '"Rs. "#,##0',
+        fillColor: netBalance > 0 ? XL_PALETTE.KPI_RED_FILL : XL_PALETTE.KPI_GREEN_FILL,
+        borderColor: netBalance > 0 ? XL_PALETTE.KPI_RED_BORDER : XL_PALETTE.KPI_GREEN_BORDER,
+        valColor: netBalance > 0 ? XL_PALETTE.TEXT_RED : XL_PALETTE.TEXT_GREEN,
+      },
+    ]);
+
+    // 4. Main Transaction Table Headers (Row 12)
+    const stmtHeaders = [
+      'Sr #',
+      'Date',
+      'Transaction Particulars & Description',
+      'Ref / Truck #',
+      'Weight (t)',
+      'Rate (Rs/t)',
+      'Invoiced Debit (Rs)',
+      'Payment Credit (Rs)',
+      'Running Balance (Rs)',
+      'Remarks / Note',
+    ];
+
+    const hRow = wsStatement.getRow(12);
+    hRow.height = 28;
+    stmtHeaders.forEach((title, i) => {
+      const cell = hRow.getCell(i + 1);
+      cell.value = title;
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: XL_PALETTE.HEADER_PRIMARY } };
+      cell.font = { name: 'Calibri', size: 10, bold: true, color: { argb: XL_PALETTE.HEADER_TEXT } };
+      cell.alignment = {
+        vertical: 'middle',
+        horizontal: i === 0 || i === 1 || i === 3 ? 'center' : i >= 4 && i <= 8 ? 'right' : 'left',
+      };
+      cell.border = BORDER_CELL_LIGHT;
+    });
+
+    // 5. Data Rows
+    type StatementEntry =
       | { kind: 'dispatch'; date: string; data: Dispatch }
       | { kind: 'payment'; date: string; data: Payment };
 
-    const entries: LedgerEntry[] = [
+    const statementEntries: StatementEntry[] = [
       ...dispatches.map((d) => ({ kind: 'dispatch' as const, date: d.date, data: d })),
       ...payments.map((p) => ({ kind: 'payment' as const, date: p.date, data: p })),
     ].sort((a, b) => a.date.localeCompare(b.date));
 
     let runBal = 0;
-    const statementRows: (string | number)[][] = [
-      [companyName, '', '', '', '', '', '', ''],
-      ['OFFICIAL STATEMENT OF ACCOUNT', '', '', '', '', '', '', ''],
-      ['Party Name:', partyName || '', 'Generated:', dateStamp, '', '', '', ''],
-      ['Contact:', party?.contactPerson || '', 'Phone:', party?.phone || '', '', '', '', ''],
-      ['Address:', party?.address || '', 'NTN:', settings.ntnNumber || '', '', '', '', ''],
-      [],
-      ['EXECUTIVE SUMMARY', '', '', '', '', '', '', ''],
-      ['Delivered Tons', totalTons, 'Total Invoiced (Rs)', totalBilled, 'Total Received (Rs)', totalReceived, 'Net Balance Due (Rs)', netBalance],
-      [],
-      [
-        'Sr #',
-        'Date',
-        'Transaction Description',
-        'Ref / Truck #',
-        'Weight (Tons)',
-        'Rate (Rs/t)',
-        'Invoiced Debit (Rs)',
-        'Payment Credit (Rs)',
-        'Running Balance (Rs)',
-        'Remarks',
-      ],
-    ];
+    let currentRowIdx = 13;
 
-    entries.forEach((e, i) => {
-      if (e.kind === 'dispatch') {
-        const d = e.data;
+    statementEntries.forEach((entry, idx) => {
+      const row = wsStatement.getRow(currentRowIdx);
+      row.height = 22;
+      const isEven = idx % 2 === 0;
+
+      if (entry.kind === 'dispatch') {
+        const d = entry.data;
         const s = calculateSettlement(d);
         const invoiced = Math.round(s.totalRevenue);
         runBal += invoiced;
         const po = pos.find((p) => p.id === d.poId);
 
-        statementRows.push([
-          i + 1,
-          d.date || '',
-          `Coal Dispatch Delivery (${d.truckNumber})`,
-          po?.poNumber || d.truckNumber,
+        row.values = [
+          idx + 1,
+          d.date || '-',
+          `Coal Dispatch Delivery (${d.truckNumber || 'Truck'})`,
+          po?.poNumber || d.truckNumber || '-',
           d.labReceivedWeight || 0,
           parseFloat(s.payableRate.toFixed(2)),
           invoiced,
-          0,
+          null, // Empty credit for dispatches
           runBal,
           d.notes || '',
-        ]);
+        ];
+
+        // Format cells
+        for (let c = 1; c <= 10; c++) {
+          const cell = row.getCell(c);
+          cell.font = { name: 'Calibri', size: 9.5, color: { argb: XL_PALETTE.TEXT_PRIMARY } };
+          cell.fill = {
+            type: 'pattern',
+            pattern: 'solid',
+            fgColor: { argb: isEven ? XL_PALETTE.ZEBRA_EVEN : XL_PALETTE.ZEBRA_ODD },
+          };
+          cell.border = BORDER_CELL_LIGHT;
+
+          if (c === 1 || c === 2 || c === 4) {
+            cell.alignment = { vertical: 'middle', horizontal: 'center' };
+          } else if (c === 5) {
+            cell.alignment = { vertical: 'middle', horizontal: 'right' };
+            cell.numFmt = '#,##0.00';
+          } else if (c === 6) {
+            cell.alignment = { vertical: 'middle', horizontal: 'right' };
+            cell.numFmt = '#,##0.00';
+          } else if (c === 7) {
+            cell.alignment = { vertical: 'middle', horizontal: 'right' };
+            cell.numFmt = '#,##0';
+            cell.font = { name: 'Calibri', size: 9.5, bold: true, color: { argb: XL_PALETTE.TEXT_PRIMARY } };
+          } else if (c === 8) {
+            cell.alignment = { vertical: 'middle', horizontal: 'right' };
+            cell.value = '-';
+            cell.font = { name: 'Calibri', size: 9.5, color: { argb: XL_PALETTE.TEXT_MUTED } };
+          } else if (c === 9) {
+            cell.alignment = { vertical: 'middle', horizontal: 'right' };
+            cell.numFmt = '#,##0';
+            cell.font = { name: 'Calibri', size: 9.5, bold: true, color: { argb: XL_PALETTE.TEXT_PRIMARY } };
+          } else {
+            cell.alignment = { vertical: 'middle', horizontal: 'left' };
+          }
+        }
       } else {
-        const p = e.data;
+        const p = entry.data;
         const isRec = p.type === 'received';
         const amt = Math.round(p.amount);
         if (isRec) runBal -= amt;
         else runBal += amt;
 
-        statementRows.push([
-          i + 1,
-          p.date || '',
-          isRec ? 'Payment Received' : 'Payment Disbursed',
+        row.values = [
+          idx + 1,
+          p.date || '-',
+          isRec ? `Payment Received (${p.mode.toUpperCase()})` : `Payment Outflow (${p.mode.toUpperCase()})`,
           p.referenceNote || (p.id || '').slice(0, 8).toUpperCase(),
-          0,
-          0,
-          !isRec ? amt : 0,
-          isRec ? amt : 0,
+          null,
+          null,
+          !isRec ? amt : null,
+          isRec ? amt : null,
           runBal,
-          `${p.mode.toUpperCase()} - ${p.referenceNote || ''}`,
-        ]);
+          p.referenceNote || (isRec ? 'Bank Settlement' : 'Disbursement'),
+        ];
+
+        // Format payment row with soft green/rose tint
+        const bgFill = isRec ? XL_PALETTE.PAYMENT_REC_FILL : XL_PALETTE.PAYMENT_PAID_FILL;
+        const txtColor = isRec ? XL_PALETTE.PAYMENT_REC_TEXT : XL_PALETTE.PAYMENT_PAID_TEXT;
+
+        for (let c = 1; c <= 10; c++) {
+          const cell = row.getCell(c);
+          cell.font = { name: 'Calibri', size: 9.5, color: { argb: XL_PALETTE.TEXT_PRIMARY } };
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgFill } };
+          cell.border = BORDER_CELL_LIGHT;
+
+          if (c === 1 || c === 2 || c === 4) {
+            cell.alignment = { vertical: 'middle', horizontal: 'center' };
+          } else if (c === 3) {
+            cell.alignment = { vertical: 'middle', horizontal: 'left' };
+            cell.font = { name: 'Calibri', size: 9.5, bold: true, color: { argb: txtColor } };
+          } else if (c === 5 || c === 6) {
+            cell.alignment = { vertical: 'middle', horizontal: 'center' };
+            cell.value = '-';
+            cell.font = { name: 'Calibri', size: 9.5, color: { argb: XL_PALETTE.TEXT_MUTED } };
+          } else if (c === 7) {
+            cell.alignment = { vertical: 'middle', horizontal: 'right' };
+            if (!isRec) {
+              cell.numFmt = '#,##0';
+              cell.font = { name: 'Calibri', size: 9.5, bold: true, color: { argb: XL_PALETTE.TEXT_RED } };
+            } else {
+              cell.value = '-';
+              cell.font = { name: 'Calibri', size: 9.5, color: { argb: XL_PALETTE.TEXT_MUTED } };
+            }
+          } else if (c === 8) {
+            cell.alignment = { vertical: 'middle', horizontal: 'right' };
+            if (isRec) {
+              cell.numFmt = '#,##0';
+              cell.font = { name: 'Calibri', size: 9.5, bold: true, color: { argb: XL_PALETTE.TEXT_GREEN } };
+            } else {
+              cell.value = '-';
+              cell.font = { name: 'Calibri', size: 9.5, color: { argb: XL_PALETTE.TEXT_MUTED } };
+            }
+          } else if (c === 9) {
+            cell.alignment = { vertical: 'middle', horizontal: 'right' };
+            cell.numFmt = '#,##0';
+            cell.font = { name: 'Calibri', size: 9.5, bold: true, color: { argb: XL_PALETTE.TEXT_PRIMARY } };
+          } else {
+            cell.alignment = { vertical: 'middle', horizontal: 'left' };
+          }
+        }
       }
+
+      currentRowIdx++;
     });
 
-    statementRows.push([
+    // 6. Grand Total Accounting Row
+    const totalRow = wsStatement.getRow(currentRowIdx);
+    totalRow.height = 28;
+    totalRow.values = [
+      '',
       'TOTALS',
+      `${dispatches.length} Deliveries • ${payments.length} Payments`,
       '',
-      `${dispatches.length} Trucks • ${payments.length} Payments`,
+      totalTons,
       '',
-      parseFloat(totalTons.toFixed(2)),
+      Math.round(totalBilled),
+      Math.round(totalReceived),
+      Math.round(netBalance),
       '',
-      totalBilled,
-      totalReceived,
-      netBalance,
-      '',
+    ];
+
+    for (let c = 1; c <= 10; c++) {
+      const cell = totalRow.getCell(c);
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: XL_PALETTE.TOTAL_FILL } };
+      cell.font = { name: 'Calibri', size: 10.5, bold: true, color: { argb: XL_PALETTE.TEXT_PRIMARY } };
+      cell.border = BORDER_TOTAL_ACCOUNTING;
+
+      if (c === 2) {
+        cell.alignment = { vertical: 'middle', horizontal: 'center' };
+      } else if (c === 5) {
+        cell.alignment = { vertical: 'middle', horizontal: 'right' };
+        cell.numFmt = '#,##0.00';
+      } else if (c === 7 || c === 8) {
+        cell.alignment = { vertical: 'middle', horizontal: 'right' };
+        cell.numFmt = '#,##0';
+      } else if (c === 9) {
+        cell.alignment = { vertical: 'middle', horizontal: 'right' };
+        cell.numFmt = '#,##0';
+        cell.font = {
+          name: 'Calibri',
+          size: 11,
+          bold: true,
+          color: { argb: netBalance > 0 ? XL_PALETTE.TEXT_RED : XL_PALETTE.TEXT_GREEN },
+        };
+      } else {
+        cell.alignment = { vertical: 'middle', horizontal: 'left' };
+      }
+    }
+
+    // 7. Signatory & Official Footnote
+    const footRowIdx = currentRowIdx + 2;
+    wsStatement.mergeCells(`A${footRowIdx}:E${footRowIdx}`);
+    const footCell = wsStatement.getCell(`A${footRowIdx}`);
+    footCell.value = 'Official Account Statement • Computer generated electronic record • Verified by Factory Ledger';
+    footCell.font = { name: 'Calibri', size: 8.5, italic: true, color: { argb: XL_PALETTE.TEXT_MUTED } };
+    footCell.alignment = { vertical: 'middle', horizontal: 'left' };
+
+    wsStatement.mergeCells(`G${footRowIdx}:J${footRowIdx}`);
+    const sigCell = wsStatement.getCell(`G${footRowIdx}`);
+    sigCell.value = `Authorized Signatory: ${(settings.userName || 'Authorized Signatory').toUpperCase()}`;
+    sigCell.font = { name: 'Calibri', size: 9, bold: true, color: { argb: XL_PALETTE.TEXT_SECONDARY } };
+    sigCell.alignment = { vertical: 'middle', horizontal: 'right' };
+
+    // Column Widths
+    autoFitWorksheetColumns(wsStatement, {
+      1: 6,
+      2: 13,
+      3: 36,
+      4: 16,
+      5: 14,
+      6: 14,
+      7: 18,
+      8: 18,
+      9: 20,
+      10: 24,
+    });
+
+    // ════════════════════════════════════════════════════════════════════════
+    // SHEET 2: DISPATCHES & QUALITY (Technical Fleet Audit)
+    // ════════════════════════════════════════════════════════════════════════
+    const wsDispatches = wb.addWorksheet('Dispatches & Quality', {
+      views: [{ state: 'frozen', ySplit: 8, showGridLines: true }],
+      properties: { tabColor: { argb: 'FF10B981' } },
+    });
+
+    addWorksheetBanner(
+      wsDispatches,
+      'U',
+      companyName,
+      companySubline,
+      `${(partyName || 'Party').toUpperCase()} — DISPATCHES & LAB AUDIT`
+    );
+
+    // KPI Cards for dispatches
+    const avgGcv =
+      dispatches.filter((d) => d.labActualGcv).length > 0
+        ? Math.round(
+            dispatches.reduce((acc, d) => acc + (d.labActualGcv || 0), 0) /
+              dispatches.filter((d) => d.labActualGcv).length
+          )
+        : 0;
+
+    addKpiRowCards(wsDispatches, 4, [
+      {
+        colSpan: ['A', 'D'],
+        label: 'Total Dispatches',
+        value: `${dispatches.length} Trucks`,
+        sub: 'Verified Factory Deliveries',
+        fillColor: XL_PALETTE.KPI_SLATE_FILL,
+        borderColor: XL_PALETTE.KPI_SLATE_BORDER,
+        valColor: XL_PALETTE.TEXT_PRIMARY,
+      },
+      {
+        colSpan: ['E', 'I'],
+        label: 'Net Delivered Weight',
+        value: totalTons,
+        sub: 'Factory Weighbridge Weight',
+        numFmt: '#,##0.00" t"',
+        fillColor: XL_PALETTE.KPI_BLUE_FILL,
+        borderColor: XL_PALETTE.KPI_BLUE_BORDER,
+        valColor: XL_PALETTE.TEXT_BLUE,
+      },
+      {
+        colSpan: ['J', 'O'],
+        label: 'Average Lab GCV',
+        value: avgGcv > 0 ? `${avgGcv.toLocaleString()} kcal/kg` : 'Pending Lab',
+        sub: 'Calorific Energy Rating',
+        fillColor: XL_PALETTE.KPI_GREEN_FILL,
+        borderColor: XL_PALETTE.KPI_GREEN_BORDER,
+        valColor: XL_PALETTE.TEXT_GREEN,
+      },
+      {
+        colSpan: ['P', 'U'],
+        label: 'Gross Invoiced Value',
+        value: Math.round(totalBilled),
+        sub: 'Total Delivery Revenue',
+        numFmt: '"Rs. "#,##0',
+        fillColor: XL_PALETTE.KPI_BLUE_FILL,
+        borderColor: XL_PALETTE.KPI_BLUE_BORDER,
+        valColor: XL_PALETTE.TEXT_BLUE,
+      },
     ]);
 
-    const wsStatement = XLSX.utils.aoa_to_sheet(statementRows);
-    wsStatement['!cols'] = [
-      { wch: 6 },
-      { wch: 14 },
-      { wch: 34 },
-      { wch: 18 },
-      { wch: 16 },
-      { wch: 14 },
-      { wch: 20 },
-      { wch: 20 },
-      { wch: 22 },
-      { wch: 28 },
+    // Dispatch Table Headers (Row 8)
+    const dispHeaders = [
+      'Sr #',
+      'Date',
+      'Truck Number',
+      'PO #',
+      'Loaded Weight (t)',
+      'Received Weight (t)',
+      'Transit Diff (t)',
+      'Loss %',
+      'Target GCV',
+      'Lab Actual GCV',
+      'GCV Variance',
+      'Sulphur %',
+      'Ash %',
+      'Moisture %',
+      'Base Rate (Rs)',
+      'GCV Deduction (Rs)',
+      'Bonus Premium (Rs)',
+      'WHT Tax (Rs)',
+      'Payable Rate (Rs)',
+      'Gross Invoiced (Rs)',
+      'Logistics Notes',
     ];
-    XLSX.utils.book_append_sheet(wb, wsStatement, 'Statement of Account');
 
-    // ════════════════════════════════════════════════════════════════════════
-    // SHEET 2: DISPATCHES & QUALITY
-    // ════════════════════════════════════════════════════════════════════════
-    const dispatchRows = dispatches
-      .sort((a, b) => b.date.localeCompare(a.date))
-      .map((d, index) => {
-        const po = pos.find((p) => p.id === d.poId);
-        const s = calculateSettlement(d);
-        const transit = calculateTransitLoss(d);
+    const dhRow = wsDispatches.getRow(8);
+    dhRow.height = 28;
+    dispHeaders.forEach((t, i) => {
+      const cell = dhRow.getCell(i + 1);
+      cell.value = t;
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: XL_PALETTE.HEADER_PRIMARY } };
+      cell.font = { name: 'Calibri', size: 10, bold: true, color: { argb: XL_PALETTE.HEADER_TEXT } };
+      cell.alignment = {
+        vertical: 'middle',
+        horizontal: i < 4 ? 'center' : i >= 4 && i <= 19 ? 'right' : 'left',
+      };
+      cell.border = BORDER_CELL_LIGHT;
+    });
 
-        return {
-          'Sr #': index + 1,
-          'Date': d.date || '',
-          'Truck Number': d.truckNumber || '',
-          'PO #': po?.poNumber || '',
-          'Loaded Weight (t)': transit.totalLoadedWeight,
-          'Received Weight (t)': d.labReceivedWeight || 0,
-          'Transit Difference (t)': transit.diff,
-          'Difference %': `${transit.lossPercentage.toFixed(1)}%`,
-          'Target GCV': d.targetGcv || 0,
-          'Lab Actual GCV': d.labActualGcv || 0,
-          'GCV Diff': d.targetGcv && d.labActualGcv ? d.labActualGcv - d.targetGcv : 0,
-          'Lab Sulphur (%)': d.labSulphur || 0,
-          'Lab Ash (%)': d.labAsh || 0,
-          'Lab Moisture (%)': d.labMoisture || 0,
-          'Base Rate (Rs)': d.baseRate || 0,
-          'GCV Deduction (Rs)': d.manualDeduction || 0,
-          'Bonus Premium (Rs)': d.manualPremium || 0,
-          'WHT Tax (Rs)': s.taxDeduction ? parseFloat(s.taxDeduction.toFixed(2)) : 0,
-          'Payable Rate (Rs)': parseFloat(s.payableRate.toFixed(2)),
-          'Gross Invoiced (Rs)': Math.round(s.totalRevenue),
-          'Remarks': d.notes || '',
+    let dispRowIdx = 9;
+    const sortedDispatches = [...dispatches].sort((a, b) => b.date.localeCompare(a.date));
+
+    sortedDispatches.forEach((d, idx) => {
+      const row = wsDispatches.getRow(dispRowIdx);
+      row.height = 21;
+      const isEven = idx % 2 === 0;
+      const po = pos.find((p) => p.id === d.poId);
+      const s = calculateSettlement(d);
+      const transit = calculateTransitLoss(d);
+      const gcvDiff = d.targetGcv && d.labActualGcv ? d.labActualGcv - d.targetGcv : 0;
+
+      row.values = [
+        idx + 1,
+        d.date || '-',
+        d.truckNumber || '-',
+        po?.poNumber || '-',
+        transit.totalLoadedWeight || 0,
+        d.labReceivedWeight || 0,
+        parseFloat(transit.diff.toFixed(2)),
+        parseFloat((transit.lossPercentage / 100).toFixed(4)),
+        d.targetGcv || 0,
+        d.labActualGcv || 0,
+        gcvDiff,
+        d.labSulphur ? parseFloat(d.labSulphur.toFixed(2)) : 0,
+        d.labAsh ? parseFloat(d.labAsh.toFixed(2)) : 0,
+        d.labMoisture ? parseFloat(d.labMoisture.toFixed(2)) : 0,
+        d.baseRate || 0,
+        d.manualDeduction || 0,
+        d.manualPremium || 0,
+        s.taxDeduction ? parseFloat(s.taxDeduction.toFixed(2)) : 0,
+        parseFloat(s.payableRate.toFixed(2)),
+        Math.round(s.totalRevenue),
+        d.notes || '',
+      ];
+
+      for (let c = 1; c <= 21; c++) {
+        const cell = row.getCell(c);
+        cell.font = { name: 'Calibri', size: 9.5, color: { argb: XL_PALETTE.TEXT_PRIMARY } };
+        cell.fill = {
+          type: 'pattern',
+          pattern: 'solid',
+          fgColor: { argb: isEven ? XL_PALETTE.ZEBRA_EVEN : XL_PALETTE.ZEBRA_ODD },
         };
-      });
+        cell.border = BORDER_CELL_LIGHT;
 
-    const wsDispatches = XLSX.utils.json_to_sheet(dispatchRows);
-    wsDispatches['!cols'] = [
-      { wch: 6 },
-      { wch: 14 },
-      { wch: 16 },
-      { wch: 14 },
-      { wch: 18 },
-      { wch: 18 },
-      { wch: 18 },
-      { wch: 14 },
-      { wch: 14 },
-      { wch: 16 },
-      { wch: 12 },
-      { wch: 14 },
-      { wch: 12 },
-      { wch: 14 },
-      { wch: 16 },
-      { wch: 16 },
-      { wch: 16 },
-      { wch: 14 },
-      { wch: 16 },
-      { wch: 20 },
-      { wch: 28 },
+        if (c <= 4) {
+          cell.alignment = { vertical: 'middle', horizontal: 'center' };
+        } else if (c === 5 || c === 6 || c === 7) {
+          cell.alignment = { vertical: 'middle', horizontal: 'right' };
+          cell.numFmt = '#,##0.00';
+        } else if (c === 8) {
+          cell.alignment = { vertical: 'middle', horizontal: 'right' };
+          cell.numFmt = '0.0%';
+        } else if (c === 9 || c === 10 || c === 11) {
+          cell.alignment = { vertical: 'middle', horizontal: 'right' };
+          cell.numFmt = '#,##0';
+        } else if (c >= 12 && c <= 14) {
+          cell.alignment = { vertical: 'middle', horizontal: 'right' };
+          cell.numFmt = '0.00';
+        } else if (c >= 15 && c <= 19) {
+          cell.alignment = { vertical: 'middle', horizontal: 'right' };
+          cell.numFmt = '#,##0.00';
+        } else if (c === 20) {
+          cell.alignment = { vertical: 'middle', horizontal: 'right' };
+          cell.numFmt = '#,##0';
+          cell.font = { name: 'Calibri', size: 9.5, bold: true, color: { argb: XL_PALETTE.TEXT_PRIMARY } };
+        } else {
+          cell.alignment = { vertical: 'middle', horizontal: 'left' };
+        }
+      }
+
+      dispRowIdx++;
+    });
+
+    // Totals row for dispatches
+    const dTotRow = wsDispatches.getRow(dispRowIdx);
+    dTotRow.height = 26;
+    const totLoaded = sortedDispatches.reduce((acc, d) => acc + (calculateTransitLoss(d).totalLoadedWeight || 0), 0);
+    const totReceived = sortedDispatches.reduce((acc, d) => acc + (d.labReceivedWeight || 0), 0);
+    const totTransitDiff = totReceived - totLoaded;
+
+    dTotRow.values = [
+      '',
+      'TOTALS',
+      `${dispatches.length} Trucks`,
+      '',
+      totLoaded,
+      totReceived,
+      totTransitDiff,
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      Math.round(totalBilled),
+      '',
     ];
-    XLSX.utils.book_append_sheet(wb, wsDispatches, 'Dispatches & Quality');
+
+    for (let c = 1; c <= 21; c++) {
+      const cell = dTotRow.getCell(c);
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: XL_PALETTE.TOTAL_FILL } };
+      cell.font = { name: 'Calibri', size: 10, bold: true, color: { argb: XL_PALETTE.TEXT_PRIMARY } };
+      cell.border = BORDER_TOTAL_ACCOUNTING;
+
+      if (c === 2) {
+        cell.alignment = { vertical: 'middle', horizontal: 'center' };
+      } else if (c === 5 || c === 6 || c === 7) {
+        cell.alignment = { vertical: 'middle', horizontal: 'right' };
+        cell.numFmt = '#,##0.00';
+      } else if (c === 20) {
+        cell.alignment = { vertical: 'middle', horizontal: 'right' };
+        cell.numFmt = '#,##0';
+      }
+    }
+
+    autoFitWorksheetColumns(wsDispatches, {
+      1: 6,
+      2: 13,
+      3: 16,
+      4: 14,
+      5: 16,
+      6: 16,
+      7: 15,
+      8: 12,
+      9: 14,
+      10: 14,
+      11: 14,
+      12: 12,
+      13: 12,
+      14: 12,
+      15: 14,
+      16: 15,
+      17: 15,
+      18: 14,
+      19: 15,
+      20: 18,
+      21: 24,
+    });
 
     // ════════════════════════════════════════════════════════════════════════
-    // SHEET 3: PAYMENT TRANSACTIONS
+    // SHEET 3: PAYMENT TRANSACTIONS (Voucher Audit)
     // ════════════════════════════════════════════════════════════════════════
     if (payments.length > 0) {
-      const paymentRows = payments
-        .sort((a, b) => b.date.localeCompare(a.date))
-        .map((p, index) => ({
-          'Sr #': index + 1,
-          'Date': p.date || '',
-          'Voucher Ref': (p.id || '').slice(0, 8).toUpperCase(),
-          'Direction': p.type === 'received' ? 'Received from Party (Inflow)' : 'Paid to Party (Outflow)',
-          'Payment Mode': p.mode.toUpperCase(),
-          'Amount (Rs)': Math.round(p.amount),
-          'Reference Note': p.referenceNote || 'Direct Settlement',
-        }));
+      const wsPayments = wb.addWorksheet('Payment History', {
+        views: [{ state: 'frozen', ySplit: 8, showGridLines: true }],
+        properties: { tabColor: { argb: 'FF8B5CF6' } },
+      });
 
-      const wsPayments = XLSX.utils.json_to_sheet(paymentRows);
-      wsPayments['!cols'] = [
-        { wch: 6 },
-        { wch: 14 },
-        { wch: 16 },
-        { wch: 28 },
-        { wch: 16 },
-        { wch: 20 },
-        { wch: 30 },
+      addWorksheetBanner(
+        wsPayments,
+        'G',
+        companyName,
+        companySubline,
+        `${(partyName || 'Party').toUpperCase()} — PAYMENT VOUCHERS AUDIT`
+      );
+
+      const totInflow = payments.filter((p) => p.type === 'received').reduce((acc, p) => acc + p.amount, 0);
+      const totOutflow = payments.filter((p) => p.type !== 'received').reduce((acc, p) => acc + p.amount, 0);
+
+      addKpiRowCards(wsPayments, 4, [
+        {
+          colSpan: ['A', 'B'],
+          label: 'Total Receipts (Inflow)',
+          value: Math.round(totInflow),
+          sub: `${payments.filter((p) => p.type === 'received').length} Payments Inflow`,
+          numFmt: '"Rs. "#,##0',
+          fillColor: XL_PALETTE.KPI_GREEN_FILL,
+          borderColor: XL_PALETTE.KPI_GREEN_BORDER,
+          valColor: XL_PALETTE.TEXT_GREEN,
+        },
+        {
+          colSpan: ['C', 'D'],
+          label: 'Total Paid (Outflow)',
+          value: Math.round(totOutflow),
+          sub: `${payments.filter((p) => p.type !== 'received').length} Payments Outflow`,
+          numFmt: '"Rs. "#,##0',
+          fillColor: XL_PALETTE.KPI_RED_FILL,
+          borderColor: XL_PALETTE.KPI_RED_BORDER,
+          valColor: XL_PALETTE.TEXT_RED,
+        },
+        {
+          colSpan: ['E', 'G'],
+          label: 'Net Financial Volume',
+          value: Math.round(totInflow - totOutflow),
+          sub: 'Total Cash & Bank Movement',
+          numFmt: '"Rs. "#,##0',
+          fillColor: XL_PALETTE.KPI_BLUE_FILL,
+          borderColor: XL_PALETTE.KPI_BLUE_BORDER,
+          valColor: XL_PALETTE.TEXT_BLUE,
+        },
+      ]);
+
+      const payHeaders = [
+        'Sr #',
+        'Date',
+        'Voucher Ref #',
+        'Direction / Flow',
+        'Payment Mode',
+        'Amount (Rs)',
+        'Reference Note / Cheque Details',
       ];
-      XLSX.utils.book_append_sheet(wb, wsPayments, 'Payment History');
+
+      const phRow = wsPayments.getRow(8);
+      phRow.height = 28;
+      payHeaders.forEach((t, i) => {
+        const cell = phRow.getCell(i + 1);
+        cell.value = t;
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: XL_PALETTE.HEADER_PRIMARY } };
+        cell.font = { name: 'Calibri', size: 10, bold: true, color: { argb: XL_PALETTE.HEADER_TEXT } };
+        cell.alignment = {
+          vertical: 'middle',
+          horizontal: i <= 2 ? 'center' : i === 5 ? 'right' : 'left',
+        };
+        cell.border = BORDER_CELL_LIGHT;
+      });
+
+      let pRowIdx = 9;
+      const sortedPayments = [...payments].sort((a, b) => b.date.localeCompare(a.date));
+
+      sortedPayments.forEach((p, idx) => {
+        const row = wsPayments.getRow(pRowIdx);
+        row.height = 22;
+        const isRec = p.type === 'received';
+        const bgFill = isRec ? XL_PALETTE.PAYMENT_REC_FILL : XL_PALETTE.PAYMENT_PAID_FILL;
+        const txtColor = isRec ? XL_PALETTE.PAYMENT_REC_TEXT : XL_PALETTE.PAYMENT_PAID_TEXT;
+
+        row.values = [
+          idx + 1,
+          p.date || '-',
+          (p.id || '').slice(0, 8).toUpperCase(),
+          isRec ? 'Payment Received (Inflow)' : 'Payment Disbursed (Outflow)',
+          p.mode.toUpperCase(),
+          Math.round(p.amount),
+          p.referenceNote || 'Direct Settlement',
+        ];
+
+        for (let c = 1; c <= 7; c++) {
+          const cell = row.getCell(c);
+          cell.font = { name: 'Calibri', size: 9.5, color: { argb: XL_PALETTE.TEXT_PRIMARY } };
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgFill } };
+          cell.border = BORDER_CELL_LIGHT;
+
+          if (c <= 3) {
+            cell.alignment = { vertical: 'middle', horizontal: 'center' };
+          } else if (c === 4) {
+            cell.alignment = { vertical: 'middle', horizontal: 'left' };
+            cell.font = { name: 'Calibri', size: 9.5, bold: true, color: { argb: txtColor } };
+          } else if (c === 5) {
+            cell.alignment = { vertical: 'middle', horizontal: 'center' };
+          } else if (c === 6) {
+            cell.alignment = { vertical: 'middle', horizontal: 'right' };
+            cell.numFmt = '#,##0';
+            cell.font = { name: 'Calibri', size: 9.5, bold: true, color: { argb: txtColor } };
+          } else {
+            cell.alignment = { vertical: 'middle', horizontal: 'left' };
+          }
+        }
+
+        pRowIdx++;
+      });
+
+      const pTotRow = wsPayments.getRow(pRowIdx);
+      pTotRow.height = 26;
+      pTotRow.values = [
+        '',
+        'TOTALS',
+        `${payments.length} Transactions`,
+        '',
+        '',
+        Math.round(totInflow),
+        '',
+      ];
+
+      for (let c = 1; c <= 7; c++) {
+        const cell = pTotRow.getCell(c);
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: XL_PALETTE.TOTAL_FILL } };
+        cell.font = { name: 'Calibri', size: 10, bold: true, color: { argb: XL_PALETTE.TEXT_PRIMARY } };
+        cell.border = BORDER_TOTAL_ACCOUNTING;
+
+        if (c === 2) {
+          cell.alignment = { vertical: 'middle', horizontal: 'center' };
+        } else if (c === 6) {
+          cell.alignment = { vertical: 'middle', horizontal: 'right' };
+          cell.numFmt = '#,##0';
+        }
+      }
+
+      autoFitWorksheetColumns(wsPayments, {
+        1: 6,
+        2: 13,
+        3: 16,
+        4: 26,
+        5: 16,
+        6: 20,
+        7: 32,
+      });
     }
   } else {
     // ════════════════════════════════════════════════════════════════════════
-    // FLEET / ALL DISPATCHES EXPORT (Multi-sheet)
+    // FLEET / MULTI-PARTY EXPORT (Enterprise Business Workbook)
     // ════════════════════════════════════════════════════════════════════════
     const sortedDispatches = [...dispatches].sort((a, b) => b.date.localeCompare(a.date));
 
-    // Sheet 1: Master Dispatches
-    const masterRows = sortedDispatches.map((d, index) => {
+    // Aggregate Enterprise Metrics
+    const totalFleetTons = sortedDispatches.reduce((acc, d) => acc + (d.labReceivedWeight || 0), 0);
+    const totalFleetRevenue = sortedDispatches.reduce((acc, d) => acc + calculateSettlement(d).totalRevenue, 0);
+    const totalFleetCost = sortedDispatches.reduce((acc, d) => acc + calculateSettlement(d).totalCost, 0);
+    const totalFleetProfit = totalFleetRevenue - totalFleetCost;
+    const fleetMargin = totalFleetRevenue > 0 ? (totalFleetProfit / totalFleetRevenue) * 100 : 0;
+
+    // ── SHEET 1: DISPATCHES MASTER ──
+    const wsMaster = wb.addWorksheet('Dispatches Master', {
+      views: [{ state: 'frozen', ySplit: 8, showGridLines: true }],
+      properties: { tabColor: { argb: 'FF007AFF' } },
+    });
+
+    addWorksheetBanner(
+      wsMaster,
+      'S',
+      companyName,
+      companySubline,
+      'FLEET DISPATCHES MASTER AUDIT'
+    );
+
+    addKpiRowCards(wsMaster, 4, [
+      {
+        colSpan: ['A', 'C'],
+        label: 'Total Dispatches',
+        value: `${sortedDispatches.length} Trucks`,
+        sub: 'Fleet Delivery Volume',
+        fillColor: XL_PALETTE.KPI_SLATE_FILL,
+        borderColor: XL_PALETTE.KPI_SLATE_BORDER,
+        valColor: XL_PALETTE.TEXT_PRIMARY,
+      },
+      {
+        colSpan: ['D', 'F'],
+        label: 'Delivered Tonnage',
+        value: totalFleetTons,
+        sub: 'Factory Weighbridge Net',
+        numFmt: '#,##0.00" t"',
+        fillColor: XL_PALETTE.KPI_BLUE_FILL,
+        borderColor: XL_PALETTE.KPI_BLUE_BORDER,
+        valColor: XL_PALETTE.TEXT_BLUE,
+      },
+      {
+        colSpan: ['G', 'J'],
+        label: 'Total Gross Revenue',
+        value: Math.round(totalFleetRevenue),
+        sub: 'Billed Realized Revenue',
+        numFmt: '"Rs. "#,##0',
+        fillColor: XL_PALETTE.KPI_BLUE_FILL,
+        borderColor: XL_PALETTE.KPI_BLUE_BORDER,
+        valColor: XL_PALETTE.TEXT_BLUE,
+      },
+      {
+        colSpan: ['K', 'N'],
+        label: 'Procurement & Logistics Cost',
+        value: Math.round(totalFleetCost),
+        sub: 'Coal Purchase + Overheads',
+        numFmt: '"Rs. "#,##0',
+        fillColor: XL_PALETTE.KPI_SLATE_FILL,
+        borderColor: XL_PALETTE.KPI_SLATE_BORDER,
+        valColor: XL_PALETTE.TEXT_PRIMARY,
+      },
+      {
+        colSpan: ['O', 'S'],
+        label: 'Net Trading Profit',
+        value: Math.round(totalFleetProfit),
+        sub: `Overall Margin: ${fleetMargin.toFixed(1)}%`,
+        numFmt: '"Rs. "#,##0',
+        fillColor: totalFleetProfit >= 0 ? XL_PALETTE.KPI_GREEN_FILL : XL_PALETTE.KPI_RED_FILL,
+        borderColor: totalFleetProfit >= 0 ? XL_PALETTE.KPI_GREEN_BORDER : XL_PALETTE.KPI_RED_BORDER,
+        valColor: totalFleetProfit >= 0 ? XL_PALETTE.TEXT_GREEN : XL_PALETTE.TEXT_RED,
+      },
+    ]);
+
+    const masterHeaders = [
+      'Sr #',
+      'Date',
+      'Truck Number',
+      'Party / Factory',
+      'PO Number',
+      'Loaded Weight (t)',
+      'Received Weight (t)',
+      'Transit Diff (t)',
+      'Target GCV',
+      'Actual Lab GCV',
+      'Lab Ash %',
+      'Lab Moisture %',
+      'Base Rate (Rs/t)',
+      'Payable Rate (Rs/t)',
+      'Total Revenue (Rs)',
+      'Total Cost (Rs)',
+      'Net Profit (Rs)',
+      'Margin %',
+      'Delivery Notes',
+    ];
+
+    const mhRow = wsMaster.getRow(8);
+    mhRow.height = 28;
+    masterHeaders.forEach((t, i) => {
+      const cell = mhRow.getCell(i + 1);
+      cell.value = t;
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: XL_PALETTE.HEADER_PRIMARY } };
+      cell.font = { name: 'Calibri', size: 10, bold: true, color: { argb: XL_PALETTE.HEADER_TEXT } };
+      cell.alignment = {
+        vertical: 'middle',
+        horizontal: i < 5 ? 'center' : i >= 5 && i <= 17 ? 'right' : 'left',
+      };
+      cell.border = BORDER_CELL_LIGHT;
+    });
+
+    let mRowIdx = 9;
+    sortedDispatches.forEach((d, idx) => {
+      const row = wsMaster.getRow(mRowIdx);
+      row.height = 21;
+      const isEven = idx % 2 === 0;
       const p = parties.find((partyItem) => partyItem.id === d.partyId);
       const po = pos.find((poItem) => poItem.id === d.poId);
       const s = calculateSettlement(d);
       const transit = calculateTransitLoss(d);
+      const profit = Math.round(s.netProfit);
+      const margin = s.totalRevenue > 0 ? (s.netProfit / s.totalRevenue) : 0;
 
-      return {
-        'Sr #': index + 1,
-        'Date': d.date || '',
-        'Truck Number': d.truckNumber || '',
-        'Party / Factory': p?.name || d.factoryName || '',
-        'PO Number': po?.poNumber || '',
-        'Loaded Tons': transit.totalLoadedWeight,
-        'Received Tons': d.labReceivedWeight || 0,
-        'Transit Difference (t)': transit.diff,
-        'Target GCV': d.targetGcv || 0,
-        'Actual Lab GCV': d.labActualGcv || 0,
-        'Lab Ash %': d.labAsh || 0,
-        'Lab Moisture %': d.labMoisture || 0,
-        'Lab Sulphur %': d.labSulphur || 0,
-        'Base Rate (Rs/t)': d.baseRate || 0,
-        'Deduction (Rs)': d.manualDeduction || 0,
-        'Premium (Rs)': d.manualPremium || 0,
-        'Payable Rate (Rs/t)': parseFloat(s.payableRate.toFixed(2)),
-        'Total Revenue (Rs)': Math.round(s.totalRevenue),
-        'Total Cost (Rs)': Math.round(s.totalCost),
-        'Net Profit (Rs)': Math.round(s.netProfit),
-        'Margin %': s.totalRevenue > 0 ? `${((s.netProfit / s.totalRevenue) * 100).toFixed(1)}%` : '0%',
-        'Notes': d.notes || '',
-      };
+      row.values = [
+        idx + 1,
+        d.date || '-',
+        d.truckNumber || '-',
+        p?.name || d.factoryName || '-',
+        po?.poNumber || '-',
+        transit.totalLoadedWeight || 0,
+        d.labReceivedWeight || 0,
+        parseFloat(transit.diff.toFixed(2)),
+        d.targetGcv || 0,
+        d.labActualGcv || 0,
+        d.labAsh ? parseFloat(d.labAsh.toFixed(2)) : 0,
+        d.labMoisture ? parseFloat(d.labMoisture.toFixed(2)) : 0,
+        d.baseRate || 0,
+        parseFloat(s.payableRate.toFixed(2)),
+        Math.round(s.totalRevenue),
+        Math.round(s.totalCost),
+        profit,
+        parseFloat(margin.toFixed(4)),
+        d.notes || '',
+      ];
+
+      for (let c = 1; c <= 19; c++) {
+        const cell = row.getCell(c);
+        cell.font = { name: 'Calibri', size: 9.5, color: { argb: XL_PALETTE.TEXT_PRIMARY } };
+        cell.fill = {
+          type: 'pattern',
+          pattern: 'solid',
+          fgColor: { argb: isEven ? XL_PALETTE.ZEBRA_EVEN : XL_PALETTE.ZEBRA_ODD },
+        };
+        cell.border = BORDER_CELL_LIGHT;
+
+        if (c <= 3 || c === 5) {
+          cell.alignment = { vertical: 'middle', horizontal: 'center' };
+        } else if (c === 4) {
+          cell.alignment = { vertical: 'middle', horizontal: 'left' };
+          cell.font = { name: 'Calibri', size: 9.5, bold: true, color: { argb: XL_PALETTE.TEXT_PRIMARY } };
+        } else if (c === 6 || c === 7 || c === 8) {
+          cell.alignment = { vertical: 'middle', horizontal: 'right' };
+          cell.numFmt = '#,##0.00';
+        } else if (c === 9 || c === 10) {
+          cell.alignment = { vertical: 'middle', horizontal: 'right' };
+          cell.numFmt = '#,##0';
+        } else if (c === 11 || c === 12) {
+          cell.alignment = { vertical: 'middle', horizontal: 'right' };
+          cell.numFmt = '0.00';
+        } else if (c === 13 || c === 14) {
+          cell.alignment = { vertical: 'middle', horizontal: 'right' };
+          cell.numFmt = '#,##0.00';
+        } else if (c === 15 || c === 16) {
+          cell.alignment = { vertical: 'middle', horizontal: 'right' };
+          cell.numFmt = '#,##0';
+        } else if (c === 17) {
+          cell.alignment = { vertical: 'middle', horizontal: 'right' };
+          cell.numFmt = '#,##0';
+          cell.font = {
+            name: 'Calibri',
+            size: 9.5,
+            bold: true,
+            color: { argb: profit >= 0 ? XL_PALETTE.TEXT_GREEN : XL_PALETTE.TEXT_RED },
+          };
+          if (profit < 0) {
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: XL_PALETTE.PAYMENT_PAID_FILL } };
+          }
+        } else if (c === 18) {
+          cell.alignment = { vertical: 'middle', horizontal: 'right' };
+          cell.numFmt = '0.0%';
+        } else {
+          cell.alignment = { vertical: 'middle', horizontal: 'left' };
+        }
+      }
+
+      mRowIdx++;
     });
 
-    const wsMaster = XLSX.utils.json_to_sheet(masterRows);
-    wsMaster['!cols'] = [
-      { wch: 6 },
-      { wch: 14 },
-      { wch: 16 },
-      { wch: 28 },
-      { wch: 14 },
-      { wch: 14 },
-      { wch: 16 },
-      { wch: 16 },
-      { wch: 12 },
-      { wch: 14 },
-      { wch: 12 },
-      { wch: 14 },
-      { wch: 12 },
-      { wch: 14 },
-      { wch: 14 },
-      { wch: 14 },
-      { wch: 16 },
-      { wch: 18 },
-      { wch: 18 },
-      { wch: 18 },
-      { wch: 12 },
-      { wch: 24 },
+    // Grand Totals Row
+    const mTotRow = wsMaster.getRow(mRowIdx);
+    mTotRow.height = 28;
+    mTotRow.values = [
+      '',
+      'TOTALS',
+      `${sortedDispatches.length} Trucks`,
+      '',
+      '',
+      sortedDispatches.reduce((acc, d) => acc + (calculateTransitLoss(d).totalLoadedWeight || 0), 0),
+      totalFleetTons,
+      sortedDispatches.reduce((acc, d) => acc + calculateTransitLoss(d).diff, 0),
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      Math.round(totalFleetRevenue),
+      Math.round(totalFleetCost),
+      Math.round(totalFleetProfit),
+      parseFloat((fleetMargin / 100).toFixed(4)),
+      '',
     ];
-    XLSX.utils.book_append_sheet(wb, wsMaster, 'Dispatches Master');
 
-    // Sheet 2: Cost & Margin Breakdown
-    const costRows = sortedDispatches.map((d, index) => {
+    for (let c = 1; c <= 19; c++) {
+      const cell = mTotRow.getCell(c);
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: XL_PALETTE.TOTAL_FILL } };
+      cell.font = { name: 'Calibri', size: 10.5, bold: true, color: { argb: XL_PALETTE.TEXT_PRIMARY } };
+      cell.border = BORDER_TOTAL_ACCOUNTING;
+
+      if (c === 2) {
+        cell.alignment = { vertical: 'middle', horizontal: 'center' };
+      } else if (c === 6 || c === 7 || c === 8) {
+        cell.alignment = { vertical: 'middle', horizontal: 'right' };
+        cell.numFmt = '#,##0.00';
+      } else if (c === 15 || c === 16) {
+        cell.alignment = { vertical: 'middle', horizontal: 'right' };
+        cell.numFmt = '#,##0';
+      } else if (c === 17) {
+        cell.alignment = { vertical: 'middle', horizontal: 'right' };
+        cell.numFmt = '#,##0';
+        cell.font = {
+          name: 'Calibri',
+          size: 11,
+          bold: true,
+          color: { argb: totalFleetProfit >= 0 ? XL_PALETTE.TEXT_GREEN : XL_PALETTE.TEXT_RED },
+        };
+      } else if (c === 18) {
+        cell.alignment = { vertical: 'middle', horizontal: 'right' };
+        cell.numFmt = '0.0%';
+      }
+    }
+
+    autoFitWorksheetColumns(wsMaster, {
+      1: 6,
+      2: 13,
+      3: 16,
+      4: 28,
+      5: 14,
+      6: 16,
+      7: 16,
+      8: 15,
+      9: 14,
+      10: 14,
+      11: 12,
+      12: 12,
+      13: 14,
+      14: 15,
+      15: 18,
+      16: 18,
+      17: 18,
+      18: 12,
+      19: 26,
+    });
+
+    // ── SHEET 2: COST & MARGIN ANALYSIS ──
+    const wsCost = wb.addWorksheet('Cost & Profit Analysis', {
+      views: [{ state: 'frozen', ySplit: 5, showGridLines: true }],
+      properties: { tabColor: { argb: 'FF10B981' } },
+    });
+
+    addWorksheetBanner(
+      wsCost,
+      'L',
+      companyName,
+      companySubline,
+      'COAL SOURCING, OVERHEADS & TRADING MARGINS'
+    );
+
+    const costHeaders = [
+      'Sr #',
+      'Date',
+      'Truck Number',
+      'Factory',
+      'Delivered Tons',
+      'Coal Sourcing Blends & Mine Rates',
+      'Freight Overheads (Rs)',
+      'Loading Overheads (Rs)',
+      'Total Procurement Cost (Rs)',
+      'Gross Billed Revenue (Rs)',
+      'Net Trading Profit (Rs)',
+      'Profit / Ton (Rs)',
+    ];
+
+    const chRow = wsCost.getRow(5);
+    chRow.height = 28;
+    costHeaders.forEach((t, i) => {
+      const cell = chRow.getCell(i + 1);
+      cell.value = t;
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: XL_PALETTE.HEADER_PRIMARY } };
+      cell.font = { name: 'Calibri', size: 10, bold: true, color: { argb: XL_PALETTE.HEADER_TEXT } };
+      cell.alignment = {
+        vertical: 'middle',
+        horizontal: i < 3 ? 'center' : i >= 4 && i <= 11 ? 'right' : 'left',
+      };
+      cell.border = BORDER_CELL_LIGHT;
+    });
+
+    let cRowIdx = 6;
+    sortedDispatches.forEach((d, idx) => {
+      const row = wsCost.getRow(cRowIdx);
+      row.height = 21;
+      const isEven = idx % 2 === 0;
       const p = parties.find((partyItem) => partyItem.id === d.partyId);
       const s = calculateSettlement(d);
+      const profit = Math.round(s.netProfit);
+      const profitPerTon = (d.labReceivedWeight || 0) > 0 ? Math.round(s.netProfit / (d.labReceivedWeight || 1)) : 0;
       const blendsStr = (d.coalInputs || [])
         .filter((c) => (c.weight || 0) > 0)
-        .map((c) => `${c.sourceName}: ${c.weight}t @ Rs.${c.purchaseRate}`)
-        .join(' | ');
+        .map((c) => `${c.sourceName || 'Coal'}: ${c.weight}t @ Rs.${c.purchaseRate}`)
+        .join('  •  ');
 
-      return {
-        'Sr #': index + 1,
-        'Date': d.date || '',
-        'Truck Number': d.truckNumber || '',
-        'Party': p?.name || d.factoryName || '',
-        'Weight (Tons)': d.labReceivedWeight || 0,
-        'Coal Sourcing Blends': blendsStr,
-        'Freight Overheads (Rs)': d.overheads?.freight || 0,
-        'Loading Overheads (Rs)': d.overheads?.loading || 0,
-        'Total Procurement Cost (Rs)': Math.round(s.totalCost),
-        'Gross Billed Revenue (Rs)': Math.round(s.totalRevenue),
-        'Net Trading Profit (Rs)': Math.round(s.netProfit),
-        'Profit / Ton (Rs)': d.labReceivedWeight > 0 ? Math.round(s.netProfit / d.labReceivedWeight) : 0,
-      };
+      row.values = [
+        idx + 1,
+        d.date || '-',
+        d.truckNumber || '-',
+        p?.name || d.factoryName || '-',
+        d.labReceivedWeight || 0,
+        blendsStr || 'Direct Procurement',
+        d.overheads?.freight || 0,
+        d.overheads?.loading || 0,
+        Math.round(s.totalCost),
+        Math.round(s.totalRevenue),
+        profit,
+        profitPerTon,
+      ];
+
+      for (let c = 1; c <= 12; c++) {
+        const cell = row.getCell(c);
+        cell.font = { name: 'Calibri', size: 9.5, color: { argb: XL_PALETTE.TEXT_PRIMARY } };
+        cell.fill = {
+          type: 'pattern',
+          pattern: 'solid',
+          fgColor: { argb: isEven ? XL_PALETTE.ZEBRA_EVEN : XL_PALETTE.ZEBRA_ODD },
+        };
+        cell.border = BORDER_CELL_LIGHT;
+
+        if (c <= 3) {
+          cell.alignment = { vertical: 'middle', horizontal: 'center' };
+        } else if (c === 4) {
+          cell.alignment = { vertical: 'middle', horizontal: 'left' };
+        } else if (c === 5) {
+          cell.alignment = { vertical: 'middle', horizontal: 'right' };
+          cell.numFmt = '#,##0.00';
+        } else if (c === 6) {
+          cell.alignment = { vertical: 'middle', horizontal: 'left' };
+        } else if (c >= 7 && c <= 10) {
+          cell.alignment = { vertical: 'middle', horizontal: 'right' };
+          cell.numFmt = '#,##0';
+        } else if (c === 11 || c === 12) {
+          cell.alignment = { vertical: 'middle', horizontal: 'right' };
+          cell.numFmt = '#,##0';
+          cell.font = {
+            name: 'Calibri',
+            size: 9.5,
+            bold: true,
+            color: { argb: profit >= 0 ? XL_PALETTE.TEXT_GREEN : XL_PALETTE.TEXT_RED },
+          };
+        }
+      }
+
+      cRowIdx++;
     });
 
-    const wsCost = XLSX.utils.json_to_sheet(costRows);
-    wsCost['!cols'] = [
-      { wch: 6 },
-      { wch: 14 },
-      { wch: 16 },
-      { wch: 26 },
-      { wch: 14 },
-      { wch: 34 },
-      { wch: 18 },
-      { wch: 18 },
-      { wch: 22 },
-      { wch: 22 },
-      { wch: 20 },
-      { wch: 16 },
+    const cTotRow = wsCost.getRow(cRowIdx);
+    cTotRow.height = 26;
+    cTotRow.values = [
+      '',
+      'TOTALS',
+      `${sortedDispatches.length} Trucks`,
+      '',
+      totalFleetTons,
+      '',
+      sortedDispatches.reduce((acc, d) => acc + (d.overheads?.freight || 0), 0),
+      sortedDispatches.reduce((acc, d) => acc + (d.overheads?.loading || 0), 0),
+      Math.round(totalFleetCost),
+      Math.round(totalFleetRevenue),
+      Math.round(totalFleetProfit),
+      totalFleetTons > 0 ? Math.round(totalFleetProfit / totalFleetTons) : 0,
     ];
-    XLSX.utils.book_append_sheet(wb, wsCost, 'Cost & Profit Analysis');
 
-    // Sheet 3: Party Summary
+    for (let c = 1; c <= 12; c++) {
+      const cell = cTotRow.getCell(c);
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: XL_PALETTE.TOTAL_FILL } };
+      cell.font = { name: 'Calibri', size: 10, bold: true, color: { argb: XL_PALETTE.TEXT_PRIMARY } };
+      cell.border = BORDER_TOTAL_ACCOUNTING;
+
+      if (c === 2) {
+        cell.alignment = { vertical: 'middle', horizontal: 'center' };
+      } else if (c === 5) {
+        cell.alignment = { vertical: 'middle', horizontal: 'right' };
+        cell.numFmt = '#,##0.00';
+      } else if (c >= 7 && c <= 12) {
+        cell.alignment = { vertical: 'middle', horizontal: 'right' };
+        cell.numFmt = '#,##0';
+      }
+    }
+
+    autoFitWorksheetColumns(wsCost, {
+      1: 6,
+      2: 13,
+      3: 16,
+      4: 26,
+      5: 14,
+      6: 38,
+      7: 18,
+      8: 18,
+      9: 22,
+      10: 22,
+      11: 20,
+      12: 16,
+    });
+
+    // ── SHEET 3: PARTY SUMMARY SCORECARD ──
+    const wsParty = wb.addWorksheet('Party Summary', {
+      views: [{ state: 'frozen', ySplit: 5, showGridLines: true }],
+      properties: { tabColor: { argb: 'FF8B5CF6' } },
+    });
+
+    addWorksheetBanner(
+      wsParty,
+      'I',
+      companyName,
+      companySubline,
+      'CUSTOMER & PLANT PERFORMANCE SCORECARD'
+    );
+
+    const partySummaryHeaders = [
+      'Sr #',
+      'Party / Consignee',
+      'Total Trucks',
+      'Total Delivered Tons',
+      'Gross Revenue (Rs)',
+      'Procurement Cost (Rs)',
+      'Net Profit (Rs)',
+      'Avg Rate / Ton (Rs)',
+      'Profit Margin %',
+    ];
+
+    const pshRow = wsParty.getRow(5);
+    pshRow.height = 28;
+    partySummaryHeaders.forEach((t, i) => {
+      const cell = pshRow.getCell(i + 1);
+      cell.value = t;
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: XL_PALETTE.HEADER_PRIMARY } };
+      cell.font = { name: 'Calibri', size: 10, bold: true, color: { argb: XL_PALETTE.HEADER_TEXT } };
+      cell.alignment = {
+        vertical: 'middle',
+        horizontal: i === 0 || i === 2 ? 'center' : i >= 3 ? 'right' : 'left',
+      };
+      cell.border = BORDER_CELL_LIGHT;
+    });
+
     const partyMap: { [id: string]: { name: string; trucks: number; tons: number; revenue: number; cost: number; profit: number } } = {};
     dispatches.forEach((d) => {
       const p = parties.find((partyItem) => partyItem.id === d.partyId);
@@ -1447,43 +2591,134 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
       partyMap[pName].profit += s.netProfit;
     });
 
-    const partySummaryRows = Object.values(partyMap).map((pm, idx) => ({
-      'Sr #': idx + 1,
-      'Party / Consignee': pm.name,
-      'Total Trucks': pm.trucks,
-      'Total Delivered Tons': parseFloat(pm.tons.toFixed(2)),
-      'Total Gross Revenue (Rs)': Math.round(pm.revenue),
-      'Total Procurement Cost (Rs)': Math.round(pm.cost),
-      'Net Profit (Rs)': Math.round(pm.profit),
-      'Avg Rate / Ton (Rs)': pm.tons > 0 ? Math.round(pm.revenue / pm.tons) : 0,
-      'Margin %': pm.revenue > 0 ? `${((pm.profit / pm.revenue) * 100).toFixed(1)}%` : '0%',
-    }));
+    let pmRowIdx = 6;
+    const sortedPartySummaries = Object.values(partyMap).sort((a, b) => b.revenue - a.revenue);
 
-    const wsParty = XLSX.utils.json_to_sheet(partySummaryRows);
-    wsParty['!cols'] = [
-      { wch: 6 },
-      { wch: 28 },
-      { wch: 14 },
-      { wch: 18 },
-      { wch: 22 },
-      { wch: 22 },
-      { wch: 18 },
-      { wch: 16 },
-      { wch: 12 },
+    sortedPartySummaries.forEach((pm, idx) => {
+      const row = wsParty.getRow(pmRowIdx);
+      row.height = 22;
+      const isEven = idx % 2 === 0;
+      const avgRate = pm.tons > 0 ? Math.round(pm.revenue / pm.tons) : 0;
+      const margin = pm.revenue > 0 ? pm.profit / pm.revenue : 0;
+
+      row.values = [
+        idx + 1,
+        pm.name,
+        pm.trucks,
+        parseFloat(pm.tons.toFixed(2)),
+        Math.round(pm.revenue),
+        Math.round(pm.cost),
+        Math.round(pm.profit),
+        avgRate,
+        parseFloat(margin.toFixed(4)),
+      ];
+
+      for (let c = 1; c <= 9; c++) {
+        const cell = row.getCell(c);
+        cell.font = { name: 'Calibri', size: 9.5, color: { argb: XL_PALETTE.TEXT_PRIMARY } };
+        cell.fill = {
+          type: 'pattern',
+          pattern: 'solid',
+          fgColor: { argb: isEven ? XL_PALETTE.ZEBRA_EVEN : XL_PALETTE.ZEBRA_ODD },
+        };
+        cell.border = BORDER_CELL_LIGHT;
+
+        if (c === 1 || c === 3) {
+          cell.alignment = { vertical: 'middle', horizontal: 'center' };
+        } else if (c === 2) {
+          cell.alignment = { vertical: 'middle', horizontal: 'left' };
+          cell.font = { name: 'Calibri', size: 9.5, bold: true, color: { argb: XL_PALETTE.TEXT_PRIMARY } };
+        } else if (c === 4) {
+          cell.alignment = { vertical: 'middle', horizontal: 'right' };
+          cell.numFmt = '#,##0.00';
+        } else if (c >= 5 && c <= 8) {
+          cell.alignment = { vertical: 'middle', horizontal: 'right' };
+          cell.numFmt = '#,##0';
+          if (c === 7) {
+            cell.font = {
+              name: 'Calibri',
+              size: 9.5,
+              bold: true,
+              color: { argb: pm.profit >= 0 ? XL_PALETTE.TEXT_GREEN : XL_PALETTE.TEXT_RED },
+            };
+          }
+        } else if (c === 9) {
+          cell.alignment = { vertical: 'middle', horizontal: 'right' };
+          cell.numFmt = '0.0%';
+        }
+      }
+
+      pmRowIdx++;
+    });
+
+    const pmTotRow = wsParty.getRow(pmRowIdx);
+    pmTotRow.height = 28;
+    pmTotRow.values = [
+      '',
+      'TOTALS',
+      sortedDispatches.length,
+      totalFleetTons,
+      Math.round(totalFleetRevenue),
+      Math.round(totalFleetCost),
+      Math.round(totalFleetProfit),
+      totalFleetTons > 0 ? Math.round(totalFleetRevenue / totalFleetTons) : 0,
+      parseFloat((fleetMargin / 100).toFixed(4)),
     ];
-    XLSX.utils.book_append_sheet(wb, wsParty, 'Party Summary');
+
+    for (let c = 1; c <= 9; c++) {
+      const cell = pmTotRow.getCell(c);
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: XL_PALETTE.TOTAL_FILL } };
+      cell.font = { name: 'Calibri', size: 10.5, bold: true, color: { argb: XL_PALETTE.TEXT_PRIMARY } };
+      cell.border = BORDER_TOTAL_ACCOUNTING;
+
+      if (c === 2 || c === 3) {
+        cell.alignment = { vertical: 'middle', horizontal: 'center' };
+      } else if (c === 4) {
+        cell.alignment = { vertical: 'middle', horizontal: 'right' };
+        cell.numFmt = '#,##0.00';
+      } else if (c >= 5 && c <= 8) {
+        cell.alignment = { vertical: 'middle', horizontal: 'right' };
+        cell.numFmt = '#,##0';
+        if (c === 7) {
+          cell.font = {
+            name: 'Calibri',
+            size: 11,
+            bold: true,
+            color: { argb: totalFleetProfit >= 0 ? XL_PALETTE.TEXT_GREEN : XL_PALETTE.TEXT_RED },
+          };
+        }
+      } else if (c === 9) {
+        cell.alignment = { vertical: 'middle', horizontal: 'right' };
+        cell.numFmt = '0.0%';
+      }
+    }
+
+    autoFitWorksheetColumns(wsParty, {
+      1: 6,
+      2: 28,
+      3: 14,
+      4: 18,
+      5: 22,
+      6: 22,
+      7: 18,
+      8: 16,
+      9: 14,
+    });
   }
 
-  const base64Xlsx = XLSX.write(wb, { bookType: 'xlsx', type: 'base64' });
-  const safeName = (partyName || 'All_Dispatches').replace(/[^a-zA-Z0-9_-]/g, '_');
+  // Generate buffer and encode to base64
+  const xlsxBuffer = await wb.xlsx.writeBuffer();
+  const base64Xlsx = arrayBufferToBase64(xlsxBuffer);
+  const safeName = (partyName || 'Fleet_Ledger').replace(/[^a-zA-Z0-9_-]/g, '_');
   const finalFileName = options.fileName || `Ledger-${safeName}-${dateStamp}.xlsx`;
 
   await shareBase64File({
     data: base64Xlsx,
     fileName: finalFileName,
     mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    title: `Factory Ledger - ${partyName || 'All Dispatches'}`,
-    text: `Factory Ledger Excel Workbook (${dispatches.length} dispatches).`,
+    title: `Factory Ledger - ${partyName || 'Fleet Ledger'}`,
+    text: `Official Factory Ledger Excel Workbook containing ${dispatches.length} dispatch deliveries.`,
     dialogTitle: 'Share Excel Spreadsheet',
   });
 }
+

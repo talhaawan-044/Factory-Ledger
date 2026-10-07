@@ -496,7 +496,7 @@ export default function AllEntries() {
                                                 }}
                                                 className="tabular-nums"
                                             >
-                                                {isProfit ? '+' : ''}Rs. {Math.round(settlement.netProfit).toLocaleString('en-PK')}
+                                                {isProfit ? '+Rs. ' : '-Rs. '}{Math.abs(Math.round(settlement.netProfit)).toLocaleString('en-PK')}
                                             </span>
                                         </div>
 

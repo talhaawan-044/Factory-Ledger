@@ -306,10 +306,10 @@ function DealEstimatorContent({ onClose }: { onClose: () => void }) {
             }}
           >
             <div style={{ fontSize: 13, textTransform: 'uppercase', letterSpacing: 0.5, opacity: 0.9, fontWeight: 600 }}>
-              Projected Net Profit
+              {isProfitable ? 'Projected Net Profit' : 'Projected Net Loss'}
             </div>
             <div style={{ fontSize: 32, fontWeight: 700, letterSpacing: -0.5, marginTop: 4 }}>
-              Rs. {Math.round(calc.netProfit).toLocaleString()}
+              {isProfitable ? '+Rs. ' : '-Rs. '}{Math.abs(Math.round(calc.netProfit)).toLocaleString()}
             </div>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 12, paddingTop: 12, borderTop: '1px solid rgba(255, 255, 255, 0.2)' }}>
               <div>
@@ -773,9 +773,11 @@ function DealEstimatorContent({ onClose }: { onClose: () => void }) {
 
               {/* Net Profit Margin */}
               <div style={{ display: 'flex', justifyContent: 'space-between', paddingTop: 6, borderTop: '1px solid var(--separator)', fontSize: 15 }}>
-                <span style={{ fontWeight: 700, color: isProfitable ? 'var(--ios-green)' : 'var(--ios-red)' }}>Net Profit Margin:</span>
                 <span style={{ fontWeight: 700, color: isProfitable ? 'var(--ios-green)' : 'var(--ios-red)' }}>
-                  {isProfitable ? '+' : ''}Rs. {Math.round(calc.netProfit).toLocaleString()} ({calc.marginPercent.toFixed(1)}%)
+                  {isProfitable ? 'Net Profit Margin:' : 'Net Loss Margin:'}
+                </span>
+                <span style={{ fontWeight: 700, color: isProfitable ? 'var(--ios-green)' : 'var(--ios-red)' }}>
+                  {isProfitable ? '+Rs. ' : '-Rs. '}{Math.abs(Math.round(calc.netProfit)).toLocaleString()} ({calc.marginPercent.toFixed(1)}%)
                 </span>
               </div>
             </div>
