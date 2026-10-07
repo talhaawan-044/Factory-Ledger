@@ -1,4 +1,4 @@
-# 🏭 Factory Ledger
+# Factory Ledger
 
 <div align="center">
 
@@ -23,7 +23,7 @@
 
 ---
 
-## 📸 Screenshots
+## Screenshots
 
 <!-- Place your screenshots here! Replace the placeholders below with your images -->
 <div align="center">
@@ -50,7 +50,7 @@
 
 ---
 
-## ⚡ Overview
+## Overview
 
 **Factory Ledger** bridges the gap between field-level logistics and financial accounting. Traditional bookkeeping apps fail when dealing with commodities like coal, minerals, and bulk materials that require complex quality deductions (GCV formulas, moisture adjustments), truck axle weights (gross/tare/net), multi-source recipe blending, and live margin forecasts.
 
@@ -58,41 +58,41 @@ Factory Ledger provides an **all-in-one mobile and web powerhouse**: manage part
 
 ---
 
-## ✨ Core Features
+## Core Features
 
-### 🚚 Smart Logistics & Dispatch Tracking
+### Smart Logistics & Dispatch Tracking
 - **Live Profit Engine:** Calculates real-time projected profit per truck based on selling rate, purchase costs, transport deductions, and commission.
 - **Coal Blending Recipe Matrix:** Blend multiple coal sources/grades per truck with individual tonnage and cost ratios.
 - **Contract Agreement Formulas:** Custom GCV (Gross Calorific Value) penalty matrices, moisture deductions, and base rate specifications.
 - **Weight Station Integration:** Automatic net weight calculation from gross and tare readings.
 - **Deal Estimator:** Simulate hypothetical multi-truck contracts and margin calculations before dispatching.
 
-### 📒 Commercial Party Ledger & Accounting
+### Commercial Party Ledger & Accounting
 - **Double-Entry Financial Accounting:** Full debit, credit, balance, and running statement tracking.
 - **Receivables & Payables:** Instant visibility into net balances, outstanding invoices, and overpaid advances.
 - **Payment Receipts:** One-tap generated payment and dispatch vouchers with printable views.
 - **Automatic Balancing:** Real-time balance recomputation upon editing or removing transactions.
 
-### 🔒 Enterprise-Grade Privacy & Security
+### Enterprise-Grade Privacy & Security
 - **iOS 18 Passcode Lock Screen:** 5-digit PIN lock screen with Apple HIG layout and tactile keypad animations.
 - **Hardware Biometrics:** Native Android fingerprint and biometric prompt via custom native plugin (`AppBiometricPlugin.java`).
 - **Master Offline Recovery Key (`FL-XXXX-XXXX`):** Self-service, zero-knowledge offline recovery key allowing passcode resets without needing server connectivity.
 - **Sensitive Gate Protection:** PIN verification required to change passcodes, export ledger data, or import backups.
 - **Smart Data Import Protection:** Interactive modal with choice between **Nuke & Overwrite** or intelligent **Merge** resolution.
 
-### ☁️ Cloud Sync & Offline-First Resilience
+### Cloud Sync & Offline-First Resilience
 - **Offline-First by Design:** Uses local IndexedDB caching so operators can record dispatches without internet access at remote mines or weighing bridges.
 - **Firebase Firestore Subcollections:** Scalable cloud architecture synchronizing party records, dispatches, and payments as subcollections under the user's secure account ID.
 - **Write-Through Synchronization:** Automatic background synchronization with retry handling and manual "Sync Now" triggers.
 - **Google Single Sign-On (SSO):** Seamless one-tap authentication via Capacitor Firebase Auth.
 
-### 📊 Professional Exporting & Invoicing
+### Professional Exporting & Invoicing
 - **Multi-Sheet Excel Reports:** Formatted `.xlsx` workbooks with color-coded profit badges, summary metrics, and ledger breakdowns.
 - **PDF Slips & Receipts:** Clean, customer-ready printable receipts with business branding and headers.
 - **WhatsApp Formatted Summaries:** Instant text formatting for quick sharing with truck drivers, factory owners, and suppliers.
 - **Full JSON Backups:** Complete data export for off-site archiving and recovery.
 
-### 🎨 Apple iOS 18 Design Experience
+### Apple iOS 18 Design Experience
 - **Adaptive Light & Dark Themes:** Fully responsive interface that seamlessly transitions between deep OLED dark mode and crisp iOS light mode.
 - **Color Accent Themes:** Personalize your interface with presets like *Electric Sapphire*, *Emerald Green*, *Royal Violet*, and *Sunset Amber*.
 - **Haptics & Audio Chimes:** Tactile button feedbacks, cash chime audio cues, and modal pop sounds.
@@ -100,7 +100,7 @@ Factory Ledger provides an **all-in-one mobile and web powerhouse**: manage part
 
 ---
 
-## 🛠️ Technology Stack
+## Technology Stack
 
 | Layer | Technologies |
 | :--- | :--- |
@@ -114,7 +114,7 @@ Factory Ledger provides an **all-in-one mobile and web powerhouse**: manage part
 
 ---
 
-## 📂 Directory Structure
+## Directory Structure
 
 ```text
 ├── android/                        # Android Native Project (Capacitor)
@@ -153,7 +153,7 @@ Factory Ledger provides an **all-in-one mobile and web powerhouse**: manage part
 
 ---
 
-## 🚀 Getting Started
+## Getting Started
 
 ### Prerequisites
 - **Node.js:** v18.0.0 or higher
@@ -194,7 +194,7 @@ npx cap run android
 
 ---
 
-## 📦 Building a Signed Production APK
+## Building a Signed Production APK
 
 The project is preconfigured to generate cryptographically signed release builds using Gradle and Android SDK `apksigner`.
 
@@ -218,7 +218,7 @@ The project is preconfigured to generate cryptographically signed release builds
 
 ---
 
-## 🔒 Security & Privacy Architecture
+## Security & Privacy Architecture
 
 - **No Remote Telemetry:** The app collects zero user tracking or diagnostic metrics.
 - **Zero-Knowledge Recovery:** Your Master Recovery Key is stored exclusively on your device. Even if an attacker gains access to your cloud account, they cannot bypass your local lock without this offline key.
@@ -226,7 +226,7 @@ The project is preconfigured to generate cryptographically signed release builds
 
 ---
 
-## 📄 License
+## License
 
 This project is licensed under the [MIT License](LICENSE).
 Distributed as an industrial management solution for factories, dealers, and logistics operators.
