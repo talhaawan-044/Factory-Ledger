@@ -30,6 +30,7 @@ GoogleService-Info.plist
 # Personal files & Media/Screenshots
 user_screenshot.*
 *.jpg
+*.png
 *.jpeg
 *.webm
 *.mp4
