@@ -466,12 +466,12 @@ export default function AllEntries() {
                             paddingTop: 14,
                             borderTop: '0.5px solid var(--separator)',
                             display: 'flex',
-                            alignItems: 'center',
+                            alignItems: 'flex-start',
                             justifyContent: 'space-between',
                             gap: 12
                         }}
                     >
-                        <div style={{ minWidth: 0 }}>
+                        <div style={{ minWidth: 0, flex: '1 1 auto' }}>
                             <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--label-tertiary)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
                                 Filtered Shipments
                             </div>
@@ -481,22 +481,29 @@ export default function AllEntries() {
                                     fontWeight: 700,
                                     color: 'var(--label-primary)',
                                     marginTop: 3,
-                                    whiteSpace: 'nowrap'
+                                    display: 'flex',
+                                    flexWrap: 'wrap',
+                                    alignItems: 'baseline',
+                                    gap: '2px 6px'
                                 }}
                                 className="tabular-nums"
                             >
-                                {filteredDispatches.length} <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--label-secondary)' }}>trucks</span>
+                                <span>
+                                    {filteredDispatches.length} <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--label-secondary)' }}>trucks</span>
+                                </span>
                                 {ledgerTotals.pendingCount > 0 && (
-                                    <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--ios-blue)', marginLeft: 4 }}>
+                                    <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--ios-blue)' }}>
                                         ({ledgerTotals.pendingCount} in transit)
                                     </span>
                                 )}
-                                <span style={{ margin: '0 6px', color: 'var(--label-tertiary)', fontWeight: 400 }}>·</span>
-                                {filteredTons.toFixed(1)} <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--label-secondary)' }}>tons</span>
+                                <span style={{ color: 'var(--label-tertiary)', fontWeight: 400 }}>·</span>
+                                <span>
+                                    {filteredTons.toFixed(1)} <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--label-secondary)' }}>tons</span>
+                                </span>
                             </div>
                         </div>
 
-                        <div style={{ textAlign: 'right', minWidth: 0 }}>
+                        <div style={{ textAlign: 'right', flexShrink: 0 }}>
                             <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--label-tertiary)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
                                 Billed Revenue
                             </div>
