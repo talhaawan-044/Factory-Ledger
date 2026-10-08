@@ -173,12 +173,8 @@ export async function loginWithGoogle(): Promise<GoogleUserData> {
     };
   } catch (error: any) {
     if (error.code === 'auth/popup-blocked') {
-      try {
-        await signInWithRedirect(auth, googleProvider);
-        throw new Error('Redirecting to Google sign in...');
-      } catch (redirectErr) {
-        throw redirectErr;
-      }
+      await signInWithRedirect(auth, googleProvider);
+      throw new Error('Redirecting to Google sign in...');
     }
     throw error;
   }

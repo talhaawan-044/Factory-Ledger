@@ -89,6 +89,7 @@ export default function DispatchForm() {
   const [isPartyModalOpen, setIsPartyModalOpen] = useState(false);
   const [validationErrors, setValidationErrors] = useState<Record<string, string>>({});
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [isInTransit, setIsInTransit] = useState(false);
 
@@ -270,15 +271,23 @@ export default function DispatchForm() {
   };
 
   const handleDelete = () => {
+    setDeleteError(null);
     playPopSound();
     setShowDeleteConfirm(true);
   };
 
   const handleConfirmDelete = async () => {
     if (dispatchId && dispatchId !== 'new') {
-      await deleteDispatch(dispatchId);
-      setShowDeleteConfirm(false);
-      navigate(`/parties/${dispatch.partyId || partyId}`);
+      try {
+        setDeleteError(null);
+        await deleteDispatch(dispatchId);
+        setShowDeleteConfirm(false);
+        navigate(`/parties/${dispatch.partyId || partyId}`);
+      } catch (err: any) {
+        console.error('[DispatchForm] Failed to delete dispatch:', err);
+        playPopSound();
+        setDeleteError(err?.message || 'Storage write failed: Could not delete dispatch record.');
+      }
     }
   };
 
@@ -1328,13 +1337,20 @@ export default function DispatchForm() {
       <IOSConfirmModal
         isOpen={showDeleteConfirm}
         title="Delete Dispatch Record?"
-        message={`Are you sure you want to delete this dispatch record${dispatch.truckNumber ? ` for truck ${dispatch.truckNumber}` : ''}? This action cannot be undone.`}
+        message={
+          deleteError
+            ? `Error: ${deleteError}`
+            : `Are you sure you want to delete this dispatch record${dispatch.truckNumber ? ` for truck ${dispatch.truckNumber}` : ''}? This action cannot be undone.`
+        }
         confirmText="Delete"
         cancelText="Cancel"
         destructive
-        countdownSeconds={2}
+        countdownSeconds={deleteError ? 0 : 2}
         onConfirm={handleConfirmDelete}
-        onCancel={() => setShowDeleteConfirm(false)}
+        onCancel={() => {
+          setShowDeleteConfirm(false);
+          setDeleteError(null);
+        }}
       />
 
       {/* ── Quick Add Party Apple iOS Modal Sheet ── */}

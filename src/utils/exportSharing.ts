@@ -186,6 +186,215 @@ export async function sharePaymentImage(
   });
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// Pure Export Data Preparation Engines (Issue 25: Testable Export Totals)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+export interface StatementRow {
+  index: number;
+  date: string;
+  kind: 'dispatch' | 'payment';
+  reference: string;
+  description: string;
+  weightTons: number;
+  ratePerTon: number;
+  debit: number;
+  credit: number;
+  runningBalance: number;
+  isPending: boolean;
+  notes?: string;
+}
+
+export interface StatementData {
+  rows: StatementRow[];
+  totalTons: number;
+  totalBilled: number;
+  totalReceived: number;
+  totalPaid: number;
+  netReceived: number;
+  outstandingBalance: number;
+  isReceivable: boolean;
+}
+
+/**
+ * Pure generator for chronological party ledger account statement.
+ * Guaranteed to match canonical calculatePartyBalance totals.
+ */
+export function buildPartyStatementData(
+  dispatches: Dispatch[],
+  payments: Payment[] = [],
+  pos?: PurchaseOrder[],
+  _settings?: AppSettings
+): StatementData {
+  const balance = calculatePartyBalance(dispatches, payments);
+
+  type StatementEntry =
+    | { kind: 'dispatch'; date: string; data: Dispatch }
+    | { kind: 'payment'; date: string; data: Payment };
+
+  const entries: StatementEntry[] = [
+    ...dispatches.map((d) => ({ kind: 'dispatch' as const, date: d.date, data: d })),
+    ...payments.map((p) => ({ kind: 'payment' as const, date: p.date, data: p })),
+  ].sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+
+  let runningBal = 0;
+  const rows: StatementRow[] = [];
+
+  entries.forEach((entry, idx) => {
+    if (entry.kind === 'dispatch') {
+      const d = entry.data;
+      const s = calculateSettlement(d);
+      const isPending = isDispatchPending(d);
+      const invoiced = isPending ? 0 : Math.round(s.totalRevenue);
+      runningBal += invoiced;
+      const po = pos?.find((p) => p.id === d.poId);
+
+      rows.push({
+        index: idx + 1,
+        date: d.date || '-',
+        kind: 'dispatch',
+        reference: po?.poNumber || d.truckNumber || '-',
+        description: `Coal Dispatch Delivery (${d.truckNumber || 'Truck'})`,
+        weightTons: isPending ? 0 : (d.labReceivedWeight || 0),
+        ratePerTon: s.payableRate,
+        debit: invoiced,
+        credit: 0,
+        runningBalance: Math.round(runningBal),
+        isPending,
+        notes: d.notes,
+      });
+    } else {
+      const p = entry.data;
+      const isReceived = p.type === 'received';
+      const amount = Math.round(p.amount);
+      if (isReceived) {
+        runningBal -= amount;
+      } else {
+        runningBal += amount;
+      }
+
+      rows.push({
+        index: idx + 1,
+        date: p.date || '-',
+        kind: 'payment',
+        reference: (p.id || '').slice(0, 8).toUpperCase(),
+        description: `Payment ${isReceived ? 'Credit / Received' : 'Debit / Outflow'} (${p.mode.toUpperCase()})`,
+        weightTons: 0,
+        ratePerTon: 0,
+        debit: !isReceived ? amount : 0,
+        credit: isReceived ? amount : 0,
+        runningBalance: Math.round(runningBal),
+        isPending: false,
+        notes: p.referenceNote,
+      });
+    }
+  });
+
+  return {
+    rows,
+    totalTons: balance.totalTons,
+    totalBilled: balance.totalBilled,
+    totalReceived: balance.totalPaymentsReceived,
+    totalPaid: balance.totalPaymentsPaid,
+    netReceived: balance.netPaymentsReceived,
+    outstandingBalance: balance.outstandingBalance,
+    isReceivable: balance.isReceivable,
+  };
+}
+
+export interface FleetRow {
+  index: number;
+  id: string;
+  date: string;
+  truckNumber: string;
+  partyName: string;
+  poNumber: string;
+  loadedWeight: number;
+  receivedWeight: number;
+  transitDiff: number;
+  transitLossPercentage: number;
+  isPending: boolean;
+  targetGcv: number;
+  actualGcv: number;
+  gcvDiff: number;
+  sulphur: number;
+  ash: number;
+  moisture: number;
+  baseRate: number;
+  deduction: number;
+  premium: number;
+  taxDeduction: number;
+  payableRate: number;
+  revenue: number;
+  totalCost: number;
+  netProfit: number;
+  notes: string;
+}
+
+export interface FleetExportData {
+  rows: FleetRow[];
+  totals: ReturnType<typeof calculateLedgerTotals>;
+}
+
+/**
+ * Pure generator for fleet master dispatches audit data.
+ * Guaranteed to match canonical calculateLedgerTotals.
+ */
+export function buildFleetExportData(
+  dispatches: Dispatch[],
+  parties: Party[] = [],
+  pos: PurchaseOrder[] = [],
+  settings?: AppSettings
+): FleetExportData {
+  const totals = calculateLedgerTotals(dispatches, settings);
+  const sorted = [...dispatches].sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+
+  const rows: FleetRow[] = sorted.map((d, index) => {
+    const s = calculateSettlement(d);
+    const transit = calculateTransitLoss(d);
+    const isPending = transit.isPending;
+    const party = parties.find((p) => p.id === d.partyId);
+    const po = pos.find((p) => p.id === d.poId);
+    const gcvDiff = d.targetGcv && d.labActualGcv ? d.labActualGcv - d.targetGcv : 0;
+
+    return {
+      index: index + 1,
+      id: d.id,
+      date: d.date || '-',
+      truckNumber: d.truckNumber || '-',
+      partyName: party?.name || d.factoryName || 'Direct',
+      poNumber: po?.poNumber || '-',
+      loadedWeight: transit.totalLoadedWeight || 0,
+      receivedWeight: isPending ? 0 : (d.labReceivedWeight || 0),
+      transitDiff: parseFloat(transit.diff.toFixed(2)),
+      transitLossPercentage: parseFloat((transit.lossPercentage / 100).toFixed(4)),
+      isPending,
+      targetGcv: d.targetGcv || 0,
+      actualGcv: d.labActualGcv || 0,
+      gcvDiff,
+      sulphur: d.labSulphur ? parseFloat(d.labSulphur.toFixed(2)) : 0,
+      ash: d.labAsh ? parseFloat(d.labAsh.toFixed(2)) : 0,
+      moisture: d.labMoisture ? parseFloat(d.labMoisture.toFixed(2)) : 0,
+      baseRate: d.baseRate || 0,
+      deduction: d.manualDeduction || 0,
+      premium: d.manualPremium || 0,
+      taxDeduction: s.taxDeduction ? parseFloat(s.taxDeduction.toFixed(2)) : 0,
+      payableRate: parseFloat(s.payableRate.toFixed(2)),
+      revenue: isPending ? 0 : Math.round(s.totalRevenue),
+      totalCost: isPending ? 0 : Math.round(s.totalCost),
+      netProfit: isPending ? 0 : Math.round(s.netProfit),
+      notes: isPending
+        ? (d.notes ? `[In-Transit] ${d.notes}` : 'In-Transit (Awaiting Weighbridge)')
+        : (d.notes || ''),
+    };
+  });
+
+  return {
+    rows,
+    totals,
+  };
+}
+
 export interface ExportDispatchesPdfOptions {
   title?: string;
   subtitle?: string;
@@ -388,7 +597,8 @@ async function exportPartyStatementPdf(options: ExportDispatchesPdfOptions & { s
     if (entry.kind === 'dispatch') {
       const d = entry.data;
       const s = calculateSettlement(d);
-      const invoiced = Math.round(s.totalRevenue);
+      const isPending = isDispatchPending(d);
+      const invoiced = isPending ? 0 : Math.round(s.totalRevenue);
       runningBal += invoiced;
       const po = pos?.find((p) => p.id === d.poId);
       const transit = calculateTransitLoss(d);
@@ -1539,7 +1749,8 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
       if (entry.kind === 'dispatch') {
         const d = entry.data;
         const s = calculateSettlement(d);
-        const invoiced = Math.round(s.totalRevenue);
+        const isPending = isDispatchPending(d);
+        const invoiced = isPending ? 0 : Math.round(s.totalRevenue);
         runBal += invoiced;
         const po = pos.find((p) => p.id === d.poId);
 

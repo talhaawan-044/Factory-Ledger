@@ -12,14 +12,11 @@ import {
   getDispatch,
   clearAllData,
   restoreBackup,
-  getAllBackupData,
   getLedgerForSync,
   markRecordsClean,
   getPreRestoreSnapshot,
   rollbackToPreRestoreSnapshot,
   mergeLedgerData,
-  recordTombstone,
-  getTombstones
 } from '../src/lib/db';
 import { idb } from '../src/lib/dexieDb';
 import type { Party, Dispatch, Payment, BackupPayload } from '../src/types';

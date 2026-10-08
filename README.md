@@ -68,6 +68,17 @@ Factory Ledger provides an **all-in-one mobile and web management solution**: ma
 - **In-Transit Pending Dispatches:** Record trucks departing the mine/yard prior to factory weighment; pending trucks are clearly tracked and excluded from profit totals until officially weighed.
 - **Deal Estimator:** Simulate hypothetical multi-truck contracts and margin calculations before dispatching.
 
+### Commercial Settlement & Taxation Mathematics
+The application's commercial profit, deduction, and invoicing engines follow official industrial logistics and Pakistani corporate commodity standards:
+- **Adjusted Rate:** $\text{Base Rate} - \text{Manual Deductions (GCV / Moisture)} + \text{Manual Premiums (GCV Bonus)}$.
+- **Tax Withholding (Formula 18/5):**
+  - $\text{Tax Base} = \text{Adjusted Rate} \times (1 + \text{Sales Tax } \% / 100)$.
+  - $\text{Tax Deduction} = \text{Tax Base} \times (\text{Income Tax } \% / 100)$.
+  - *(Standard defaults: 18% Sales Tax, 5% Income Tax Withholding, configurable in Settings).*
+- **Payable Rate:** $\text{Adjusted Rate} - \text{Tax Deduction} - \text{Commission Per Ton}$. Broker commission is deducted directly from the settlement payable rate.
+- **Billed Revenue:** $\text{Payable Rate} \times \text{Factory Received Weight}$.
+- **Net Trading Spread (Profit):** $\text{Billed Revenue} - [\sum(\text{Coal Recipe Ton} \times \text{Buy Rate}) + \text{Freight} + \text{Loading} + \text{Crush} + \text{Royalty} + \text{Other Overheads}]$. *(In-transit trucks awaiting weighbridge scales are tracked separately and excluded from profit totals).*
+
 ### Commercial Party Ledger & Accounting
 - **Single-Entry Running-Balance Ledger:** Accurate debit/credit ledger tracking invoices, received payments, paid refunds/advances, and running statement balances.
 - **Receivables & Payables:** Instant visibility into net balances, outstanding invoices, and settled accounts.
@@ -259,6 +270,7 @@ The project is preconfigured to generate release builds using Gradle and Android
 - **Lockout Rate Limiting:** 5 consecutive failed passcode attempts trigger an escalating lockout timer (starting at 30 seconds) to slow down guessing attacks.
 - **Biometric Hardware Isolation:** Biometric unlock uses Android's `BiometricPrompt` via custom native plugin; the app never sees fingerprint or face data.
 - **Native OS Protection:** Android release builds specify `android:allowBackup="false"` and `FLAG_SECURE` to block unintended data leakage via `adb backup` or recent apps thumbnails. (In debug builds, `FLAG_SECURE` is disabled to facilitate automated testing and QA).
+- **Dependency Audit & Accepted Risks:** A repository audit with `npm audit` notes transitive sub-dependencies in `@grpc/grpc-js` (via `@firebase/firestore` / `@capacitor-firebase/authentication`) and `uuid` <11.1.1 (via `exceljs` and `xcode` / `@capacitor/cli`). Running destructive `--force` updates would downgrade core frameworks. These upstream dependencies are tracked via Dependabot and noted as accepted risks while awaiting upstream patch releases. Direct project dependencies are fully verified.
 
 ---
 

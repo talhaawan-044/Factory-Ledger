@@ -817,9 +817,12 @@ export async function getAllBackupData(): Promise<BackupPayload> {
     getSettings(),
   ]);
 
+  const nowIso = new Date().toISOString();
   return {
     version: CURRENT_DATA_VERSION,
-    exportDate: new Date().toISOString(),
+    exportDate: nowIso,
+    exportedAt: nowIso,
+    createdAt: nowIso,
     parties,
     dispatches,
     payments,
@@ -929,24 +932,97 @@ export async function markRecordsClean(syncedIds: {
   });
 }
 
+export interface PreRestoreSnapshotMeta {
+  timestamp: number;
+  dateStr: string;
+  dispatchCount: number;
+  partyCount: number;
+  paymentCount: number;
+  poCount: number;
+}
+
+const PRE_RESTORE_SNAPSHOT_KEY = 'last_pre_restore_snapshot';
+const SNAPSHOT_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
 /**
- * Issue 13: Retrieve pre-restore snapshot from IndexedDB meta table.
+ * Issue 13 & 24: Retrieve pre-restore snapshot from IndexedDB meta table.
+ * Cleans up snapshots older than 7 days to conserve client storage.
  */
 export async function getPreRestoreSnapshot(): Promise<BackupPayload | null> {
   await ensureInitialized();
-  const record = await idb.meta.get('last_pre_restore_snapshot');
-  return record ? (record.value as BackupPayload) : null;
+  const record = await idb.meta.get(PRE_RESTORE_SNAPSHOT_KEY);
+  if (!record || !record.value) return null;
+
+  if (record.updatedAt && Date.now() - record.updatedAt > SNAPSHOT_LIFETIME_MS) {
+    try {
+      await idb.meta.delete(PRE_RESTORE_SNAPSHOT_KEY);
+    } catch {
+      // ignore
+    }
+    return null;
+  }
+
+  return record.value as BackupPayload;
 }
 
 /**
- * Issue 13: Rollback to the pre-restore snapshot if a restore caused issues.
+ * Issue 24: Extract UI-friendly metadata (counts and formatted date) from pre-restore snapshot.
  */
-export async function rollbackToPreRestoreSnapshot(): Promise<{ success: boolean; message: string }> {
+export async function getPreRestoreSnapshotMeta(): Promise<PreRestoreSnapshotMeta | null> {
+  await ensureInitialized();
+  const record = await idb.meta.get(PRE_RESTORE_SNAPSHOT_KEY);
+  if (!record || !record.value) return null;
+
+  if (record.updatedAt && Date.now() - record.updatedAt > SNAPSHOT_LIFETIME_MS) {
+    try {
+      await idb.meta.delete(PRE_RESTORE_SNAPSHOT_KEY);
+    } catch {
+      // ignore
+    }
+    return null;
+  }
+
+  const payload = record.value as BackupPayload;
+  const parties = Array.isArray(payload.parties) ? payload.parties.length : 0;
+  const dispatches = Array.isArray(payload.dispatches) ? payload.dispatches.length : 0;
+  const payments = Array.isArray(payload.payments) ? payload.payments.length : 0;
+  const pos = Array.isArray(payload.pos) ? payload.pos.length : 0;
+  const timestamp = typeof record.updatedAt === 'number' ? record.updatedAt : Date.now();
+
+  const dateObj = new Date(timestamp);
+  const dateStr = dateObj.toLocaleDateString(undefined, {
+    day: 'numeric',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+
+  return {
+    timestamp,
+    dateStr,
+    dispatchCount: dispatches,
+    partyCount: parties,
+    paymentCount: payments,
+    poCount: pos,
+  };
+}
+
+/**
+ * Issue 13 & 24: Rollback to the pre-restore snapshot if a restore caused issues.
+ * Reversible two-way undo: does NOT skip snapshotting, so the pre-rollback state
+ * is itself snapshotted before rollback proceeds.
+ */
+export async function rollbackToPreRestoreSnapshot(): Promise<{
+  success: boolean;
+  message: string;
+  counts?: { parties: number; dispatches: number; payments: number; pos: number };
+}> {
   const snapshot = await getPreRestoreSnapshot();
   if (!snapshot) {
     return { success: false, message: 'No pre-restore snapshot available to rollback.' };
   }
-  return restoreBackup(snapshot, { silent: false, skipSnapshot: true });
+  // Reversible: allow restoreBackup to capture current state into last_pre_restore_snapshot
+  return restoreBackup(snapshot, { silent: false, skipSnapshot: false });
 }
 
 /**

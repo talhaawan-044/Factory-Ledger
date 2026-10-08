@@ -31,8 +31,21 @@ export default function PartiesList() {
   const [loading, setLoading] = useState(true);
   const [isAdding, setIsAdding] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [pendingDuplicateParty, setPendingDuplicateParty] = useState<{
+    newParty: Party;
+    existingParty: Party;
+  } | null>(null);
 
   const curSym = getCurrencySymbol(settings?.currency);
+
+  const duplicateNameMap = useMemo(() => {
+    const counts: Record<string, number> = {};
+    parties.forEach((p) => {
+      const k = p.name.trim().toLowerCase();
+      counts[k] = (counts[k] || 0) + 1;
+    });
+    return counts;
+  }, [parties]);
 
   // Persistent List / Grid view state
   const [viewMode, setViewMode] = useState<'list' | 'grid'>(() => {
@@ -388,16 +401,36 @@ export default function PartiesList() {
                       {/* Row 1: Party Name & Contact with Top Actions */}
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
                         <div style={{ flex: 1, minWidth: 0 }}>
-                          <div
-                            style={{
-                              fontSize: 16,
-                              fontWeight: 700,
-                              color: 'var(--label-primary)',
-                              lineHeight: 1.25,
-                              letterSpacing: -0.2
-                            }}
-                          >
-                            {party.name}
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                            <span
+                              style={{
+                                fontSize: 16,
+                                fontWeight: 700,
+                                color: 'var(--label-primary)',
+                                lineHeight: 1.25,
+                                letterSpacing: -0.2
+                              }}
+                            >
+                              {party.name}
+                            </span>
+                            {(duplicateNameMap[party.name.trim().toLowerCase()] || 0) > 1 && (
+                              <span
+                                style={{
+                                  fontSize: 10,
+                                  fontWeight: 600,
+                                  color: 'var(--ios-orange)',
+                                  background: 'rgba(255, 149, 0, 0.12)',
+                                  padding: '1px 6px',
+                                  borderRadius: 4,
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  whiteSpace: 'nowrap',
+                                }}
+                                title="Duplicate name: check phone or address"
+                              >
+                                {party.address || party.phone || 'Distinct Account'}
+                              </span>
+                            )}
                           </div>
                           <div
                             style={{
@@ -673,6 +706,25 @@ export default function PartiesList() {
                       >
                         {party.name}
                       </div>
+                      {(duplicateNameMap[party.name.trim().toLowerCase()] || 0) > 1 && (
+                        <div style={{ marginTop: 2 }}>
+                          <span
+                            style={{
+                              fontSize: 10,
+                              fontWeight: 600,
+                              color: 'var(--ios-orange)',
+                              background: 'rgba(255, 149, 0, 0.12)',
+                              padding: '1px 5px',
+                              borderRadius: 4,
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            {party.address || party.phone || 'Distinct Account'}
+                          </span>
+                        </div>
+                      )}
 
                       {/* Contact / Phone */}
                       <div
@@ -739,18 +791,57 @@ export default function PartiesList() {
         mode="add"
         onClose={() => setIsAdding(false)}
         onSave={async (data) => {
+          const trimmedName = data.name.trim();
+          const existing = parties.find(
+            (p) => p.name.trim().toLowerCase() === trimmedName.toLowerCase()
+          );
+
           const party: Party = {
             id: uuidv4(),
-            name: data.name,
-            contactPerson: data.contactPerson,
-            phone: data.phone,
-            address: data.address,
+            name: trimmedName,
+            contactPerson: data.contactPerson?.trim() || '',
+            phone: data.phone?.trim() || '',
+            address: data.address?.trim() || '',
             createdAt: Date.now()
           };
+
+          if (existing) {
+            setPendingDuplicateParty({ newParty: party, existingParty: existing });
+            return;
+          }
+
           await saveParty(party);
           triggerConfetti();
           setIsAdding(false);
           refreshData();
+        }}
+      />
+
+      {/* ── Duplicate Party Name Warning Modal (Issue 30a) ── */}
+      <IOSConfirmModal
+        isOpen={Boolean(pendingDuplicateParty)}
+        title="Duplicate Party Name?"
+        message={`A party named "${pendingDuplicateParty?.existingParty.name}" already exists (${
+          pendingDuplicateParty?.existingParty.phone ||
+          pendingDuplicateParty?.existingParty.address ||
+          'Existing account'
+        }). Do you want to create another party with the exact same name? We recommend adding a location or plant name (e.g. "${pendingDuplicateParty?.newParty.name} - Plant 2") to avoid ledger confusion.`}
+        confirmText="Create Duplicate"
+        cancelText="Go Back & Edit"
+        destructive={false}
+        countdownSeconds={0}
+        icon="warning"
+        onConfirm={async () => {
+          if (pendingDuplicateParty) {
+            await saveParty(pendingDuplicateParty.newParty);
+            triggerConfetti();
+            setPendingDuplicateParty(null);
+            setIsAdding(false);
+            refreshData();
+          }
+        }}
+        onCancel={() => {
+          setPendingDuplicateParty(null);
         }}
       />
 

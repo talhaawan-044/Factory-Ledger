@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   isAppLockEnabled,
   isBiometricEnabled,
@@ -53,20 +53,7 @@ export default function IOSAppLockScreen({ onUnlocked }: IOSAppLockScreenProps) 
     return () => clearInterval(interval);
   }, [lockoutRemaining]);
 
-  // Auto-prompt biometrics once on screen lock mount if enabled
-  useEffect(() => {
-    if (isLocked && isBiometricEnabled() && !bioTriggeredRef.current && lockoutRemaining <= 0) {
-      bioTriggeredRef.current = true;
-      triggerBiometrics();
-    }
-    if (!isLocked) {
-      bioTriggeredRef.current = false;
-      setPin('');
-      setErrorMessage('');
-    }
-  }, [isLocked, lockoutRemaining]);
-
-  const triggerBiometrics = async () => {
+  const triggerBiometrics = useCallback(async () => {
     if (lockoutRemaining > 0) return;
     setIsAuthenticatingBio(true);
     try {
@@ -79,7 +66,20 @@ export default function IOSAppLockScreen({ onUnlocked }: IOSAppLockScreenProps) 
     } finally {
       setIsAuthenticatingBio(false);
     }
-  };
+  }, [lockoutRemaining, onUnlocked]);
+
+  // Auto-prompt biometrics once on screen lock mount if enabled
+  useEffect(() => {
+    if (isLocked && isBiometricEnabled() && !bioTriggeredRef.current && lockoutRemaining <= 0) {
+      bioTriggeredRef.current = true;
+      triggerBiometrics();
+    }
+    if (!isLocked) {
+      bioTriggeredRef.current = false;
+      setPin('');
+      setErrorMessage('');
+    }
+  }, [isLocked, lockoutRemaining, triggerBiometrics]);
 
   const handleDigit = async (digit: string) => {
     if (lockoutRemaining > 0 || pin.length >= pinLength) return;

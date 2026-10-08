@@ -43,15 +43,6 @@ service cloud.firestore {
              request.resource.data.updatedAt >= resource.data.updatedAt;
     }
 
-    // Validate backup payload structure to ensure data integrity
-    function isValidBackupPayload(data) {
-      return (!('parties' in data) || data.parties is list) &&
-             (!('dispatches' in data) || data.dispatches is list) &&
-             (!('payments' in data) || data.payments is list) &&
-             (!('pos' in data) || data.pos is list) &&
-             (!('settings' in data) || data.settings is map);
-    }
-
     // ===============================================================
     // Collection Rules
     // ===============================================================

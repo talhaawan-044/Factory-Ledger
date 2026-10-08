@@ -4,11 +4,9 @@ import {
   hashPinLegacy,
   verifyPin,
   enableAppLock,
-  disableAppLock,
   getLockoutRemainingSeconds,
   getFailedAttempts,
   resetFailedAttempts,
-  recordFailedAttempt,
   getStoredPinHash,
 } from '../src/utils/securityLock';
 

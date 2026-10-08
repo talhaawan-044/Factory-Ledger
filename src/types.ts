@@ -122,6 +122,7 @@ export interface BackupPayload {
   version?: string;
   exportDate: string;
   exportedAt?: string;
+  createdAt?: string;
   app?: string;
   parties: Party[];
   dispatches: Dispatch[];

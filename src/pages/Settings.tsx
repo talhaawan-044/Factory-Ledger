@@ -11,6 +11,9 @@ import {
   restoreBackup,
   mergeLedgerData,
   getTombstones,
+  rollbackToPreRestoreSnapshot,
+  getPreRestoreSnapshotMeta,
+  type PreRestoreSnapshotMeta,
   type BackupPayload,
 } from '../lib/db';
 import type { AppSettings } from '../types';
@@ -24,6 +27,7 @@ import {
   Check,
   Download,
   Upload,
+  RotateCcw,
   Trash2,
   ChevronDown,
   ChevronRight,
@@ -239,6 +243,9 @@ export default function Settings() {
   const [showRecoveryKeyViewer, setShowRecoveryKeyViewer] = useState(false);
   const [pendingImportFile, setPendingImportFile] = useState<{ name: string; data: BackupPayload } | null>(null);
   const [showImportConfirmModal, setShowImportConfirmModal] = useState(false);
+  const [snapshotMeta, setSnapshotMeta] = useState<PreRestoreSnapshotMeta | null>(null);
+  const [showRollbackConfirm, setShowRollbackConfirm] = useState(false);
+  const [isRollingBack, setIsRollingBack] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const logoInputRef = useRef<HTMLInputElement>(null);
@@ -250,12 +257,13 @@ export default function Settings() {
   };
 
   const loadAllData = async () => {
-    const [s, d, p, pay, pos] = await Promise.all([
+    const [s, d, p, pay, pos, snap] = await Promise.all([
       getSettings(),
       getDispatches(),
       getParties(),
       getPayments(),
       getPurchaseOrders(),
+      getPreRestoreSnapshotMeta(),
     ]);
     setSettings(s);
     setStats({
@@ -264,6 +272,7 @@ export default function Settings() {
       payments: pay.length,
       pos: pos.length,
     });
+    setSnapshotMeta(snap);
     setLoading(false);
   };
 
@@ -732,6 +741,27 @@ export default function Settings() {
       showToast(`Import error: ${err?.message || 'Operation failed'}`);
     } finally {
       setPendingImportFile(null);
+    }
+  };
+
+  const handleConfirmRollback = async () => {
+    setShowRollbackConfirm(false);
+    setIsRollingBack(true);
+    playPopSound();
+    try {
+      const result = await rollbackToPreRestoreSnapshot();
+      if (result.success) {
+        playSuccessSound();
+        triggerConfetti();
+        showToast('Database rolled back to pre-restore snapshot!');
+        await loadAllData();
+      } else {
+        showToast(`Rollback Failed: ${result.message}`);
+      }
+    } catch (err: any) {
+      showToast(`Rollback error: ${err?.message || 'Operation failed'}`);
+    } finally {
+      setIsRollingBack(false);
     }
   };
 
@@ -2416,6 +2446,32 @@ export default function Settings() {
                 <div className="ios-separator with-glyph" />
               </div>
 
+              {/* Undo Last Restore (Issue 24) */}
+              {snapshotMeta && (
+                <div
+                  className="ios-cell"
+                  onClick={() => {
+                    playPopSound();
+                    setShowRollbackConfirm(true);
+                  }}
+                  style={{ cursor: 'pointer' }}
+                >
+                  <div className="ios-glyph-badge" style={{ background: 'var(--ios-orange)' }}>
+                    <RotateCcw size={18} color="#FFFFFF" />
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <span className="ios-cell-label" style={{ color: 'var(--label-primary)' }}>
+                      Undo Last Restore
+                    </span>
+                    <div style={{ fontSize: 12, color: 'var(--label-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      Saved {snapshotMeta.dateStr} · {snapshotMeta.dispatchCount} trucks, {snapshotMeta.partyCount} parties
+                    </div>
+                  </div>
+                  <span style={{ fontSize: 14, color: 'var(--ios-orange)', fontWeight: 600 }}>Undo</span>
+                  <div className="ios-separator with-glyph" />
+                </div>
+              )}
+
               {/* Erase All Data */}
               <div
                 className="ios-cell"
@@ -2523,6 +2579,23 @@ export default function Settings() {
       </div> */}
 
       {/* ── Confirmation Modals ── */}
+      <IOSConfirmModal
+        isOpen={showRollbackConfirm}
+        title="Undo Last Restore?"
+        message={
+          snapshotMeta
+            ? `Replace current data with the data from before your last restore (saved ${snapshotMeta.dateStr}: ${snapshotMeta.dispatchCount} dispatches, ${snapshotMeta.partyCount} parties)? Your current data will be saved so you can undo this too.`
+            : 'Replace current data with the data from before your last restore? Your current data will be saved so you can undo this too.'
+        }
+        confirmText={isRollingBack ? 'Restoring...' : 'Roll Back Data'}
+        cancelText="Cancel"
+        destructive={false}
+        countdownSeconds={0}
+        icon="warning"
+        onConfirm={handleConfirmRollback}
+        onCancel={() => setShowRollbackConfirm(false)}
+      />
+
       <IOSConfirmModal
         isOpen={showClearConfirm}
         title="Clear All Data?"
