@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { saveSettings, getSettings, mergeLedgerData } from '../src/lib/db';
 import { sanitizeForFirestore } from '../src/lib/firebase';
-import type { AppSettings, Dispatch, Party } from '../types';
+import type { AppSettings, Dispatch, Party } from '../src/types';
 
 describe('Phase C: Two-Device Sync Scenarios & Settings Separation (Issues 21, 22, 28)', () => {
   beforeEach(() => {

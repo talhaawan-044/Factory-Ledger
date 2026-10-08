@@ -18,6 +18,8 @@ const mockSettings: AppSettings = {
   phoneNumber: '03001234567',
   ntnNumber: '1234567-8',
   companyAddress: 'Quetta, Pakistan',
+  logoUrl: '',
+  theme: 'light',
   currency: 'PKR',
   numberFormat: 'million',
   taxFormulaSalesPercent: 18,
@@ -142,12 +144,11 @@ describe('Issue 25 (T12): Pure Export Data Functions Match Canonical Totals', ()
     expect(fleet.totals.revenue).toBe(canonical.revenue);
     expect(fleet.totals.cost).toBe(canonical.cost);
     expect(fleet.totals.profit).toBe(canonical.profit);
-    expect(fleet.totals.marginPercent).toBe(canonical.marginPercent);
     expect(fleet.totals.settledCount).toBe(canonical.settledCount);
     expect(fleet.totals.pendingCount).toBe(canonical.pendingCount);
     expect(fleet.totals.receivedTons).toBe(canonical.receivedTons);
     expect(fleet.totals.loadedTonsSettled).toBe(canonical.loadedTonsSettled);
-    expect(fleet.totals.loadedTonsAll).toBe(canonical.loadedTonsAll);
+    expect(fleet.totals.pendingLoadedTons).toBe(canonical.pendingLoadedTons);
     expect(fleet.totals.transitDiffTons).toBe(canonical.transitDiffTons);
 
     // Assert row count equals dispatch count

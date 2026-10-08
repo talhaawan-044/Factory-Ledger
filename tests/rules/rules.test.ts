@@ -1,6 +1,6 @@
 // @vitest-environment node
 import fs from 'node:fs';
-import { describe, it, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import {
   initializeTestEnvironment,
   assertFails,
