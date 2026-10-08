@@ -18,6 +18,9 @@ function makeParty(id: string, name: string): Party {
   return {
     id,
     name,
+    contactPerson: 'Manager',
+    phone: '03001234567',
+    address: 'Quetta',
     createdAt: Date.now(),
     updatedAt: Date.now(),
   };
@@ -28,6 +31,9 @@ function makeDispatch(id: string, truckNumber: string, partyId: string): Dispatc
     id,
     partyId,
     truckNumber,
+    factoryName: 'Alpha Factory',
+    targetGcv: 5500,
+    labSulphur: 1,
     date: '2026-10-08',
     coalInputs: [{ id: 'c1', sourceName: 'Mine A', weight: 25, purchaseRate: 20000 }],
     overheads: { loading: 0, freight: 0, crush: 0, royalty: 0, other: 0 },

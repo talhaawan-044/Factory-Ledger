@@ -12,6 +12,9 @@ describe('Phase C: Two-Device Sync Scenarios & Settings Separation (Issues 21, 2
     it('toggling theme does NOT change updatedAt', async () => {
       const initial: AppSettings = {
         businessName: 'Apex Coal',
+        userName: 'Owner',
+        phoneNumber: '03001234567',
+        logoUrl: '',
         theme: 'light',
         taxFormulaSalesPercent: 18,
         taxFormulaIncomePercent: 5,
@@ -37,6 +40,10 @@ describe('Phase C: Two-Device Sync Scenarios & Settings Separation (Issues 21, 2
     it('toggling appLock or pin fields does NOT change updatedAt', async () => {
       const initial: AppSettings = {
         businessName: 'Apex Coal',
+        userName: 'Owner',
+        phoneNumber: '03001234567',
+        logoUrl: '',
+        theme: 'light',
         appLockEnabled: false,
         pinHash: 'abc',
         updatedAt: 2000,
@@ -59,6 +66,10 @@ describe('Phase C: Two-Device Sync Scenarios & Settings Separation (Issues 21, 2
     it('changing business name or tax rates DOES bump updatedAt', async () => {
       const initial: AppSettings = {
         businessName: 'Apex Coal',
+        userName: 'Owner',
+        phoneNumber: '03001234567',
+        logoUrl: '',
+        theme: 'light',
         taxFormulaSalesPercent: 18,
         taxFormulaIncomePercent: 5,
         updatedAt: 1000,
@@ -123,6 +134,9 @@ describe('Phase C: Two-Device Sync Scenarios & Settings Separation (Issues 21, 2
     it('sanitizeForFirestore strips dirty, theme, and PIN fields from upload payload', () => {
       const localSettings: AppSettings = {
         businessName: 'Apex Coal',
+        userName: 'Owner',
+        phoneNumber: '03001234567',
+        logoUrl: '',
         theme: 'dark',
         appLockEnabled: true,
         pinHash: 'secret-hash',
