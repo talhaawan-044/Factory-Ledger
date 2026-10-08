@@ -62,6 +62,9 @@ class SyncManager {
   private state: SyncState;
   private listeners: Set<(state: SyncState) => void> = new Set();
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  private consecutiveFailures = 0;
+  private readonly BACKOFF_DELAYS = [5000, 30000, 120000]; // 5s, 30s, 2min
   private isSyncingBusy = false;
   private queuedSyncRequested = false;
   private initialized = false;
@@ -254,14 +257,17 @@ class SyncManager {
 
     try {
       const localData = await getLedgerForSync();
-      const tombstones = getTombstones();
       const result = await syncLedgerToCloud(user.uid, localData, {
         forceEmptyOverwrite: forceOverwrite,
-        tombstones,
         deltaOnly: !forceOverwrite,
       });
 
       if (result.success) {
+        this.consecutiveFailures = 0;
+        if (this.retryTimer) {
+          clearTimeout(this.retryTimer);
+          this.retryTimer = null;
+        }
         if (typeof localStorage !== 'undefined') {
           localStorage.setItem(STORAGE_KEY_LAST_SYNC, result.timestamp);
         }
@@ -272,9 +278,11 @@ class SyncManager {
           lastError: null,
         });
       } else if (result.protected) {
+        this.consecutiveFailures = 0;
         console.warn('[SyncManager] Empty local storage detected while remote has data. Auto-restoring from cloud...');
         await this.reconcileWithCloud(user.uid);
       } else {
+        this.scheduleBackoffRetry();
         this.updateState({ status: 'error', lastError: result.message || 'Sync failed' });
       }
 
@@ -282,6 +290,7 @@ class SyncManager {
     } catch (err: any) {
       console.error('[SyncManager] Sync error:', err);
       const errorMsg = err?.message || 'Network or permissions error';
+      this.scheduleBackoffRetry();
       this.updateState({ status: 'error', lastError: errorMsg });
       return { success: false, timestamp: new Date().toISOString(), message: errorMsg };
     } finally {
@@ -291,6 +300,17 @@ class SyncManager {
         setTimeout(() => this.executeSync(), 500);
       }
     }
+  }
+
+  private scheduleBackoffRetry() {
+    if (!this.state.isOnline || !this.state.isAutoSyncEnabled) return;
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    const delay = this.BACKOFF_DELAYS[Math.min(this.consecutiveFailures, this.BACKOFF_DELAYS.length - 1)];
+    this.consecutiveFailures++;
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      this.executeSync().catch((e) => console.warn('[SyncManager] Backoff retry error:', e));
+    }, delay);
   }
 
   /**
@@ -363,7 +383,7 @@ class SyncManager {
 
       if (hasCloudChanges) {
         console.log('[SyncManager] Uploading merged local records to Cloud Firestore subcollections...');
-        const syncRes = await syncLedgerToCloud(uid, merged, { tombstones });
+        const syncRes = await syncLedgerToCloud(uid, merged);
         if (syncRes.success) {
           localStorage.setItem(STORAGE_KEY_LAST_SYNC, syncRes.timestamp);
           this.updateState({

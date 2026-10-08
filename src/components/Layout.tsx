@@ -394,29 +394,9 @@ export default function Layout() {
           </div>
         )}
 
-        {/* ── Toast Notification ── */}
+        {/* ── Toast Notification (Issue 28f: Full screen mobile width + centered) ── */}
         {toastMessage && (
-          <div style={{
-            position: 'absolute',
-            top: 56,
-            left: 20,
-            right: 20,
-            zIndex: 99,
-            background: 'rgba(28, 28, 30, 0.92)',
-            color: '#FFFFFF',
-            padding: '10px 20px',
-            borderRadius: 20,
-            fontSize: 14,
-            fontWeight: 500,
-            textAlign: 'center',
-            boxShadow: '0 8px 24px rgba(0,0,0,0.3)',
-            backdropFilter: 'blur(20px)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: 8,
-            animation: 'fadeIn 0.2s ease'
-          }}>
+          <div className="ios-toast-banner">
             <Check style={{ width: 16, height: 16, color: 'var(--ios-green)' }} strokeWidth={3} />
             <span>{toastMessage}</span>
           </div>

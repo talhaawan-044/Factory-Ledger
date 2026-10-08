@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
-    "test": "vitest run",
+    "test": "vitest run --exclude 'tests/rules/**'",
+    "test:rules": "firebase emulators:exec --only firestore --project demo-factory-ledger \"vitest run tests/rules\"",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -33,6 +34,7 @@
     "uuid": "^14.0.2"
   },
   "devDependencies": {
+    "@firebase/rules-unit-testing": "^5.0.2",
     "@tailwindcss/postcss": "^4.3.3",
     "@types/node": "^24.13.3",
     "@types/react": "^19.2.18",
@@ -41,6 +43,7 @@
     "@vitejs/plugin-react": "^6.1.1",
     "autoprefixer": "^10.6.1",
     "fake-indexeddb": "^6.2.5",
+    "firebase-tools": "^15.33.0",
     "happy-dom": "^20.14.5",
     "oxlint": "^1.81.0",
     "postcss": "^8.5.28",

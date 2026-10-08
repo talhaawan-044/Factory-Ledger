@@ -6,6 +6,7 @@ import { getCurrencySymbol, formatAmountNumber } from '../utils/currency';
 import { playPopSound, playSuccessSound } from '../utils/delight';
 import { DispatchReceipt } from './DispatchReceipt';
 import { shareReceiptImage } from '../utils/exportSharing';
+import { formatDisplayDate } from '../utils/dateUtils';
 import { Capacitor } from '@capacitor/core';
 import { Share } from '@capacitor/share';
 import {
@@ -98,7 +99,7 @@ export default function DispatchPreviewModal({
 *OFFICIAL SETTLEMENT SLIP*
 ----------------------------------------
 *Truck No:* ${dispatch.truckNumber}
-*Date:* ${dispatch.date}
+*Date:* ${formatDisplayDate(dispatch.date)}
 *Party:* ${targetParty?.name || dispatch.factoryName || 'Factory Client'}
 ${poObj ? `*PO Number:* ${poObj.poNumber}\n` : ''}*Received Weight:* ${dispatch.labReceivedWeight || 0} Tons
 
@@ -204,7 +205,7 @@ ${dispatch.notes ? `*Remarks:* ${dispatch.notes}\n\n` : ''}✓ E-Verified Dispat
               <div>
                 <div style={{ fontSize: 13, color: 'var(--label-secondary)', textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 600 }}>Truck Number</div>
                 <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--label-primary)', marginTop: 2 }}>{dispatch.truckNumber}</div>
-                <div style={{ fontSize: 14, color: 'var(--label-secondary)', marginTop: 4 }}>Date: {dispatch.date}</div>
+                <div style={{ fontSize: 14, color: 'var(--label-secondary)', marginTop: 4 }}>Date: {formatDisplayDate(dispatch.date)}</div>
               </div>
               <div style={{ textAlign: 'right' }}>
                 <div style={{ fontSize: 13, color: 'var(--label-secondary)', textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 600 }}>
@@ -443,7 +444,7 @@ ${dispatch.notes ? `*Remarks:* ${dispatch.notes}\n\n` : ''}✓ E-Verified Dispat
                   Share Dispatch Receipt
                 </div>
                 <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--label-primary)', marginTop: 2 }}>
-                  {dispatch.truckNumber} · {dispatch.date}
+                  {dispatch.truckNumber} · {formatDisplayDate(dispatch.date)}
                 </div>
               </div>
 
@@ -546,30 +547,9 @@ ${dispatch.notes ? `*Remarks:* ${dispatch.notes}\n\n` : ''}✓ E-Verified Dispat
         />
       </div>
 
-      {/* Floating Feedback Toast */}
+      {/* Floating Feedback Toast (Issue 28f: Full screen mobile width + centered) */}
       {toastMsg && (
-        <div
-          style={{
-            position: 'fixed',
-            bottom: 'calc(24px + env(safe-area-inset-bottom, 0px))',
-            left: '50%',
-            transform: 'translateX(-50%)',
-            background: 'rgba(30, 30, 30, 0.92)',
-            color: '#fff',
-            padding: '10px 18px',
-            borderRadius: 24,
-            fontSize: 14,
-            fontWeight: 600,
-            zIndex: 100002,
-            backdropFilter: 'blur(20px)',
-            WebkitBackdropFilter: 'blur(20px)',
-            boxShadow: '0 8px 30px rgba(0,0,0,0.3)',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 8,
-            animation: 'slideUp 0.25s cubic-bezier(0.16, 1, 0.3, 1)'
-          }}
-        >
+        <div className="ios-toast-banner">
           <CheckCircle2 size={16} color="var(--ios-green)" />
           <span>{toastMsg}</span>
         </div>

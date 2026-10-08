@@ -16,7 +16,11 @@ import {
   List,
   LayoutGrid,
   Phone,
-  PhoneCall
+  PhoneCall,
+  ArchiveRestore,
+  ArrowDown,
+  ArrowUp,
+  Check
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import PartyModalSheet from '../components/PartyModalSheet';
@@ -85,6 +89,14 @@ export default function PartiesList() {
   const [partyToDelete, setPartyToDelete] = useState<Party | null>(null);
   const [showCascadeConfirm, setShowCascadeConfirm] = useState(false);
   const [tabFilter, setTabFilter] = useState<'active' | 'archived'>('active');
+  const [sortBy, setSortBy] = useState<'latest_entry' | 'name' | 'highest_due' | 'highest_adv'>('latest_entry');
+  const [sortOrder, setSortOrder] = useState<'desc' | 'asc'>('desc');
+  const [toastMsg, setToastMsg] = useState<string | null>(null);
+
+  const showToast = (msg: string) => {
+    setToastMsg(msg);
+    setTimeout(() => setToastMsg(null), 2500);
+  };
 
   const handleViewModeChange = (mode: 'list' | 'grid') => {
     setViewMode(mode);
@@ -102,6 +114,7 @@ export default function PartiesList() {
     await archiveParty(party.id, archiveState);
     playPopSound();
     setPartyToDelete(null);
+    showToast(archiveState ? 'Party archived' : 'Party un-archived successfully');
     refreshData();
   };
 
@@ -122,9 +135,53 @@ export default function PartiesList() {
     }
   };
 
-  // Filter parties by search and category
+  // Map metadata (latest activity timestamp, balance, profit) for efficient sorting
+  const partyMetadataMap = useMemo(() => {
+    const map = new Map<string, {
+      latestEntryTime: number;
+      outstandingBalance: number;
+      totalProfit: number;
+      dispatchCount: number;
+    }>();
+
+    parties.forEach((party) => {
+      const pDispatches = dispatches.filter((d) =>
+        d.partyId === party.id || (!d.partyId && d.factoryName?.trim().toLowerCase() === party.name.trim().toLowerCase())
+      );
+      const pPayments = payments.filter((p) =>
+        p.partyId === party.id || (!p.partyId && (p as any).partyName?.trim().toLowerCase() === party.name.trim().toLowerCase())
+      );
+
+      let latestTime = party.createdAt || 0;
+      pDispatches.forEach((d) => {
+        const t = d.date ? new Date(d.date).getTime() : 0;
+        const ct = d.createdAt || 0;
+        const best = Math.max(t, ct);
+        if (best > latestTime) latestTime = best;
+      });
+      pPayments.forEach((p) => {
+        const t = p.date ? new Date(p.date).getTime() : 0;
+        const ct = p.createdAt || 0;
+        const best = Math.max(t, ct);
+        if (best > latestTime) latestTime = best;
+      });
+
+      const balanceResult = calculatePartyBalance(pDispatches, pPayments);
+
+      map.set(party.id, {
+        latestEntryTime: latestTime,
+        outstandingBalance: balanceResult.outstandingBalance,
+        totalProfit: balanceResult.totalProfit,
+        dispatchCount: pDispatches.length
+      });
+    });
+
+    return map;
+  }, [parties, dispatches, payments]);
+
+  // Filter and sort parties
   const filteredParties = useMemo(() => {
-    return parties.filter((p) => {
+    const result = parties.filter((p) => {
       const isArchived = Boolean(p.isArchived);
       if (tabFilter === 'archived' ? !isArchived : isArchived) return false;
 
@@ -140,7 +197,32 @@ export default function PartiesList() {
 
       return true;
     });
-  }, [parties, searchQuery, tabFilter]);
+
+    return result.sort((a, b) => {
+      const metaA = partyMetadataMap.get(a.id);
+      const metaB = partyMetadataMap.get(b.id);
+      let diff = 0;
+
+      if (sortBy === 'latest_entry') {
+        const timeA = metaA?.latestEntryTime || 0;
+        const timeB = metaB?.latestEntryTime || 0;
+        diff = timeB - timeA;
+      } else if (sortBy === 'name') {
+        diff = a.name.localeCompare(b.name);
+        return sortOrder === 'asc' ? diff : -diff;
+      } else if (sortBy === 'highest_due') {
+        const dueA = metaA?.outstandingBalance || 0;
+        const dueB = metaB?.outstandingBalance || 0;
+        diff = dueB - dueA;
+      } else if (sortBy === 'highest_adv') {
+        const advA = (metaA?.outstandingBalance ?? 0) < 0 ? Math.abs(metaA!.outstandingBalance) : -1;
+        const advB = (metaB?.outstandingBalance ?? 0) < 0 ? Math.abs(metaB!.outstandingBalance) : -1;
+        diff = advB - advA;
+      }
+
+      return sortOrder === 'desc' ? diff : -diff;
+    });
+  }, [parties, searchQuery, tabFilter, sortBy, sortOrder, partyMetadataMap]);
 
   if (loading) {
     return (
@@ -152,6 +234,14 @@ export default function PartiesList() {
 
   return (
     <div className="ios-fade-in" style={{ paddingBottom: 32 }}>
+      {/* ── Toast Notification (Issue 28f: Full screen mobile width + centered) ── */}
+      {toastMsg && (
+        <div className="ios-toast-banner">
+          <Check style={{ width: 16, height: 16, color: 'var(--ios-green)' }} strokeWidth={3} />
+          <span>{toastMsg}</span>
+        </div>
+      )}
+
       {/* ── iOS Navigation Header with Large Title ── */}
       <div className="ios-large-header">
         <div className="ios-large-subtitle">{parties.length} ACCOUNTS</div>
@@ -232,14 +322,15 @@ export default function PartiesList() {
         </div>
       </div>
 
-      {/* ── Categories & Persistent View Switcher Bar ── */}
+      {/* ── Categories, Sorting & Persistent View Switcher Bar ── */}
       <div
         style={{
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
           padding: '0 16px 14px',
-          gap: 10
+          gap: 8,
+          flexWrap: 'wrap'
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -250,7 +341,7 @@ export default function PartiesList() {
               setTabFilter('active');
             }}
             style={{
-              padding: '4px 10px',
+              padding: '5px 10px',
               borderRadius: 8,
               border: 'none',
               fontSize: 12,
@@ -270,7 +361,7 @@ export default function PartiesList() {
                 setTabFilter('archived');
               }}
               style={{
-                padding: '4px 10px',
+                padding: '5px 10px',
                 borderRadius: 8,
                 border: 'none',
                 fontSize: 12,
@@ -285,18 +376,78 @@ export default function PartiesList() {
           )}
         </div>
 
-        {/* Persistent List vs Grid Switcher */}
-        <div
-          style={{
-            display: 'flex',
-            background: 'var(--fill-primary)',
-            padding: 3,
-            borderRadius: 10,
-            gap: 2,
-            flexShrink: 0
-          }}
-        >
-          <button
+        {/* Right side: Sorting controls + View Switcher */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          {/* Sorting button and asc/desc toggle */}
+          <div
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              background: 'var(--fill-primary)',
+              borderRadius: 9,
+              padding: '2px 4px',
+              gap: 2
+            }}
+          >
+            <select
+              value={sortBy}
+              onChange={(e) => {
+                playPopSound();
+                setSortBy(e.target.value as any);
+              }}
+              style={{
+                border: 'none',
+                background: 'transparent',
+                color: 'var(--label-primary)',
+                fontSize: 12,
+                fontWeight: 600,
+                padding: '4px 4px',
+                outline: 'none',
+                cursor: 'pointer'
+              }}
+              aria-label="Sort Parties"
+            >
+              <option value="latest_entry">Latest Entry</option>
+              <option value="name">Name</option>
+              <option value="highest_due">Highest Due</option>
+              <option value="highest_adv">Highest Advance</option>
+            </select>
+
+            <button
+              type="button"
+              onClick={() => {
+                playPopSound();
+                setSortOrder((prev) => (prev === 'desc' ? 'asc' : 'desc'));
+              }}
+              title={sortOrder === 'desc' ? 'Descending order' : 'Ascending order'}
+              style={{
+                border: 'none',
+                background: 'transparent',
+                color: 'var(--label-primary)',
+                padding: '4px 6px',
+                borderRadius: 6,
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center'
+              }}
+            >
+              {sortOrder === 'desc' ? <ArrowDown size={14} /> : <ArrowUp size={14} />}
+            </button>
+          </div>
+
+          {/* Persistent List vs Grid Switcher */}
+          <div
+            style={{
+              display: 'flex',
+              background: 'var(--fill-primary)',
+              padding: 3,
+              borderRadius: 10,
+              gap: 2,
+              flexShrink: 0
+            }}
+          >
+            <button
             onClick={() => {
               playPopSound();
               handleViewModeChange('list');
@@ -343,6 +494,7 @@ export default function PartiesList() {
           </button>
         </div>
       </div>
+    </div>
 
       {/* ── View 1: List View (Apple Grouped Inset) ── */}
       {viewMode === 'list' && (
@@ -447,8 +599,34 @@ export default function PartiesList() {
                           </div>
                         </div>
 
-                        {/* Top Actions: Delete + Chevron */}
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 2, flexShrink: 0, marginTop: -2 }}>
+                        {/* Top Actions: Unarchive / Delete + Chevron */}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0, marginTop: -2 }}>
+                          {party.isArchived && (
+                            <button
+                              onClick={async (e) => {
+                                e.stopPropagation();
+                                playPopSound();
+                                await handleArchiveParty(party, false);
+                              }}
+                              style={{
+                                background: 'rgba(0, 122, 255, 0.12)',
+                                border: 'none',
+                                padding: '4px 8px',
+                                color: 'var(--ios-blue)',
+                                cursor: 'pointer',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: 4,
+                                borderRadius: 8,
+                                fontSize: 11.5,
+                                fontWeight: 600
+                              }}
+                              title="Unarchive Party"
+                            >
+                              <ArchiveRestore style={{ width: 14, height: 14 }} />
+                              <span>Unarchive</span>
+                            </button>
+                          )}
                           <button
                             onClick={(e) => handleDelete(e, party)}
                             style={{
@@ -462,7 +640,7 @@ export default function PartiesList() {
                               justifyContent: 'center',
                               borderRadius: 8
                             }}
-                            title="Delete Party"
+                            title={party.isArchived ? 'Manage Party' : 'Delete Party'}
                           >
                             <Trash2 style={{ width: 16, height: 16 }} />
                           </button>
@@ -660,7 +838,7 @@ export default function PartiesList() {
                     className="ios-metric-widget"
                   >
                     <div>
-                      {/* Top Header: Business Glyph & Call */}
+                      {/* Top Header: Business Glyph, Unarchive & Call */}
                       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
                         <PartyGlyph
                           name={party.name}
@@ -669,26 +847,56 @@ export default function PartiesList() {
                           iconSize={18}
                         />
 
-                        {party.phone && (
-                          <a
-                            href={`tel:${party.phone}`}
-                            onClick={(e) => e.stopPropagation()}
-                            style={{
-                              width: 28,
-                              height: 28,
-                              borderRadius: '50%',
-                              background: 'var(--ios-green)',
-                              color: 'white',
-                              display: 'flex',
-                              alignItems: 'center',
-                              justifyContent: 'center',
-                              textDecoration: 'none'
-                            }}
-                            title={`Call ${party.phone}`}
-                          >
-                            <Phone style={{ width: 13, height: 13 }} />
-                          </a>
-                        )}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                          {party.isArchived && (
+                            <button
+                              type="button"
+                              onClick={async (e) => {
+                                e.stopPropagation();
+                                playPopSound();
+                                await handleArchiveParty(party, false);
+                              }}
+                              style={{
+                                border: 'none',
+                                background: 'rgba(0, 122, 255, 0.12)',
+                                color: 'var(--ios-blue)',
+                                borderRadius: 7,
+                                padding: '3px 7px',
+                                fontSize: 11,
+                                fontWeight: 600,
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: 3,
+                                cursor: 'pointer'
+                              }}
+                              title="Unarchive Party"
+                            >
+                              <ArchiveRestore size={12} />
+                              <span>Unarchive</span>
+                            </button>
+                          )}
+
+                          {party.phone && (
+                            <a
+                              href={`tel:${party.phone}`}
+                              onClick={(e) => e.stopPropagation()}
+                              style={{
+                                width: 28,
+                                height: 28,
+                                borderRadius: '50%',
+                                background: 'var(--ios-green)',
+                                color: 'white',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                textDecoration: 'none'
+                              }}
+                              title={`Call ${party.phone}`}
+                            >
+                              <Phone style={{ width: 13, height: 13 }} />
+                            </a>
+                          )}
+                        </div>
                       </div>
 
                       {/* Party Name */}
@@ -821,11 +1029,10 @@ export default function PartiesList() {
       <IOSConfirmModal
         isOpen={Boolean(pendingDuplicateParty)}
         title="Duplicate Party Name?"
-        message={`A party named "${pendingDuplicateParty?.existingParty.name}" already exists (${
-          pendingDuplicateParty?.existingParty.phone ||
+        message={`A party named "${pendingDuplicateParty?.existingParty.name}" already exists (${pendingDuplicateParty?.existingParty.phone ||
           pendingDuplicateParty?.existingParty.address ||
           'Existing account'
-        }). Do you want to create another party with the exact same name? We recommend adding a location or plant name (e.g. "${pendingDuplicateParty?.newParty.name} - Plant 2") to avoid ledger confusion.`}
+          }). Do you want to create another party with the exact same name? We recommend adding a location or plant name (e.g. "${pendingDuplicateParty?.newParty.name} - Plant 2") to avoid ledger confusion.`}
         confirmText="Create Duplicate"
         cancelText="Go Back & Edit"
         destructive={false}
@@ -870,13 +1077,29 @@ export default function PartiesList() {
           );
         }
 
+        if (partyToDelete.isArchived) {
+          return (
+            <IOSConfirmModal
+              isOpen={Boolean(partyToDelete)}
+              title="Archived Party"
+              message={`"${partyToDelete.name}" is currently archived. Would you like to unarchive it to restore it to the active parties list?`}
+              confirmText="Unarchive Party"
+              cancelText="Close"
+              destructive={false}
+              countdownSeconds={0}
+              onConfirm={() => handleArchiveParty(partyToDelete, false)}
+              onCancel={() => setPartyToDelete(null)}
+            />
+          );
+        }
+
         if (hasRecords) {
           return (
             <IOSConfirmModal
               isOpen={Boolean(partyToDelete)}
               title="Party Has Existing Records"
-              message={`"${partyToDelete.name}" has ${cDisp} dispatch(es) and ${cPay} payment(s). Deleting the party alone leaves orphaned transactions that distort dashboard figures. We recommend Archiving the party to keep financial ledger records safe.`}
-              confirmText="Archive Party (Recommended)"
+              message={`"${partyToDelete.name}" has ${cDisp} dispatch(es) and ${cPay} payment(s). You can't delete this party because it has existing records. To Delete the party you have to delete all the records first, Right now you can archive the party only.`}
+              confirmText="Archive Party"
               cancelText="Cancel"
               destructive={false}
               icon="warning"

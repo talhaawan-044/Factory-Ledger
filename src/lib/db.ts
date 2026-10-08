@@ -783,8 +783,12 @@ export async function getSettings(): Promise<AppSettings> {
   }
 }
 
+export const DEVICE_SETTINGS_KEYS = ['theme', 'appLockEnabled', 'pinHash', 'pinLength', 'lockTimeout'] as const;
+
 export async function saveSettings(settings: AppSettings): Promise<void> {
-  const updatedSettings: AppSettings = {
+  const prev = cachedSettings ?? (typeof localStorage !== 'undefined' && localStorage.getItem(SETTINGS_KEY) ? JSON.parse(localStorage.getItem(SETTINGS_KEY)!) : null);
+
+  const normalized: AppSettings = {
     ...settings,
     numberFormat: settings.numberFormat || 'million',
     taxFormulaSalesPercent: typeof settings.taxFormulaSalesPercent === 'number' ? settings.taxFormulaSalesPercent : 18,
@@ -793,7 +797,25 @@ export async function saveSettings(settings: AppSettings): Promise<void> {
     pinHash: settings.pinHash || '',
     pinLength: typeof settings.pinLength === 'number' ? settings.pinLength : (settings.pinHash ? 4 : 5),
     lockTimeout: typeof settings.lockTimeout === 'number' ? settings.lockTimeout : 0,
-    updatedAt: Date.now(),
+  };
+
+  const sharedChanged = Boolean(
+    prev &&
+    Object.keys({ ...prev, ...normalized }).some((k) => {
+      if ((DEVICE_SETTINGS_KEYS as readonly string[]).includes(k as any) || k === 'updatedAt') {
+        return false;
+      }
+      return JSON.stringify((prev as any)[k]) !== JSON.stringify((normalized as any)[k]);
+    })
+  );
+
+  const updatedSettings: AppSettings = {
+    ...normalized,
+    updatedAt: !prev
+      ? (settings.updatedAt ?? Date.now())
+      : sharedChanged
+      ? Date.now()
+      : (prev.updatedAt ?? settings.updatedAt ?? Date.now()),
   };
   cachedSettings = updatedSettings;
   writeStorageOrThrow(SETTINGS_KEY, JSON.stringify(updatedSettings));
@@ -1295,9 +1317,10 @@ export function mergeLedgerData(
     }
   }
 
-  // Always protect current device security credentials during merge
+  // Always protect current device security credentials and local theme preference during merge
   mergedSettings = {
     ...mergedSettings,
+    theme: local.settings?.theme ?? 'light',
     appLockEnabled: local.settings?.appLockEnabled ?? false,
     pinHash: local.settings?.pinHash ?? '',
     pinLength: local.settings?.pinLength ?? 5,

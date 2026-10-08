@@ -9,7 +9,9 @@ import {
     Truck,
     Search,
     ChevronRight,
-    ArrowUpRight
+    ArrowUpRight,
+    ArrowDown,
+    ArrowUp
 } from 'lucide-react';
 import { playPopSound, triggerConfetti } from '../utils/delight';
 import ExportLedgerDropdown from '../components/ExportLedgerDropdown';
@@ -30,6 +32,8 @@ export default function AllEntries() {
     const [selectedPoId, setSelectedPoId] = useState<string>('all');
     const [dateFrom, setDateFrom] = useState('');
     const [dateTo, setDateTo] = useState('');
+    const [sortBy, setSortBy] = useState<'date' | 'truck' | 'weight' | 'revenue'>('date');
+    const [sortOrder, setSortOrder] = useState<'desc' | 'asc'>('desc');
 
     const loadEntries = () => {
         Promise.all([getDispatches(), getParties(), getPurchaseOrders(), getSettings()]).then(([d, p, posData, s]) => {
@@ -51,10 +55,10 @@ export default function AllEntries() {
 
     // Filtered entries
     const filteredDispatches = useMemo(() => {
-        return dispatches.filter((d) => {
+        const result = dispatches.filter((d) => {
             const party = parties.find((p) => p.id === d.partyId);
             const po = pos.find(p => p.id === d.poId);
-            const settlement = calculateSettlement(d);
+            const settlement = calculateSettlement(d, settings);
 
             // Search match
             const q = searchQuery.toLowerCase();
@@ -86,7 +90,28 @@ export default function AllEntries() {
 
             return matchSearch && matchParty && matchPo && matchDate && matchStatus;
         });
-    }, [dispatches, parties, pos, searchQuery, activeFilter, selectedPartyId, selectedPoId, dateFrom, dateTo]);
+
+        return result.sort((a, b) => {
+            let diff = 0;
+            if (sortBy === 'date') {
+                const timeA = a.date ? new Date(a.date).getTime() : 0;
+                const timeB = b.date ? new Date(b.date).getTime() : 0;
+                diff = timeB - timeA;
+            } else if (sortBy === 'truck') {
+                diff = (a.truckNumber || '').localeCompare(b.truckNumber || '');
+                return sortOrder === 'asc' ? diff : -diff;
+            } else if (sortBy === 'weight') {
+                const wA = a.labReceivedWeight || a.coalInputs?.[0]?.weight || 0;
+                const wB = b.labReceivedWeight || b.coalInputs?.[0]?.weight || 0;
+                diff = wB - wA;
+            } else if (sortBy === 'revenue') {
+                const rA = calculateSettlement(a, settings).totalRevenue;
+                const rB = calculateSettlement(b, settings).totalRevenue;
+                diff = rB - rA;
+            }
+            return sortOrder === 'desc' ? diff : -diff;
+        });
+    }, [dispatches, parties, pos, settings, searchQuery, activeFilter, selectedPartyId, selectedPoId, dateFrom, dateTo, sortBy, sortOrder]);
 
     // Live Aggregations for Filtered Dispatches using unified calculateLedgerTotals (Issue 20)
     const ledgerTotals = useMemo(() => {
@@ -229,9 +254,9 @@ export default function AllEntries() {
                 </div>
             </div>
 
-            {/* ── iOS Segmented Filter Control (Profit/Loss) ── */}
-            <div style={{ padding: '0 16px 10px' }}>
-                <div className="ios-segmented">
+            {/* ── iOS Segmented Filter Control (Profit/Loss) & Sort Controls ── */}
+            <div style={{ padding: '0 16px 10px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+                <div className="ios-segmented" style={{ flex: 1, minWidth: 200 }}>
                     <button
                         className={`ios-segmented-item ${activeFilter === 'all' ? 'active' : ''}`}
                         onClick={() => { playPopSound(); setActiveFilter('all'); }}
@@ -249,6 +274,64 @@ export default function AllEntries() {
                         onClick={() => { playPopSound(); setActiveFilter('loss'); }}
                     >
                         Loss
+                    </button>
+                </div>
+
+                {/* Sort selector and toggle arrow */}
+                <div
+                    style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        background: 'var(--fill-primary)',
+                        borderRadius: 9,
+                        padding: '2px 4px',
+                        gap: 2
+                    }}
+                >
+                    <select
+                        value={sortBy}
+                        onChange={(e) => {
+                            playPopSound();
+                            setSortBy(e.target.value as any);
+                        }}
+                        style={{
+                            border: 'none',
+                            background: 'transparent',
+                            color: 'var(--label-primary)',
+                            fontSize: 12,
+                            fontWeight: 600,
+                            padding: '4px 4px',
+                            outline: 'none',
+                            cursor: 'pointer'
+                        }}
+                        aria-label="Sort Dispatches"
+                    >
+                        <option value="date">Date</option>
+                        <option value="truck">Truck</option>
+                        <option value="weight">Weight</option>
+                        <option value="revenue">Revenue</option>
+                    </select>
+
+                    <button
+                        type="button"
+                        onClick={() => {
+                            playPopSound();
+                            setSortOrder((prev) => (prev === 'desc' ? 'asc' : 'desc'));
+                        }}
+                        title={sortOrder === 'desc' ? 'Descending order' : 'Ascending order'}
+                        style={{
+                            border: 'none',
+                            background: 'transparent',
+                            color: 'var(--label-primary)',
+                            padding: '4px 6px',
+                            borderRadius: 6,
+                            cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center'
+                        }}
+                    >
+                        {sortOrder === 'desc' ? <ArrowDown size={14} /> : <ArrowUp size={14} />}
                     </button>
                 </div>
             </div>
@@ -457,9 +540,10 @@ export default function AllEntries() {
                             const settlement = calculateSettlement(dispatch, settings);
                             const isProfit = settlement.netProfit >= 0;
 
-                            const dateObj = new Date(dispatch.date);
-                            const monthStr = dateObj.toLocaleDateString('en-US', { month: 'short' }).toUpperCase();
-                            const dayStr = dateObj.getDate();
+                            const dateParts = (dispatch.date || '').split('-');
+                            const monthNames = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+                            const monthStr = dateParts.length === 3 ? (monthNames[parseInt(dateParts[1], 10) - 1] || '---') : '---';
+                            const dayStr = dateParts.length === 3 ? parseInt(dateParts[2], 10) : '--';
 
                             return (
                                 <div

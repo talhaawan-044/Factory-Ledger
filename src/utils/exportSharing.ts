@@ -5,8 +5,8 @@ import type ExcelJS from 'exceljs';
 import type { Dispatch, Party, Payment, PurchaseOrder, AppSettings } from '../types';
 import { calculateSettlement, calculatePartyBalance, calculateTransitLoss, calculateLedgerTotals, isDispatchPending } from './calculations';
 import { getSettings, getExportBackupData } from '../lib/db';
+import { getTodayDateString, formatDisplayDate } from './dateUtils';
 import { getCurrencySymbol, formatAmountNumber, getCurrencyExcelFormat } from './currency';
-import { getTodayDateString } from './dateUtils';
 
 // On-demand dynamic loaders for heavy export engines (Issue 15: Bundle Performance)
 async function loadHtml2Canvas() {
@@ -143,7 +143,7 @@ export async function shareReceiptImage(
     fileName,
     mimeType: 'image/png',
     title: `Receipt - ${dispatch.truckNumber || 'Dispatch'}`,
-    text: `Coal Dispatch Settlement Receipt for ${dispatch.truckNumber} delivered to ${partyName} on ${dispatch.date}.`,
+    text: `Coal Dispatch Settlement Receipt for ${dispatch.truckNumber} delivered to ${partyName} on ${formatDisplayDate(dispatch.date)}.`,
     dialogTitle: 'Share Dispatch Receipt',
   });
 }
@@ -181,7 +181,7 @@ export async function sharePaymentImage(
     fileName,
     mimeType: 'image/png',
     title: `Payment Voucher - ${party?.name || 'Voucher'}`,
-    text: `Official Payment Voucher for ${party?.name || 'Party'}: ${curSym} ${formattedAmt} (${payment.mode.toUpperCase()}) on ${payment.date}.`,
+    text: `Official Payment Voucher for ${party?.name || 'Party'}: ${curSym} ${formattedAmt} (${payment.mode.toUpperCase()}) on ${formatDisplayDate(payment.date)}.`,
     dialogTitle: 'Share Payment Voucher',
   });
 }
@@ -251,7 +251,7 @@ export function buildPartyStatementData(
 
       rows.push({
         index: idx + 1,
-        date: d.date || '-',
+        date: formatDisplayDate(d.date) || '-',
         kind: 'dispatch',
         reference: po?.poNumber || d.truckNumber || '-',
         description: `Coal Dispatch Delivery (${d.truckNumber || 'Truck'})`,
@@ -275,7 +275,7 @@ export function buildPartyStatementData(
 
       rows.push({
         index: idx + 1,
-        date: p.date || '-',
+        date: formatDisplayDate(p.date) || '-',
         kind: 'payment',
         reference: (p.id || '').slice(0, 8).toUpperCase(),
         description: `Payment ${isReceived ? 'Credit / Received' : 'Debit / Outflow'} (${p.mode.toUpperCase()})`,
@@ -360,7 +360,7 @@ export function buildFleetExportData(
     return {
       index: index + 1,
       id: d.id,
-      date: d.date || '-',
+      date: formatDisplayDate(d.date) || '-',
       truckNumber: d.truckNumber || '-',
       partyName: party?.name || d.factoryName || 'Direct',
       poNumber: po?.poNumber || '-',
@@ -498,7 +498,7 @@ async function exportPartyStatementPdf(options: ExportDispatchesPdfOptions & { s
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(8);
   doc.setTextColor(100, 116, 139);
-  doc.text(`Date: ${new Date().toLocaleDateString('en-PK', { day: '2-digit', month: 'short', year: 'numeric' })}`, pageWidth - margin, 23, { align: 'right' });
+  doc.text(`Date: ${formatDisplayDate(new Date())}`, pageWidth - margin, 23, { align: 'right' });
 
   // Divider
   doc.setDrawColor(226, 232, 240);
@@ -662,7 +662,7 @@ async function exportPartyStatementPdf(options: ExportDispatchesPdfOptions & { s
 
       tableRows.push([
         (idx + 1).toString(),
-        d.date || '-',
+        formatDisplayDate(d.date) || '-',
         lines.join('\n'),
         po?.poNumber || '-',
         (d.labReceivedWeight || 0).toFixed(2),
@@ -688,7 +688,7 @@ async function exportPartyStatementPdf(options: ExportDispatchesPdfOptions & { s
 
       tableRows.push([
         (idx + 1).toString(),
-        p.date || '-',
+        formatDisplayDate(p.date) || '-',
         pLines.join('\n'),
         (p.id || '').slice(0, 8).toUpperCase(),
         '-',
@@ -986,7 +986,7 @@ async function exportFleetAuditPdf(options: ExportDispatchesPdfOptions & { setti
     partyName ? `Party: ${partyName}` : null,
     dateRange ? `Period: ${dateRange}` : null,
     subtitle ? subtitle : null,
-    `Generated: ${new Date().toLocaleDateString('en-PK', { day: '2-digit', month: 'short', year: 'numeric' })}`,
+    `Generated: ${formatDisplayDate(new Date())}`,
     `Total Dispatches: ${dispatches.length}${ledgerTotals.pendingCount > 0 ? ` (${ledgerTotals.settledCount} Settled, ${ledgerTotals.pendingCount} In-Transit)` : ''}`,
   ].filter(Boolean);
   doc.text(metaParts.join('   •   '), margin, 35);
@@ -1048,7 +1048,7 @@ async function exportFleetAuditPdf(options: ExportDispatchesPdfOptions & { setti
     // Line 1: Primary logistics & commercial settlement numbers
     const row1 = [
       { content: (index + 1).toString(), rowSpan: 3 },
-      d.date || '-',
+      formatDisplayDate(d.date) || '-',
       d.truckNumber || '-',
       party?.name || d.factoryName || '-',
       po?.poNumber || '-',
@@ -1629,7 +1629,7 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
 
     wsStatement.mergeCells('F5:J5');
     const rh5 = wsStatement.getCell('F5');
-    rh5.value = `As of ${new Date().toLocaleDateString('en-PK', { day: '2-digit', month: 'short', year: 'numeric' })}`;
+    rh5.value = `As of ${formatDisplayDate(new Date())}`;
     rh5.font = { name: 'Calibri', size: 12, bold: true, color: { argb: XL_PALETTE.TEXT_BLUE } };
     rh5.alignment = { vertical: 'middle', horizontal: 'right' };
 
@@ -1756,7 +1756,7 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
 
         row.values = [
           idx + 1,
-          d.date || '-',
+          formatDisplayDate(d.date) || '-',
           `Coal Dispatch Delivery (${d.truckNumber || 'Truck'})`,
           po?.poNumber || d.truckNumber || '-',
           d.labReceivedWeight || 0,
@@ -1811,7 +1811,7 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
 
         row.values = [
           idx + 1,
-          p.date || '-',
+          formatDisplayDate(p.date) || '-',
           isRec ? `Payment Received (${p.mode.toUpperCase()})` : `Payment Outflow (${p.mode.toUpperCase()})`,
           p.referenceNote || (p.id || '').slice(0, 8).toUpperCase(),
           null,
@@ -2064,7 +2064,7 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
 
       row.values = [
         idx + 1,
-        d.date || '-',
+        formatDisplayDate(d.date) || '-',
         d.truckNumber || '-',
         po?.poNumber || '-',
         transit.totalLoadedWeight || 0,
@@ -2287,7 +2287,7 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
 
         row.values = [
           idx + 1,
-          p.date || '-',
+          formatDisplayDate(p.date) || '-',
           (p.id || '').slice(0, 8).toUpperCase(),
           isRec ? 'Payment Received (Inflow)' : 'Payment Disbursed (Outflow)',
           p.mode.toUpperCase(),
@@ -2489,7 +2489,7 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
 
       row.values = [
         idx + 1,
-        d.date || '-',
+        formatDisplayDate(d.date) || '-',
         d.truckNumber || '-',
         p?.name || d.factoryName || '-',
         po?.poNumber || '-',
@@ -2700,7 +2700,7 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
 
       row.values = [
         idx + 1,
-        d.date || '-',
+        formatDisplayDate(d.date) || '-',
         d.truckNumber || '-',
         p?.name || d.factoryName || '-',
         isPending ? 0 : (d.labReceivedWeight || 0),

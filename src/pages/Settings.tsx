@@ -798,28 +798,9 @@ export default function Settings() {
 
   return (
     <div className="ios-fade-in" style={{ paddingBottom: 48 }}>
-      {/* Toast Notification */}
+      {/* Toast Notification (Issue 28f: Full screen mobile width + centered) */}
       {toastMessage && (
-        <div
-          style={{
-            position: 'fixed',
-            top: '4%',
-            left: '50%',
-            transform: 'translate(-50%)',
-            background: 'var(--bg-elevated, #1C1D24)',
-            color: 'var(--label-primary, #FFFFFF)',
-            padding: '10px 20px',
-            borderRadius: 24,
-            fontSize: 14,
-            fontWeight: 600,
-            zIndex: 9999,
-            boxShadow: '0 8px 24px rgba(0,0,0,0.3)',
-            border: '0.5px solid var(--separator-opaque, rgba(255,255,255,0.15))',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 8,
-          }}
-        >
+        <div className="ios-toast-banner">
           <Check size={16} strokeWidth={3} style={{ color: 'var(--ios-green)' }} />
           <span>{toastMessage}</span>
         </div>

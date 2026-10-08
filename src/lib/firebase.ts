@@ -25,11 +25,15 @@ import {
   serverTimestamp,
   updateDoc,
   deleteField,
+  query,
+  where,
   type DocumentReference,
 } from 'firebase/firestore';
 import { Capacitor } from '@capacitor/core';
 import { FirebaseAuthentication } from '@capacitor-firebase/authentication';
-import { markRecordsClean } from './db';
+import { markRecordsClean, getSettings, saveSettings } from './db';
+import { idb } from './dexieDb';
+import type { Party, Dispatch, Payment, PurchaseOrder, AppSettings } from '../types';
 
 // Web app's Firebase configuration read from environment variables (.env)
 const firebaseConfig = {
@@ -268,6 +272,7 @@ export interface CloudSyncOptions {
   forceEmptyOverwrite?: boolean;
   tombstones?: Record<string, number>;
   deltaOnly?: boolean;
+  forceSettingsSync?: boolean;
 }
 
 export interface CloudSyncResult {
@@ -275,12 +280,22 @@ export interface CloudSyncResult {
   timestamp: string;
   protected?: boolean;
   message?: string;
+  mergedCount?: number;
+}
+
+export interface FirestoreBatchOp {
+  type: 'set' | 'delete';
+  ref: DocumentReference;
+  data?: any;
+  collectionName?: 'parties' | 'dispatches' | 'payments' | 'pos' | 'settings' | 'meta';
+  id?: string;
 }
 
 /**
- * Strips undefined values, converts NaN/Infinity to 0, and deep clones so Firestore never rejects document fields
+ * Strips undefined values, converts NaN/Infinity to 0, deletes local dirty flags,
+ * and deep clones so Firestore never rejects document fields (Issue 28a).
  */
-function sanitizeForFirestore(obj: any): any {
+export function sanitizeForFirestore(obj: any): any {
   if (obj === undefined) return null;
   if (typeof obj === 'number') {
     return isNaN(obj) || !isFinite(obj) ? 0 : obj;
@@ -290,7 +305,10 @@ function sanitizeForFirestore(obj: any): any {
     return obj.map(sanitizeForFirestore);
   }
   const result: Record<string, any> = {};
+  const strippedKeys = new Set(['dirty', 'theme', 'pinHash', 'pinLength', 'lockTimeout', 'appLockEnabled']);
   for (const key of Object.keys(obj)) {
+    // Issue 28a & Issue 22: Never upload local dirty flag or device-only settings to Firestore
+    if (strippedKeys.has(key)) continue;
     const val = obj[key];
     if (val !== undefined) {
       if (typeof val === 'number') {
@@ -304,24 +322,66 @@ function sanitizeForFirestore(obj: any): any {
 }
 
 /**
- * Commits Firestore operations in chunks of 400 to strictly respect Firestore's 500-op limit
+ * Commits Firestore operations in chunks of 400.
+ * On permission-denied (e.g. stale write rejected by security rule),
+ * splits the chunk and retries per-document to isolate rejected writes (Issue 21).
  */
-async function commitInBatches(
-  operations: Array<{ type: 'set' | 'delete'; ref: DocumentReference; data?: any }>
-) {
+async function commitResilient(
+  operations: FirestoreBatchOp[]
+): Promise<{ succeeded: FirestoreBatchOp[]; rejected: Array<{ op: FirestoreBatchOp; error: any }> }> {
   const CHUNK_SIZE = 400;
+  const succeeded: FirestoreBatchOp[] = [];
+  const rejected: Array<{ op: FirestoreBatchOp; error: any }> = [];
+
   for (let i = 0; i < operations.length; i += CHUNK_SIZE) {
     const chunk = operations.slice(i, i + CHUNK_SIZE);
-    const batch = writeBatch(db);
-    for (const op of chunk) {
-      if (op.type === 'set') {
-        batch.set(op.ref, op.data, { merge: true });
-      } else if (op.type === 'delete') {
-        batch.delete(op.ref);
+    try {
+      const batch = writeBatch(db);
+      for (const op of chunk) {
+        if (op.type === 'set') {
+          batch.set(op.ref, op.data, { merge: true });
+        } else if (op.type === 'delete') {
+          batch.delete(op.ref);
+        }
+      }
+      await batch.commit();
+      succeeded.push(...chunk);
+    } catch (chunkErr: any) {
+      const isPermDenied =
+        chunkErr?.code === 'permission-denied' ||
+        String(chunkErr?.message || '').toLowerCase().includes('permission-denied') ||
+        String(chunkErr?.message || '').toLowerCase().includes('permission_denied');
+
+      if (!isPermDenied) {
+        throw chunkErr;
+      }
+
+      // Isolate the rejected write(s) per document (Issue 21)
+      for (const op of chunk) {
+        try {
+          if (op.type === 'set') {
+            await setDoc(op.ref, op.data, { merge: true });
+          } else if (op.type === 'delete') {
+            await deleteDoc(op.ref);
+          }
+          succeeded.push(op);
+        } catch (singleErr: any) {
+          const singlePermDenied =
+            singleErr?.code === 'permission-denied' ||
+            String(singleErr?.message || '').toLowerCase().includes('permission-denied') ||
+            String(singleErr?.message || '').toLowerCase().includes('permission_denied');
+
+          if (singlePermDenied) {
+            rejected.push({ op, error: singleErr });
+          } else {
+            throw singleErr;
+          }
+        }
       }
     }
-    await batch.commit();
   }
+
+  return { succeeded, rejected };
 }
 
 /**
@@ -392,11 +452,7 @@ export async function syncLedgerToCloud(
     }
   }
 
-  const operations: Array<{ type: 'set' | 'delete'; ref: DocumentReference; data?: any }> = [];
-  const syncedPartyIds: string[] = [];
-  const syncedDispatchIds: string[] = [];
-  const syncedPaymentIds: string[] = [];
-  const syncedPoIds: string[] = [];
+  const operations: FirestoreBatchOp[] = [];
 
   // 1. Parties subcollection
   for (const party of partiesList) {
@@ -404,9 +460,10 @@ export async function syncLedgerToCloud(
       operations.push({
         type: 'set',
         ref: doc(db, 'users', uid, 'parties', party.id),
+        collectionName: 'parties',
+        id: party.id,
         data: sanitizeForFirestore({ ...party, updatedAt: party.updatedAt || Date.now() }),
       });
-      syncedPartyIds.push(party.id);
     }
   }
 
@@ -416,9 +473,10 @@ export async function syncLedgerToCloud(
       operations.push({
         type: 'set',
         ref: doc(db, 'users', uid, 'dispatches', dispatch.id),
+        collectionName: 'dispatches',
+        id: dispatch.id,
         data: sanitizeForFirestore({ ...dispatch, updatedAt: dispatch.updatedAt || Date.now() }),
       });
-      syncedDispatchIds.push(dispatch.id);
     }
   }
 
@@ -428,9 +486,10 @@ export async function syncLedgerToCloud(
       operations.push({
         type: 'set',
         ref: doc(db, 'users', uid, 'payments', payment.id),
+        collectionName: 'payments',
+        id: payment.id,
         data: sanitizeForFirestore({ ...payment, updatedAt: payment.updatedAt || Date.now() }),
       });
-      syncedPaymentIds.push(payment.id);
     }
   }
 
@@ -440,15 +499,28 @@ export async function syncLedgerToCloud(
       operations.push({
         type: 'set',
         ref: doc(db, 'users', uid, 'pos', po.id),
+        collectionName: 'pos',
+        id: po.id,
         data: sanitizeForFirestore({ ...po, updatedAt: po.updatedAt || Date.now() }),
       });
-      syncedPoIds.push(po.id);
     }
   }
 
-  // 5. Settings document (strictly strips sensitive PIN and device lock credentials per Issue 14)
-  if (backupData.settings) {
+  // 5. Settings document (strips PIN credentials and theme preference per Issue 14 & 22)
+  // Only push settings if they actually changed locally (Issue 21)
+  const lastSyncedSettingsKey = `fl_last_synced_settings_${uid}`;
+  const lastSyncedSettingsAt = typeof localStorage !== 'undefined'
+    ? Number(localStorage.getItem(lastSyncedSettingsKey) || 0)
+    : 0;
+  const settingsUpdatedAt = Number(backupData.settings?.updatedAt || 0);
+
+  const shouldSyncSettings =
+    Boolean(backupData.settings) &&
+    (options?.forceSettingsSync || !lastSyncedSettingsAt || settingsUpdatedAt > lastSyncedSettingsAt);
+
+  if (shouldSyncSettings && backupData.settings) {
     const cloudSettings = { ...backupData.settings };
+    delete cloudSettings.theme; // Issue 22: Strip per-device theme preference
     delete cloudSettings.pinHash;
     delete cloudSettings.pinLength;
     delete cloudSettings.lockTimeout;
@@ -457,6 +529,8 @@ export async function syncLedgerToCloud(
     operations.push({
       type: 'set',
       ref: doc(db, 'users', uid, 'settings', 'config'),
+      collectionName: 'settings',
+      id: 'config',
       data: sanitizeForFirestore({
         ...cloudSettings,
         updatedAt: cloudSettings.updatedAt || Date.now(),
@@ -468,6 +542,8 @@ export async function syncLedgerToCloud(
   operations.push({
     type: 'set',
     ref: doc(db, 'users', uid, 'meta', 'sync'),
+    collectionName: 'meta',
+    id: 'sync',
     data: sanitizeForFirestore({
       version: backupData.version || '2026.10_clean_production_v2',
       exportDate: backupData.exportDate || now,
@@ -481,29 +557,81 @@ export async function syncLedgerToCloud(
     }),
   });
 
-  // 7. Deletion tombstones (cleanly remove deleted entities from Firestore subcollections)
-  if (options?.tombstones) {
-    for (const deletedId of Object.keys(options.tombstones)) {
-      operations.push({ type: 'delete', ref: doc(db, 'users', uid, 'parties', deletedId) });
-      operations.push({ type: 'delete', ref: doc(db, 'users', uid, 'dispatches', deletedId) });
-      operations.push({ type: 'delete', ref: doc(db, 'users', uid, 'payments', deletedId) });
-      operations.push({ type: 'delete', ref: doc(db, 'users', uid, 'pos', deletedId) });
+  // Issue 21: Commit batch writes resiliently
+  const { succeeded, rejected } = await commitResilient(operations);
+
+  // If settings succeeded, record last synced timestamp
+  if (shouldSyncSettings && succeeded.some((op) => op.collectionName === 'settings')) {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(lastSyncedSettingsKey, String(settingsUpdatedAt || Date.now()));
     }
   }
 
-  // Commit batch writes
-  await commitInBatches(operations);
+  // Issue 11 & Issue 21: Mark ONLY successfully committed records clean in IndexedDB
+  const successPartyIds = succeeded.filter((o) => o.collectionName === 'parties' && o.id).map((o) => o.id!);
+  const successDispatchIds = succeeded.filter((o) => o.collectionName === 'dispatches' && o.id).map((o) => o.id!);
+  const successPaymentIds = succeeded.filter((o) => o.collectionName === 'payments' && o.id).map((o) => o.id!);
+  const successPoIds = succeeded.filter((o) => o.collectionName === 'pos' && o.id).map((o) => o.id!);
 
-  // Issue 11: Mark synced records clean in IndexedDB
   try {
     await markRecordsClean({
-      partyIds: syncedPartyIds,
-      dispatchIds: syncedDispatchIds,
-      paymentIds: syncedPaymentIds,
-      poIds: syncedPoIds,
+      partyIds: successPartyIds,
+      dispatchIds: successDispatchIds,
+      paymentIds: successPaymentIds,
+      poIds: successPoIds,
     });
   } catch (cleanErr) {
     console.warn('[CloudSync] Warning marking records clean:', cleanErr);
+  }
+
+  // Issue 21: Resolve rejected documents by pulling newer cloud record and merging into Dexie
+  let mergedConflictCount = 0;
+  if (rejected.length > 0) {
+    for (const { op } of rejected) {
+      try {
+        const cloudSnap = await getDoc(op.ref);
+        if (cloudSnap.exists()) {
+          const cloudData = cloudSnap.data();
+          const cloudTime = Number(cloudData.updatedAt || cloudData.createdAt || 0);
+          const localTime = Number(op.data?.updatedAt || op.data?.createdAt || 0);
+
+          if (cloudTime >= localTime) {
+            // Cloud version wins
+            if (op.collectionName === 'parties' && op.id) {
+              await idb.parties.put({ ...cloudData, dirty: false } as Party);
+              mergedConflictCount++;
+            } else if (op.collectionName === 'dispatches' && op.id) {
+              await idb.dispatches.put({ ...cloudData, dirty: false } as Dispatch);
+              mergedConflictCount++;
+            } else if (op.collectionName === 'payments' && op.id) {
+              await idb.payments.put({ ...cloudData, dirty: false } as Payment);
+              mergedConflictCount++;
+            } else if (op.collectionName === 'pos' && op.id) {
+              await idb.pos.put({ ...cloudData, dirty: false } as PurchaseOrder);
+              mergedConflictCount++;
+            } else if (op.collectionName === 'settings') {
+              const localSettings = await getSettings();
+              const merged: AppSettings = {
+                ...(localSettings || {}),
+                ...cloudData,
+                theme: localSettings?.theme ?? 'light',
+                appLockEnabled: localSettings?.appLockEnabled ?? false,
+                pinHash: localSettings?.pinHash ?? '',
+                pinLength: localSettings?.pinLength ?? 5,
+                lockTimeout: localSettings?.lockTimeout ?? 0,
+              } as AppSettings;
+              await saveSettings(merged);
+              if (typeof localStorage !== 'undefined') {
+                localStorage.setItem(lastSyncedSettingsKey, String(cloudTime));
+              }
+              mergedConflictCount++;
+            }
+          }
+        }
+      } catch (mergeErr) {
+        console.warn(`[CloudSync] Warning resolving rejected doc ${op.ref.path}:`, mergeErr);
+      }
+    }
   }
 
   // Clean up legacy single-document backup (users/{uid}/ledger/backup) so Firebase Console stays clean
@@ -514,41 +642,71 @@ export async function syncLedgerToCloud(
     // Non-fatal if legacy doc is already gone or non-existent
   }
 
+  const successMessage = mergedConflictCount > 0
+    ? `Sync found newer changes on another device and merged them (${mergedConflictCount} records).`
+    : 'Synchronized with Firebase Cloud subcollections successfully.';
+
   return {
     success: true,
     timestamp: now,
-    message: 'Synchronized with Firebase Cloud subcollections successfully.',
+    message: successMessage,
+    mergedCount: mergedConflictCount,
   };
 }
 
 /**
  * Pull cloud records from Cloud Firestore subcollections:
  * parties, dispatches, payments, pos, settings, and meta.
- * Automatically checks and migrates legacy single-document backup if found.
+ * Supports incremental pull using lastPulledAt (Issue 28b) and marks ingested records clean (Issue 28a).
  */
-export async function fetchLedgerFromCloud(uid: string): Promise<any | null> {
+export async function fetchLedgerFromCloud(
+  uid: string,
+  options?: { full?: boolean }
+): Promise<any | null> {
   if (!isFirebaseConfigured || !db) return null;
   try {
+    const lastPulledKey = `fl_last_pulled_at_${uid}`;
+    const lastPulledVal = typeof localStorage !== 'undefined' ? localStorage.getItem(lastPulledKey) : null;
+    const lastPulledAt = (!options?.full && lastPulledVal) ? Number(lastPulledVal) : 0;
+
+    const qParties = lastPulledAt > 0
+      ? query(collection(db, 'users', uid, 'parties'), where('updatedAt', '>', lastPulledAt))
+      : collection(db, 'users', uid, 'parties');
+    const qDispatches = lastPulledAt > 0
+      ? query(collection(db, 'users', uid, 'dispatches'), where('updatedAt', '>', lastPulledAt))
+      : collection(db, 'users', uid, 'dispatches');
+    const qPayments = lastPulledAt > 0
+      ? query(collection(db, 'users', uid, 'payments'), where('updatedAt', '>', lastPulledAt))
+      : collection(db, 'users', uid, 'payments');
+    const qPos = lastPulledAt > 0
+      ? query(collection(db, 'users', uid, 'pos'), where('updatedAt', '>', lastPulledAt))
+      : collection(db, 'users', uid, 'pos');
+
     const [partiesSnap, dispatchesSnap, paymentsSnap, posSnap, settingsSnap, metaSnap] = await Promise.all([
-      getDocs(collection(db, 'users', uid, 'parties')),
-      getDocs(collection(db, 'users', uid, 'dispatches')),
-      getDocs(collection(db, 'users', uid, 'payments')),
-      getDocs(collection(db, 'users', uid, 'pos')),
+      getDocs(qParties),
+      getDocs(qDispatches),
+      getDocs(qPayments),
+      getDocs(qPos),
       getDoc(doc(db, 'users', uid, 'settings', 'config')),
       getDoc(doc(db, 'users', uid, 'meta', 'sync')),
     ]);
 
-    const parties = partiesSnap.docs.map((d) => d.data());
-    const dispatches = dispatchesSnap.docs.map((d) => d.data());
-    const payments = paymentsSnap.docs.map((d) => d.data());
-    const pos = posSnap.docs.map((d) => d.data());
+    // Issue 28a: Ensure all pulled documents are ingested as clean (dirty: false)
+    const parties = partiesSnap.docs.map((d) => ({ ...d.data(), dirty: false }));
+    const dispatches = dispatchesSnap.docs.map((d) => ({ ...d.data(), dirty: false }));
+    const payments = paymentsSnap.docs.map((d) => ({ ...d.data(), dirty: false }));
+    const pos = posSnap.docs.map((d) => ({ ...d.data(), dirty: false }));
     const settings = settingsSnap.exists() ? settingsSnap.data() : null;
     const meta = metaSnap.exists() ? metaSnap.data() : null;
+
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(lastPulledKey, String(Date.now()));
+    }
 
     const totalSubrecords = parties.length + dispatches.length + payments.length + pos.length;
 
     // Backward-compatibility: Check if legacy single-document backup exists
-    if (totalSubrecords === 0 && !settings) {
+    if (totalSubrecords === 0 && !settings && !lastPulledAt) {
       const legacyDocRef = doc(db, 'users', uid, 'ledger', 'backup');
       const legacySnap = await getDoc(legacyDocRef);
       if (legacySnap.exists()) {
@@ -675,7 +833,7 @@ export async function wipeCloudUserData(uid: string): Promise<{ success: boolean
     operations.push({ type: 'delete', ref: doc(db, 'users', uid, 'meta', 'sync') });
     operations.push({ type: 'delete', ref: doc(db, 'users', uid, 'ledger', 'backup') });
 
-    await commitInBatches(operations);
+    await commitResilient(operations as any);
     return { success: true, message: 'Cloud database wiped cleanly.' };
   } catch (err: any) {
     console.error('[CloudWipe] Error wiping cloud database:', err);
