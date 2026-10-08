@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { getDispatches, getParties, getPayments, getPurchaseOrders, getSettings } from '../lib/db';
 import type { Dispatch, Party, Payment, PurchaseOrder, AppSettings } from '../types';
-import { calculateSettlement, calculatePartyBalance } from '../utils/calculations';
+import { calculateSettlement, calculatePartyBalance, isDispatchPending } from '../utils/calculations';
 import { formatCurrency, formatCompactFinancial } from '../utils/currency';
 import { playPopSound, triggerConfetti } from '../utils/delight';
 import { useLedgerListener } from '../hooks/useLedgerListener';
@@ -87,11 +87,15 @@ export default function Summary() {
         return true;
     });
 
-    // Calculations based on filtered dispatches
-    const totalProfit = filteredDispatches.reduce((sum, d) => sum + calculateSettlement(d, settings).netProfit, 0);
-    const totalRevenue = filteredDispatches.reduce((sum, d) => sum + calculateSettlement(d, settings).totalRevenue, 0);
-    const totalCost = filteredDispatches.reduce((sum, d) => sum + calculateSettlement(d, settings).totalCost, 0);
-    const totalTons = filteredDispatches.reduce((sum, d) => sum + (d.labReceivedWeight || 0), 0);
+    // Separate settled dispatches from pending (in-transit / unweighed) dispatches (Issue 19 / T6)
+    const settledDispatches = filteredDispatches.filter(d => !isDispatchPending(d));
+    const pendingDispatches = filteredDispatches.filter(d => isDispatchPending(d));
+
+    // Calculations based on settled dispatches to prevent unweighed trucks from causing false losses
+    const totalProfit = settledDispatches.reduce((sum, d) => sum + calculateSettlement(d, settings).netProfit, 0);
+    const totalRevenue = settledDispatches.reduce((sum, d) => sum + calculateSettlement(d, settings).totalRevenue, 0);
+    const totalCost = settledDispatches.reduce((sum, d) => sum + calculateSettlement(d, settings).totalCost, 0);
+    const totalTons = settledDispatches.reduce((sum, d) => sum + (d.labReceivedWeight || 0), 0);
     const profitMargin = totalRevenue > 0 ? (totalProfit / totalRevenue) * 100 : 0;
     const formattedProfit = formatCurrency(totalProfit, settings, { showSign: true });
 
@@ -280,6 +284,55 @@ export default function Summary() {
                     </div>
                 </div>
             </div>
+
+            {/* In-Transit Dispatches Banner (Issue 19) */}
+            {pendingDispatches.length > 0 && (
+                <div style={{ padding: '0 16px', marginBottom: 14 }}>
+                    <div
+                        onClick={() => {
+                            navigate('/entries');
+                            playPopSound();
+                        }}
+                        style={{
+                            background: 'var(--bg-card)',
+                            borderRadius: 14,
+                            border: '0.5px solid var(--separator)',
+                            padding: '12px 16px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            cursor: 'pointer',
+                            boxShadow: 'var(--shadow-card)',
+                        }}
+                    >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                            <div
+                                style={{
+                                    width: 34,
+                                    height: 34,
+                                    borderRadius: 9,
+                                    background: 'var(--fill-quaternary)',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    color: 'var(--ios-blue)',
+                                }}
+                            >
+                                <Truck size={18} />
+                            </div>
+                            <div>
+                                <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--label-primary)' }}>
+                                    {pendingDispatches.length} {pendingDispatches.length === 1 ? 'Truck' : 'Trucks'} in Transit
+                                </div>
+                                <div style={{ fontSize: 12, color: 'var(--label-secondary)' }}>
+                                    Pending weighbridge confirmation · Excluded from net profit
+                                </div>
+                            </div>
+                        </div>
+                        <ChevronRight size={16} style={{ color: 'var(--label-tertiary)' }} />
+                    </div>
+                </div>
+            )}
 
             {/* ── 2x2 Interactive Metric Widgets Grid ── */}
             <div className="ios-widget-grid">

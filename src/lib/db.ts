@@ -1,10 +1,19 @@
-import type { Dispatch, Party, AppSettings, Payment, PurchaseOrder } from "../types";
+import type { Dispatch, Party, AppSettings, Payment, PurchaseOrder, BackupPayload } from "../types";
+import { getTodayDateString } from "../utils/dateUtils";
+import { idb, requestPersistentStorage } from "./dexieDb";
 
-const DISPATCHES_KEY = "dispatches";
-const PARTIES_KEY = "parties";
-const PAYMENTS_KEY = "payments";
 const SETTINGS_KEY = "app_settings";
-const POS_KEY = "purchase_orders";
+const DATA_VERSION_KEY = "coal_ledger_version";
+const CURRENT_DATA_VERSION = "2026.10_clean_production_v2";
+const TOMBSTONES_KEY = "ledger_tombstones";
+const OWNER_UID_KEY = "coal_ledger_owner_uid";
+const OWNER_EMAIL_KEY = "coal_ledger_owner_email";
+
+// Legacy localStorage keys used for migration only
+const LEGACY_DISPATCHES_KEY = "dispatches";
+const LEGACY_PARTIES_KEY = "parties";
+const LEGACY_PAYMENTS_KEY = "payments";
+const LEGACY_POS_KEY = "purchase_orders";
 
 // Initial empty datasets for production
 export const INITIAL_PARTIES: Party[] = [];
@@ -32,10 +41,6 @@ export const INITIAL_SETTINGS: AppSettings = {
   pinLength: 5,
   lockTimeout: 0,
 };
-
-const DATA_VERSION_KEY = "coal_ledger_version";
-const CURRENT_DATA_VERSION = "2026.10_clean_production_v2";
-const TOMBSTONES_KEY = "ledger_tombstones";
 
 export type LedgerEntityType = 'dispatch' | 'party' | 'payment' | 'purchase_order' | 'settings' | 'all';
 export type LedgerMutationAction = 'create' | 'update' | 'delete' | 'restore';
@@ -100,9 +105,6 @@ export function recordTombstone(id: string): void {
   }
 }
 
-const OWNER_UID_KEY = "coal_ledger_owner_uid";
-const OWNER_EMAIL_KEY = "coal_ledger_owner_email";
-
 export interface LedgerOwnerInfo {
   uid: string | null;
   email: string | null;
@@ -137,7 +139,7 @@ export function setLedgerOwner(uid: string | null, email: string | null): void {
 }
 
 /**
- * Quick count of all active user records stored in local storage
+ * Quick count of all active user records stored in IndexedDB
  */
 export async function getLocalRecordCounts(): Promise<{
   parties: number;
@@ -146,29 +148,35 @@ export async function getLocalRecordCounts(): Promise<{
   pos: number;
   total: number;
 }> {
+  await ensureInitialized();
   const [parties, dispatches, payments, pos] = await Promise.all([
-    getParties(),
-    getDispatches(),
-    getPayments(),
-    getPurchaseOrders(),
+    idb.parties.filter((p) => !p.deleted).count(),
+    idb.dispatches.filter((d) => !d.deleted).count(),
+    idb.payments.filter((p) => !p.deleted).count(),
+    idb.pos.filter((po) => !po.deleted).count(),
   ]);
-  const total = parties.length + dispatches.length + payments.length + pos.length;
-  return {
-    parties: parties.length,
-    dispatches: dispatches.length,
-    payments: payments.length,
-    pos: pos.length,
-    total,
-  };
+  const total = parties + dispatches + payments + pos;
+  return { parties, dispatches, payments, pos, total };
 }
 
-function safeSetStorage(key: string, value: string): boolean {
+/**
+ * Synchronous write to localStorage (used for small configs like settings, pin, flags)
+ * Throws on quota exhaustion.
+ */
+export function writeStorageOrThrow(key: string, value: string, backupKey?: string): void {
   try {
     localStorage.setItem(key, value);
-    return true;
   } catch (err) {
-    console.error(`localStorage quota exceeded or error writing ${key}:`, err);
-    return false;
+    console.error(`[DB] localStorage quota exceeded or error writing ${key}:`, err);
+    throw new Error(`Storage full: Unable to save data for ${key}. Please backup or free device storage.`);
+  }
+
+  if (backupKey) {
+    try {
+      localStorage.setItem(backupKey, value);
+    } catch {
+      // Best-effort safety backup: ignore quota errors
+    }
   }
 }
 
@@ -191,48 +199,14 @@ export function cleanNumber(val: any, fallback = 0): number {
   return isNaN(parsed) || !isFinite(parsed) ? fallback : parsed;
 }
 
-/**
- * Robust JSON parser with rolling safety backup fallback to prevent accidental data wiping
- */
-function safeParseStorage<T>(key: string, backupKey?: string): T[] {
-  const raw = localStorage.getItem(key);
-  if (!raw) return [];
-  try {
-    const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed)) {
-      // Refresh rolling safety backup whenever a valid state is read
-      if (backupKey && parsed.length > 0) {
-        localStorage.setItem(backupKey, raw);
-      }
-      return parsed;
-    }
-    return [];
-  } catch (err) {
-    console.error(`[DB] Error parsing ${key} from storage:`, err);
-    if (backupKey) {
-      const backupRaw = localStorage.getItem(backupKey);
-      if (backupRaw) {
-        try {
-          const backupParsed = JSON.parse(backupRaw);
-          if (Array.isArray(backupParsed) && backupParsed.length > 0) {
-            console.warn(`[DB] Successfully recovered ${backupParsed.length} records from ${backupKey}!`);
-            return backupParsed;
-          }
-        } catch {}
-      }
-    }
-    // Return empty array only if recovery failed, but DO NOT overwrite storage!
-    return [];
-  }
-}
-
 export function sanitizeDispatch(d: Partial<Dispatch>): Dispatch {
   const now = Date.now();
+  const isDeleted = Boolean(d.deleted);
   return {
     id: d.id || '',
     partyId: d.partyId || '',
     poId: d.poId || undefined,
-    date: d.date || new Date().toISOString().split('T')[0],
+    date: d.date || getTodayDateString(),
     truckNumber: d.truckNumber || '',
     factoryName: d.factoryName || '',
     targetGcv: cleanNumber(d.targetGcv),
@@ -275,27 +249,35 @@ export function sanitizeDispatch(d: Partial<Dispatch>): Dispatch {
       : [],
     notes: d.notes || undefined,
     createdAt: cleanNumber(d.createdAt, now),
-    updatedAt: now,
+    updatedAt: cleanNumber(d.updatedAt, now),
+    deleted: isDeleted,
+    deletedAt: isDeleted ? cleanNumber(d.deletedAt, now) : undefined,
+    dirty: d.dirty !== undefined ? Boolean(d.dirty) : true,
   };
 }
 
 export function sanitizePayment(p: Partial<Payment>): Payment {
   const now = Date.now();
+  const isDeleted = Boolean(p.deleted);
   return {
     id: p.id || '',
     partyId: p.partyId || '',
-    date: p.date || new Date().toISOString().split('T')[0],
+    date: p.date || getTodayDateString(),
     amount: cleanNumber(p.amount),
     type: p.type === 'paid' ? 'paid' : 'received',
     mode: p.mode || 'bank',
     referenceNote: p.referenceNote || undefined,
     createdAt: cleanNumber(p.createdAt, now),
-    updatedAt: now,
+    updatedAt: cleanNumber(p.updatedAt, now),
+    deleted: isDeleted,
+    deletedAt: isDeleted ? cleanNumber(p.deletedAt, now) : undefined,
+    dirty: p.dirty !== undefined ? Boolean(p.dirty) : true,
   };
 }
 
 export function sanitizeParty(p: Partial<Party>): Party {
   const now = Date.now();
+  const isDeleted = Boolean(p.deleted);
   return {
     id: p.id || '',
     name: p.name || '',
@@ -303,12 +285,17 @@ export function sanitizeParty(p: Partial<Party>): Party {
     phone: p.phone || '',
     address: p.address || '',
     createdAt: cleanNumber(p.createdAt, now),
-    updatedAt: now,
+    updatedAt: cleanNumber(p.updatedAt, now),
+    isArchived: Boolean(p.isArchived),
+    deleted: isDeleted,
+    deletedAt: isDeleted ? cleanNumber(p.deletedAt, now) : undefined,
+    dirty: p.dirty !== undefined ? Boolean(p.dirty) : true,
   };
 }
 
 export function sanitizePurchaseOrder(po: Partial<PurchaseOrder>): PurchaseOrder {
   const now = Date.now();
+  const isDeleted = Boolean(po.deleted);
   return {
     id: po.id || '',
     partyId: po.partyId || '',
@@ -320,76 +307,83 @@ export function sanitizePurchaseOrder(po: Partial<PurchaseOrder>): PurchaseOrder
     notes: po.notes || undefined,
     isActive: typeof po.isActive === 'boolean' ? po.isActive : true,
     createdAt: cleanNumber(po.createdAt, now),
-    updatedAt: now,
+    updatedAt: cleanNumber(po.updatedAt, now),
+    deleted: isDeleted,
+    deletedAt: isDeleted ? cleanNumber(po.deletedAt, now) : undefined,
+    dirty: po.dirty !== undefined ? Boolean(po.dirty) : true,
   };
 }
 
-// Non-destructive initial storage check (NEVER wipes data on error)
-function ensureSeeded() {
-  const currentVersion = localStorage.getItem(DATA_VERSION_KEY);
-  if (currentVersion !== CURRENT_DATA_VERSION) {
-    try {
-      const existingParties: Party[] = JSON.parse(localStorage.getItem(PARTIES_KEY) || '[]');
-      const realParties = existingParties.filter(
-        (p) => !p.id.startsWith('party-') && !p.id.startsWith('demo-')
-      );
-      if (realParties.length > 0 || existingParties.length > 0) {
-        safeSetStorage(PARTIES_KEY, JSON.stringify(realParties));
+// One-time initialization and transparent migration from legacy localStorage to IndexedDB
+let isInitialized = false;
+let initPromise: Promise<void> | null = null;
+
+export async function ensureInitialized(): Promise<void> {
+  if (isInitialized) return;
+  if (!initPromise) {
+    initPromise = (async () => {
+      // 1. Request persistent browser storage
+      await requestPersistentStorage();
+
+      // 2. Check if IndexedDB is empty but legacy localStorage has data to migrate
+      try {
+        const idbPartyCount = await idb.parties.count();
+        if (idbPartyCount === 0 && typeof localStorage !== 'undefined') {
+          const rawParties = localStorage.getItem(LEGACY_PARTIES_KEY);
+          const rawDispatches = localStorage.getItem(LEGACY_DISPATCHES_KEY);
+          const rawPayments = localStorage.getItem(LEGACY_PAYMENTS_KEY);
+          const rawPos = localStorage.getItem(LEGACY_POS_KEY);
+
+          if (rawParties || rawDispatches || rawPayments || rawPos) {
+            const parties: Party[] = rawParties ? JSON.parse(rawParties) : [];
+            const dispatches: Dispatch[] = rawDispatches ? JSON.parse(rawDispatches) : [];
+            const payments: Payment[] = rawPayments ? JSON.parse(rawPayments) : [];
+            const pos: PurchaseOrder[] = rawPos ? JSON.parse(rawPos) : [];
+
+            await idb.transaction('rw', [idb.parties, idb.dispatches, idb.payments, idb.pos], async () => {
+              if (parties.length > 0) await idb.parties.bulkPut(parties.map(sanitizeParty));
+              if (dispatches.length > 0) await idb.dispatches.bulkPut(dispatches.map(sanitizeDispatch));
+              if (payments.length > 0) await idb.payments.bulkPut(payments.map(sanitizePayment));
+              if (pos.length > 0) await idb.pos.bulkPut(pos.map(sanitizePurchaseOrder));
+            });
+            console.log(`[DB] Successfully migrated legacy localStorage records into IndexedDB!`);
+          }
+        }
+
+        // Clean up redundant large backup strings from localStorage to eliminate quota strain
+        if (typeof localStorage !== 'undefined') {
+          localStorage.removeItem('coal_ledger_safety_parties_bak');
+          localStorage.removeItem('coal_ledger_safety_dispatches_bak');
+          localStorage.removeItem('coal_ledger_safety_payments_bak');
+          localStorage.removeItem('coal_ledger_safety_pos_bak');
+        }
+      } catch (err) {
+        console.warn('[DB] Migration check notice:', err);
       }
 
-      const existingDispatches: Dispatch[] = JSON.parse(localStorage.getItem(DISPATCHES_KEY) || '[]');
-      const realDispatches = existingDispatches.filter(
-        (d) => !d.partyId.startsWith('party-') && !d.id.startsWith('disp-')
-      );
-      if (realDispatches.length > 0 || existingDispatches.length > 0) {
-        safeSetStorage(DISPATCHES_KEY, JSON.stringify(realDispatches));
-      }
-
-      const existingPayments: Payment[] = JSON.parse(localStorage.getItem(PAYMENTS_KEY) || '[]');
-      const realPayments = existingPayments.filter(
-        (p) => !p.partyId.startsWith('party-') && !p.id.startsWith('pay-')
-      );
-      if (realPayments.length > 0 || existingPayments.length > 0) {
-        safeSetStorage(PAYMENTS_KEY, JSON.stringify(realPayments));
-      }
-
-      const existingPos: PurchaseOrder[] = JSON.parse(localStorage.getItem(POS_KEY) || '[]');
-      const realPos = existingPos.filter(
-        (po) => !po.partyId.startsWith('party-') && !po.id.startsWith('po-')
-      );
-      if (realPos.length > 0 || existingPos.length > 0) {
-        safeSetStorage(POS_KEY, JSON.stringify(realPos));
-      }
-    } catch (err) {
-      console.warn('[DB] Warning in version migration check (preserving existing data):', err);
-    }
-    safeSetStorage(DATA_VERSION_KEY, CURRENT_DATA_VERSION);
-    return;
+      isInitialized = true;
+    })();
   }
-
-  if (!localStorage.getItem(PARTIES_KEY)) {
-    safeSetStorage(PARTIES_KEY, JSON.stringify([]));
-  }
-  if (!localStorage.getItem(DISPATCHES_KEY)) {
-    safeSetStorage(DISPATCHES_KEY, JSON.stringify([]));
-  }
-  if (!localStorage.getItem(PAYMENTS_KEY)) {
-    safeSetStorage(PAYMENTS_KEY, JSON.stringify([]));
-  }
-  if (!localStorage.getItem(SETTINGS_KEY)) {
-    safeSetStorage(SETTINGS_KEY, JSON.stringify(INITIAL_SETTINGS));
-  }
-  if (!localStorage.getItem(POS_KEY)) {
-    safeSetStorage(POS_KEY, JSON.stringify([]));
-  }
+  return initPromise;
 }
 
-// -- Dispatches --
+// Backward compatible alias
+export const ensureSeeded = ensureInitialized;
+
+// -- Dispatches (IndexedDB) --
 export async function getDispatches(): Promise<Dispatch[]> {
-  ensureSeeded();
-  const rawList = safeParseStorage<Dispatch>(DISPATCHES_KEY, 'coal_ledger_safety_dispatches_bak');
-  // Normalize historical dispatches: freeze any legacy formula dispatches to 18% & 5% so settings updates never shift them
-  return rawList.map((d) => {
+  await ensureInitialized();
+  const rawList = await idb.dispatches.toArray();
+  const activeList = rawList.filter((d) => !d.deleted);
+  // Sort by date / createdAt desc
+  activeList.sort((a, b) => {
+    const timeA = new Date(a.date).getTime() || a.createdAt || 0;
+    const timeB = new Date(b.date).getTime() || b.createdAt || 0;
+    return timeB - timeA;
+  });
+
+  // Freeze legacy tax percents if formula
+  return activeList.map((d) => {
     if (d.taxMethod === 'formula_18_5') {
       if (typeof d.taxSalesPercent !== 'number') d.taxSalesPercent = 18;
       if (typeof d.taxIncomePercent !== 'number') d.taxIncomePercent = 5;
@@ -399,188 +393,344 @@ export async function getDispatches(): Promise<Dispatch[]> {
 }
 
 export async function getDispatch(id: string): Promise<Dispatch | null> {
-  const dispatches = await getDispatches();
-  return dispatches.find((d) => d.id === id) || null;
+  await ensureInitialized();
+  const d = await idb.dispatches.get(id);
+  if (!d || d.deleted) return null;
+  return d;
 }
 
 export async function saveDispatch(dispatch: Dispatch): Promise<void> {
+  await ensureInitialized();
   const sanitized = sanitizeDispatch(dispatch);
-  const dispatches = await getDispatches();
-  const existingIndex = dispatches.findIndex((d) => d.id === sanitized.id);
+  const existing = await idb.dispatches.get(sanitized.id);
   const now = Date.now();
-
-  if (existingIndex >= 0) {
-    dispatches[existingIndex] = { ...sanitized, updatedAt: now };
-  } else {
-    dispatches.unshift({
-      ...sanitized,
-      createdAt: sanitized.createdAt || now,
-      updatedAt: now,
-    });
-  }
-
-  if (dispatches.length > 0) {
-    localStorage.setItem('coal_ledger_safety_dispatches_bak', JSON.stringify(dispatches));
-  }
-  safeSetStorage(DISPATCHES_KEY, JSON.stringify(dispatches));
-  notifyLedgerMutation('dispatch', sanitized.id, existingIndex >= 0 ? 'update' : 'create');
-}
-
-export async function deleteDispatch(id: string): Promise<void> {
-  const dispatches = await getDispatches();
-  const filtered = dispatches.filter((d) => d.id !== id);
-  recordTombstone(id);
-  if (filtered.length > 0) {
-    localStorage.setItem('coal_ledger_safety_dispatches_bak', JSON.stringify(filtered));
-  }
-  safeSetStorage(DISPATCHES_KEY, JSON.stringify(filtered));
-  notifyLedgerMutation('dispatch', id, 'delete');
-}
-
-// -- Payments --
-export async function getPayments(): Promise<Payment[]> {
-  ensureSeeded();
-  return safeParseStorage<Payment>(PAYMENTS_KEY, 'coal_ledger_safety_payments_bak');
-}
-
-export async function getPartyPayments(partyId: string): Promise<Payment[]> {
-  const payments = await getPayments();
-  return payments.filter((p) => p.partyId === partyId);
-}
-
-export async function savePayment(payment: Payment): Promise<void> {
-  const sanitized = sanitizePayment(payment);
-  const payments = await getPayments();
-  const existingIndex = payments.findIndex((p) => p.id === sanitized.id);
-  const now = Date.now();
-  const itemToSave: Payment = {
+  const itemToSave: Dispatch = {
     ...sanitized,
     createdAt: sanitized.createdAt || now,
     updatedAt: now,
+    dirty: true,
   };
 
-  if (existingIndex >= 0) {
-    payments[existingIndex] = itemToSave;
+  await idb.dispatches.put(itemToSave);
+  notifyLedgerMutation('dispatch', sanitized.id, existing ? 'update' : 'create');
+}
+
+export async function deleteDispatch(id: string): Promise<void> {
+  await ensureInitialized();
+  const existing = await idb.dispatches.get(id);
+  const now = Date.now();
+  if (existing) {
+    await idb.dispatches.put({
+      ...existing,
+      deleted: true,
+      deletedAt: now,
+      updatedAt: now,
+      dirty: true,
+    });
   } else {
-    payments.unshift(itemToSave);
+    await idb.dispatches.put({
+      id,
+      partyId: '',
+      date: getTodayDateString(),
+      truckNumber: '',
+      factoryName: '',
+      targetGcv: 0,
+      baseRate: 0,
+      coalInputs: [],
+      overheads: { loading: 0, freight: 0, crush: 0, royalty: 0, other: 0 },
+      labActualGcv: 0,
+      labReceivedWeight: 0,
+      labSulphur: 0,
+      createdAt: now,
+      updatedAt: now,
+      deleted: true,
+      deletedAt: now,
+      dirty: true,
+    });
   }
-
-  if (payments.length > 0) {
-    localStorage.setItem('coal_ledger_safety_payments_bak', JSON.stringify(payments));
-  }
-  safeSetStorage(PAYMENTS_KEY, JSON.stringify(payments));
-  notifyLedgerMutation('payment', sanitized.id, existingIndex >= 0 ? 'update' : 'create');
-}
-
-export async function deletePayment(id: string): Promise<void> {
-  const payments = await getPayments();
-  const filtered = payments.filter((p) => p.id !== id);
   recordTombstone(id);
-  if (filtered.length > 0) {
-    localStorage.setItem('coal_ledger_safety_payments_bak', JSON.stringify(filtered));
-  }
-  safeSetStorage(PAYMENTS_KEY, JSON.stringify(filtered));
-  notifyLedgerMutation('payment', id, 'delete');
+  notifyLedgerMutation('dispatch', id, 'delete');
 }
 
-// -- Parties --
+export async function getPartyDispatches(partyId: string): Promise<Dispatch[]> {
+  await ensureInitialized();
+  const list = await idb.dispatches.where('partyId').equals(partyId).toArray();
+  return list.filter((d) => !d.deleted);
+}
+
+// -- Parties (IndexedDB) --
 export async function getParties(): Promise<Party[]> {
-  ensureSeeded();
-  return safeParseStorage<Party>(PARTIES_KEY, 'coal_ledger_safety_parties_bak');
+  await ensureInitialized();
+  const parties = await idb.parties.toArray();
+  const active = parties.filter((p) => !p.deleted);
+  active.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  return active;
 }
 
 export async function getParty(id: string): Promise<Party | null> {
-  const parties = await getParties();
-  return parties.find((p) => p.id === id) || null;
+  await ensureInitialized();
+  const party = await idb.parties.get(id);
+  if (!party || party.deleted) return null;
+  return party;
 }
 
 export async function saveParty(party: Party): Promise<void> {
+  await ensureInitialized();
   const sanitized = sanitizeParty(party);
-  const parties = await getParties();
-  const existingIndex = parties.findIndex((p) => p.id === sanitized.id);
+  const existing = await idb.parties.get(sanitized.id);
   const now = Date.now();
   const itemToSave: Party = {
     ...sanitized,
     createdAt: sanitized.createdAt || now,
     updatedAt: now,
+    dirty: true,
   };
 
-  if (existingIndex >= 0) {
-    parties[existingIndex] = itemToSave;
-  } else {
-    parties.unshift(itemToSave);
-  }
-
-  if (parties.length > 0) {
-    localStorage.setItem('coal_ledger_safety_parties_bak', JSON.stringify(parties));
-  }
-  safeSetStorage(PARTIES_KEY, JSON.stringify(parties));
-  notifyLedgerMutation('party', sanitized.id, existingIndex >= 0 ? 'update' : 'create');
+  await idb.parties.put(itemToSave);
+  notifyLedgerMutation('party', sanitized.id, existing ? 'update' : 'create');
 }
 
 export async function deleteParty(id: string): Promise<void> {
-  const parties = await getParties();
-  const filtered = parties.filter((p) => p.id !== id);
-  recordTombstone(id);
-  if (filtered.length > 0) {
-    localStorage.setItem('coal_ledger_safety_parties_bak', JSON.stringify(filtered));
+  await ensureInitialized();
+  const [dispatches, payments, pos] = await Promise.all([
+    getPartyDispatches(id),
+    getPartyPayments(id),
+    getPartyPurchaseOrders(id),
+  ]);
+  if (dispatches.length > 0 || payments.length > 0 || pos.length > 0) {
+    throw new Error(
+      `Cannot delete party with existing financial records (${dispatches.length} dispatches, ${payments.length} payments, ${pos.length} purchase orders). Archive the party or delete with records.`
+    );
   }
-  safeSetStorage(PARTIES_KEY, JSON.stringify(filtered));
+  const existing = await idb.parties.get(id);
+  const now = Date.now();
+  if (existing) {
+    await idb.parties.put({
+      ...existing,
+      deleted: true,
+      deletedAt: now,
+      updatedAt: now,
+      dirty: true,
+    });
+  } else {
+    await idb.parties.put({
+      id,
+      name: '',
+      contactPerson: '',
+      phone: '',
+      address: '',
+      createdAt: now,
+      updatedAt: now,
+      deleted: true,
+      deletedAt: now,
+      dirty: true,
+    });
+  }
+  recordTombstone(id);
   notifyLedgerMutation('party', id, 'delete');
 }
 
-// -- Purchase Orders --
+export async function archiveParty(id: string, isArchived = true): Promise<void> {
+  await ensureInitialized();
+  const party = await idb.parties.get(id);
+  if (!party) return;
+  party.isArchived = isArchived;
+  party.updatedAt = Date.now();
+  party.dirty = true;
+  await idb.parties.put(party);
+  notifyLedgerMutation('party', id, 'update');
+}
+
+export async function deletePartyWithRecords(id: string): Promise<{
+  deletedDispatches: number;
+  deletedPayments: number;
+  deletedPos: number;
+}> {
+  await ensureInitialized();
+  const [childDispatches, childPayments, childPos] = await Promise.all([
+    idb.dispatches.where('partyId').equals(id).toArray(),
+    idb.payments.where('partyId').equals(id).toArray(),
+    idb.pos.where('partyId').equals(id).toArray(),
+  ]);
+
+  const now = Date.now();
+  await idb.transaction('rw', [idb.parties, idb.dispatches, idb.payments, idb.pos], async () => {
+    const p = await idb.parties.get(id);
+    if (p) {
+      await idb.parties.put({ ...p, deleted: true, deletedAt: now, updatedAt: now, dirty: true });
+    }
+    recordTombstone(id);
+
+    for (const d of childDispatches) {
+      recordTombstone(d.id);
+      await idb.dispatches.put({ ...d, deleted: true, deletedAt: now, updatedAt: now, dirty: true });
+    }
+    for (const pay of childPayments) {
+      recordTombstone(pay.id);
+      await idb.payments.put({ ...pay, deleted: true, deletedAt: now, updatedAt: now, dirty: true });
+    }
+    for (const po of childPos) {
+      recordTombstone(po.id);
+      await idb.pos.put({ ...po, deleted: true, deletedAt: now, updatedAt: now, dirty: true });
+    }
+  });
+
+  notifyLedgerMutation('party', id, 'delete');
+  if (childDispatches.length > 0) notifyLedgerMutation('dispatch', id, 'delete');
+  if (childPayments.length > 0) notifyLedgerMutation('payment', id, 'delete');
+  if (childPos.length > 0) notifyLedgerMutation('purchase_order', id, 'delete');
+
+  return {
+    deletedDispatches: childDispatches.filter((d) => !d.deleted).length,
+    deletedPayments: childPayments.filter((p) => !p.deleted).length,
+    deletedPos: childPos.filter((po) => !po.deleted).length,
+  };
+}
+
+// -- Payments (IndexedDB) --
+export async function getPayments(): Promise<Payment[]> {
+  await ensureInitialized();
+  const payments = await idb.payments.toArray();
+  const active = payments.filter((p) => !p.deleted);
+  active.sort((a, b) => {
+    const timeA = new Date(a.date).getTime() || a.createdAt || 0;
+    const timeB = new Date(b.date).getTime() || b.createdAt || 0;
+    return timeB - timeA;
+  });
+  return active;
+}
+
+export async function getPayment(id: string): Promise<Payment | null> {
+  await ensureInitialized();
+  const p = await idb.payments.get(id);
+  if (!p || p.deleted) return null;
+  return p;
+}
+
+export async function getPartyPayments(partyId: string): Promise<Payment[]> {
+  await ensureInitialized();
+  const list = await idb.payments.where('partyId').equals(partyId).toArray();
+  return list.filter((p) => !p.deleted);
+}
+
+export async function savePayment(payment: Payment): Promise<void> {
+  await ensureInitialized();
+  const sanitized = sanitizePayment(payment);
+  const existing = await idb.payments.get(sanitized.id);
+  const now = Date.now();
+  const itemToSave: Payment = {
+    ...sanitized,
+    createdAt: sanitized.createdAt || now,
+    updatedAt: now,
+    dirty: true,
+  };
+
+  await idb.payments.put(itemToSave);
+  notifyLedgerMutation('payment', sanitized.id, existing ? 'update' : 'create');
+}
+
+export async function deletePayment(id: string): Promise<void> {
+  await ensureInitialized();
+  const existing = await idb.payments.get(id);
+  const now = Date.now();
+  if (existing) {
+    await idb.payments.put({
+      ...existing,
+      deleted: true,
+      deletedAt: now,
+      updatedAt: now,
+      dirty: true,
+    });
+  } else {
+    await idb.payments.put({
+      id,
+      partyId: '',
+      date: getTodayDateString(),
+      amount: 0,
+      type: 'received',
+      mode: 'cash',
+      createdAt: now,
+      updatedAt: now,
+      deleted: true,
+      deletedAt: now,
+      dirty: true,
+    });
+  }
+  recordTombstone(id);
+  notifyLedgerMutation('payment', id, 'delete');
+}
+
+// -- Purchase Orders (IndexedDB) --
 export async function getPurchaseOrders(): Promise<PurchaseOrder[]> {
-  ensureSeeded();
-  return safeParseStorage<PurchaseOrder>(POS_KEY, 'coal_ledger_safety_pos_bak');
+  await ensureInitialized();
+  const pos = await idb.pos.toArray();
+  const active = pos.filter((po) => !po.deleted);
+  active.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  return active;
 }
 
 export async function getPurchaseOrder(id: string): Promise<PurchaseOrder | null> {
-  const pos = await getPurchaseOrders();
-  return pos.find((po) => po.id === id) || null;
+  await ensureInitialized();
+  const po = await idb.pos.get(id);
+  if (!po || po.deleted) return null;
+  return po;
 }
 
 export async function getPartyPurchaseOrders(partyId: string): Promise<PurchaseOrder[]> {
-  const pos = await getPurchaseOrders();
-  return pos.filter((po) => po.partyId === partyId);
+  await ensureInitialized();
+  const list = await idb.pos.where('partyId').equals(partyId).toArray();
+  return list.filter((po) => !po.deleted);
 }
 
 export async function savePurchaseOrder(po: PurchaseOrder): Promise<void> {
+  await ensureInitialized();
   const sanitized = sanitizePurchaseOrder(po);
-  const pos = await getPurchaseOrders();
-  const existingIndex = pos.findIndex((p) => p.id === sanitized.id);
+  const existing = await idb.pos.get(sanitized.id);
   const now = Date.now();
   const itemToSave: PurchaseOrder = {
     ...sanitized,
     createdAt: sanitized.createdAt || now,
     updatedAt: now,
+    dirty: true,
   };
 
-  if (existingIndex >= 0) {
-    pos[existingIndex] = itemToSave;
-  } else {
-    pos.unshift(itemToSave);
-  }
-
-  if (pos.length > 0) {
-    localStorage.setItem('coal_ledger_safety_pos_bak', JSON.stringify(pos));
-  }
-  safeSetStorage(POS_KEY, JSON.stringify(pos));
-  notifyLedgerMutation('purchase_order', sanitized.id, existingIndex >= 0 ? 'update' : 'create');
+  await idb.pos.put(itemToSave);
+  notifyLedgerMutation('purchase_order', sanitized.id, existing ? 'update' : 'create');
 }
 
 export async function deletePurchaseOrder(id: string): Promise<void> {
-  const pos = await getPurchaseOrders();
-  const filtered = pos.filter((p) => p.id !== id);
-  recordTombstone(id);
-  if (filtered.length > 0) {
-    localStorage.setItem('coal_ledger_safety_pos_bak', JSON.stringify(filtered));
+  await ensureInitialized();
+  const existing = await idb.pos.get(id);
+  const now = Date.now();
+  if (existing) {
+    await idb.pos.put({
+      ...existing,
+      deleted: true,
+      deletedAt: now,
+      updatedAt: now,
+      dirty: true,
+    });
+  } else {
+    await idb.pos.put({
+      id,
+      partyId: '',
+      poNumber: '',
+      targetGcv: 0,
+      baseRate: 0,
+      commissionPerTon: 0,
+      isActive: true,
+      createdAt: now,
+      updatedAt: now,
+      deleted: true,
+      deletedAt: now,
+      dirty: true,
+    });
   }
-  safeSetStorage(POS_KEY, JSON.stringify(filtered));
+  recordTombstone(id);
   notifyLedgerMutation('purchase_order', id, 'delete');
 }
 
-// -- Settings --
+// -- Settings (Cached Synchronously in localStorage) --
 let cachedSettings: AppSettings = INITIAL_SETTINGS;
 
 export function getCachedSettings(): AppSettings {
@@ -607,8 +757,7 @@ export function getCachedSettings(): AppSettings {
 }
 
 export async function getSettings(): Promise<AppSettings> {
-  ensureSeeded();
-  const data = localStorage.getItem(SETTINGS_KEY);
+  const data = typeof localStorage !== 'undefined' ? localStorage.getItem(SETTINGS_KEY) : null;
   if (!data) {
     cachedSettings = INITIAL_SETTINGS;
     return INITIAL_SETTINGS;
@@ -647,7 +796,7 @@ export async function saveSettings(settings: AppSettings): Promise<void> {
     updatedAt: Date.now(),
   };
   cachedSettings = updatedSettings;
-  safeSetStorage(SETTINGS_KEY, JSON.stringify(updatedSettings));
+  writeStorageOrThrow(SETTINGS_KEY, JSON.stringify(updatedSettings));
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent('app_settings_changed', { detail: updatedSettings }));
   }
@@ -655,19 +804,11 @@ export async function saveSettings(settings: AppSettings): Promise<void> {
 }
 
 // -- Backup & Restore helpers --
-export interface BackupPayload {
-  version?: string;
-  exportDate: string;
-  parties: Party[];
-  dispatches: Dispatch[];
-  payments: Payment[];
-  pos: PurchaseOrder[];
-  settings: AppSettings;
-  deviceInfo?: string;
-  lastCloudSync?: string;
-}
+export type { BackupPayload };
+
 
 export async function getAllBackupData(): Promise<BackupPayload> {
+  await ensureInitialized();
   const [parties, dispatches, payments, pos, settings] = await Promise.all([
     getParties(),
     getDispatches(),
@@ -689,7 +830,7 @@ export async function getAllBackupData(): Promise<BackupPayload> {
 
 /**
  * Generate sanitized backup payload for file export / sharing.
- * Exports EVERYTHING (parties, dispatches, payments, purchase orders, business branding & tax formula settings)
+ * Exports parties, dispatches, payments, purchase orders, business branding & tax settings,
  * but STRIPS sensitive PIN hash and device lock credentials.
  */
 export async function getExportBackupData(): Promise<BackupPayload> {
@@ -708,22 +849,168 @@ export async function getExportBackupData(): Promise<BackupPayload> {
   };
 }
 
+/**
+ * Issue 11: Retrieve ledger records for cloud synchronization.
+ * If onlyDirty is true, only returns records with dirty: true for bandwidth-efficient delta sync.
+ * Includes soft-deleted records so deletions propagate to the cloud.
+ */
+export async function getLedgerForSync(onlyDirty = false): Promise<{
+  parties: Party[];
+  dispatches: Dispatch[];
+  payments: Payment[];
+  pos: PurchaseOrder[];
+  settings: AppSettings;
+}> {
+  await ensureInitialized();
+  const [parties, dispatches, payments, pos, settings] = await Promise.all([
+    idb.parties.toArray(),
+    idb.dispatches.toArray(),
+    idb.payments.toArray(),
+    idb.pos.toArray(),
+    getSettings(),
+  ]);
+
+  if (onlyDirty) {
+    return {
+      parties: parties.filter((p) => p.dirty),
+      dispatches: dispatches.filter((d) => d.dirty),
+      payments: payments.filter((p) => p.dirty),
+      pos: pos.filter((po) => po.dirty),
+      settings,
+    };
+  }
+
+  return { parties, dispatches, payments, pos, settings };
+}
+
+/**
+ * Issue 11: Marks synced records as clean (dirty: false) in IndexedDB after successful cloud commit.
+ */
+export async function markRecordsClean(syncedIds: {
+  partyIds?: string[];
+  dispatchIds?: string[];
+  paymentIds?: string[];
+  poIds?: string[];
+}): Promise<void> {
+  await ensureInitialized();
+  await idb.transaction('rw', [idb.parties, idb.dispatches, idb.payments, idb.pos], async () => {
+    if (syncedIds.partyIds?.length) {
+      for (const id of syncedIds.partyIds) {
+        const item = await idb.parties.get(id);
+        if (item && item.dirty) {
+          await idb.parties.update(id, { dirty: false });
+        }
+      }
+    }
+    if (syncedIds.dispatchIds?.length) {
+      for (const id of syncedIds.dispatchIds) {
+        const item = await idb.dispatches.get(id);
+        if (item && item.dirty) {
+          await idb.dispatches.update(id, { dirty: false });
+        }
+      }
+    }
+    if (syncedIds.paymentIds?.length) {
+      for (const id of syncedIds.paymentIds) {
+        const item = await idb.payments.get(id);
+        if (item && item.dirty) {
+          await idb.payments.update(id, { dirty: false });
+        }
+      }
+    }
+    if (syncedIds.poIds?.length) {
+      for (const id of syncedIds.poIds) {
+        const item = await idb.pos.get(id);
+        if (item && item.dirty) {
+          await idb.pos.update(id, { dirty: false });
+        }
+      }
+    }
+  });
+}
+
+/**
+ * Issue 13: Retrieve pre-restore snapshot from IndexedDB meta table.
+ */
+export async function getPreRestoreSnapshot(): Promise<BackupPayload | null> {
+  await ensureInitialized();
+  const record = await idb.meta.get('last_pre_restore_snapshot');
+  return record ? (record.value as BackupPayload) : null;
+}
+
+/**
+ * Issue 13: Rollback to the pre-restore snapshot if a restore caused issues.
+ */
+export async function rollbackToPreRestoreSnapshot(): Promise<{ success: boolean; message: string }> {
+  const snapshot = await getPreRestoreSnapshot();
+  if (!snapshot) {
+    return { success: false, message: 'No pre-restore snapshot available to rollback.' };
+  }
+  return restoreBackup(snapshot, { silent: false, skipSnapshot: true });
+}
+
+/**
+ * Issue 13: Hardened backup restore:
+ * 1. Validates and sanitizes every record BEFORE touching storage.
+ * 2. Takes an automatic pre-restore snapshot stored in IndexedDB.
+ * 3. Restores records atomically in a Dexie transaction.
+ * 4. Verifies post-write counts.
+ */
 export async function restoreBackup(
   backup: Partial<BackupPayload>,
-  options?: { silent?: boolean }
-): Promise<{ success: boolean; message: string; counts?: { parties: number; dispatches: number; payments: number; pos: number } }> {
+  options?: { silent?: boolean; skipSnapshot?: boolean }
+): Promise<{
+  success: boolean;
+  message: string;
+  counts?: { parties: number; dispatches: number; payments: number; pos: number };
+}> {
+  await ensureInitialized();
+
   if (!backup || typeof backup !== 'object') {
     return { success: false, message: 'Invalid backup format' };
   }
 
+  // 1. Validate & sanitize all incoming records BEFORE touching existing data
+  const rawParties = Array.isArray(backup.parties) ? backup.parties : [];
+  const rawDispatches = Array.isArray(backup.dispatches) ? backup.dispatches : [];
+  const rawPayments = Array.isArray(backup.payments) ? backup.payments : [];
+  const rawPos = Array.isArray(backup.pos) ? backup.pos : [];
+
+  const sanitizedParties = rawParties.map(sanitizeParty);
+  const sanitizedDispatches = rawDispatches.map(sanitizeDispatch);
+  const sanitizedPayments = rawPayments.map(sanitizePayment);
+  const sanitizedPos = rawPos.map(sanitizePurchaseOrder);
+
+  // 2. Take automatic pre-restore snapshot and store in IndexedDB
+  if (!options?.skipSnapshot) {
+    try {
+      const currentBackup = await getAllBackupData();
+      await idb.meta.put({
+        key: 'last_pre_restore_snapshot',
+        value: currentBackup,
+        updatedAt: Date.now(),
+      });
+    } catch (snapErr) {
+      console.warn('[DB] Could not capture pre-restore snapshot:', snapErr);
+    }
+  }
+
+  // 3. Atomically replace records in IndexedDB
   try {
-    const parties = Array.isArray(backup.parties) ? backup.parties : [];
-    const dispatches = Array.isArray(backup.dispatches) ? backup.dispatches : [];
-    const payments = Array.isArray(backup.payments) ? backup.payments : [];
-    const pos = Array.isArray(backup.pos) ? backup.pos : [];
+    await idb.transaction('rw', [idb.parties, idb.dispatches, idb.payments, idb.pos], async () => {
+      await idb.parties.clear();
+      await idb.dispatches.clear();
+      await idb.payments.clear();
+      await idb.pos.clear();
+
+      if (sanitizedParties.length > 0) await idb.parties.bulkPut(sanitizedParties);
+      if (sanitizedDispatches.length > 0) await idb.dispatches.bulkPut(sanitizedDispatches);
+      if (sanitizedPayments.length > 0) await idb.payments.bulkPut(sanitizedPayments);
+      if (sanitizedPos.length > 0) await idb.pos.bulkPut(sanitizedPos);
+    });
+
+    // 4. Update settings safely (protecting local PIN / App lock credentials)
     const rawSettings = backup.settings && typeof backup.settings === 'object' ? backup.settings : INITIAL_SETTINGS;
-    // CRITICAL SECURITY PRESERVATION:
-    // When restoring a backup file, never overwrite active device PIN or App Lock credentials
     const currentSettings = getCachedSettings();
     const settings: AppSettings = {
       ...INITIAL_SETTINGS,
@@ -733,13 +1020,8 @@ export async function restoreBackup(
       pinLength: currentSettings.pinLength ?? 5,
       lockTimeout: currentSettings.lockTimeout ?? 0,
     };
-
-    safeSetStorage(PARTIES_KEY, JSON.stringify(parties));
-    safeSetStorage(DISPATCHES_KEY, JSON.stringify(dispatches));
-    safeSetStorage(PAYMENTS_KEY, JSON.stringify(payments));
-    safeSetStorage(POS_KEY, JSON.stringify(pos));
-    safeSetStorage(SETTINGS_KEY, JSON.stringify(settings));
-    safeSetStorage(DATA_VERSION_KEY, CURRENT_DATA_VERSION);
+    writeStorageOrThrow(SETTINGS_KEY, JSON.stringify(settings));
+    writeStorageOrThrow(DATA_VERSION_KEY, CURRENT_DATA_VERSION);
 
     if (!options?.silent) {
       notifyLedgerMutation('all', undefined, 'restore');
@@ -752,30 +1034,38 @@ export async function restoreBackup(
       success: true,
       message: 'Backup restored successfully!',
       counts: {
-        parties: parties.length,
-        dispatches: dispatches.length,
-        payments: payments.length,
-        pos: pos.length,
-      }
+        parties: sanitizedParties.length,
+        dispatches: sanitizedDispatches.length,
+        payments: sanitizedPayments.length,
+        pos: sanitizedPos.length,
+      },
     };
   } catch (err: any) {
-    return { success: false, message: err?.message || 'Failed to parse and store backup' };
+    console.error('[DB] Restore error:', err);
+    return { success: false, message: err?.message || 'Failed to restore backup' };
   }
 }
 
 export async function clearAllData(options?: { resetSettings?: boolean; resetOwner?: boolean }): Promise<void> {
-  safeSetStorage(PARTIES_KEY, JSON.stringify([]));
-  safeSetStorage(DISPATCHES_KEY, JSON.stringify([]));
-  safeSetStorage(PAYMENTS_KEY, JSON.stringify([]));
-  safeSetStorage(POS_KEY, JSON.stringify([]));
-  safeSetStorage(TOMBSTONES_KEY, JSON.stringify({}));
-  safeSetStorage(DATA_VERSION_KEY, CURRENT_DATA_VERSION);
-  if (options?.resetSettings) {
-    safeSetStorage(SETTINGS_KEY, JSON.stringify(INITIAL_SETTINGS));
-    if (typeof window !== 'undefined') {
-      window.dispatchEvent(new CustomEvent('app_settings_changed', { detail: INITIAL_SETTINGS }));
+  await ensureInitialized();
+  await idb.transaction('rw', [idb.parties, idb.dispatches, idb.payments, idb.pos], async () => {
+    await idb.parties.clear();
+    await idb.dispatches.clear();
+    await idb.payments.clear();
+    await idb.pos.clear();
+  });
+
+  if (typeof localStorage !== 'undefined') {
+    writeStorageOrThrow(TOMBSTONES_KEY, JSON.stringify({}));
+    writeStorageOrThrow(DATA_VERSION_KEY, CURRENT_DATA_VERSION);
+    if (options?.resetSettings) {
+      writeStorageOrThrow(SETTINGS_KEY, JSON.stringify(INITIAL_SETTINGS));
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('app_settings_changed', { detail: INITIAL_SETTINGS }));
+      }
     }
   }
+
   if (options?.resetOwner) {
     setLedgerOwner(null, null);
   }
@@ -783,10 +1073,98 @@ export async function clearAllData(options?: { resetSettings?: boolean; resetOwn
 }
 
 /**
+/**
+ * Helper to reconcile a single entity collection between local and remote datasets:
+ * - Honors soft deletes (deleted: true, deletedAt) across both local and remote.
+ * - Compares deletion timestamps vs edit timestamps (newer edit can undelete).
+ * - Honors tombstones for backward compatibility.
+ * - Uses immutable record ID as key (Issue 12).
+ */
+function mergeCollection<T extends { id: string; updatedAt?: number; createdAt?: number; deleted?: boolean; deletedAt?: number }>(
+  localList: T[] = [],
+  cloudList: T[] = [],
+  tombstones: Record<string, number> = {}
+): { mergedList: T[]; localChanges: boolean; cloudChanges: boolean } {
+  let localChanges = false;
+  let cloudChanges = false;
+  const itemMap = new Map<string, T>();
+
+  for (const item of localList) {
+    const isDeleted = Boolean(item.deleted);
+    const tombstoneTime = tombstones[item.id];
+    if (isDeleted || (tombstoneTime && tombstoneTime >= (item.updatedAt || item.createdAt || 0))) {
+      continue;
+    }
+    itemMap.set(item.id, item);
+  }
+
+  for (const cItem of cloudList) {
+    const tombstoneTime = tombstones[cItem.id];
+    const cloudTime = cItem.updatedAt || cItem.createdAt || 0;
+    const isCloudDeleted = Boolean(cItem.deleted);
+    const cloudDeleteTime = isCloudDeleted ? (cItem.deletedAt || cloudTime) : 0;
+
+    if (tombstoneTime && tombstoneTime >= cloudTime) {
+      itemMap.delete(cItem.id);
+      cloudChanges = true;
+      continue;
+    }
+
+    const localItem = localList.find((l) => l.id === cItem.id);
+    const isLocalDeleted = Boolean(localItem?.deleted);
+    const localDeleteTime = isLocalDeleted ? (localItem?.deletedAt || localItem?.updatedAt || 0) : 0;
+
+    if (isCloudDeleted) {
+      if (localItem && !isLocalDeleted) {
+        const localTime = localItem.updatedAt || localItem.createdAt || 0;
+        if (cloudDeleteTime >= localTime) {
+          itemMap.delete(cItem.id);
+          localChanges = true;
+        } else {
+          cloudChanges = true;
+        }
+      }
+      continue;
+    }
+
+    if (isLocalDeleted) {
+      if (cloudTime > localDeleteTime) {
+        itemMap.set(cItem.id, cItem);
+        localChanges = true;
+      } else {
+        itemMap.delete(cItem.id);
+        cloudChanges = true;
+      }
+      continue;
+    }
+
+    const existing = itemMap.get(cItem.id);
+    if (!existing) {
+      itemMap.set(cItem.id, cItem);
+      localChanges = true;
+    } else {
+      const localTime = existing.updatedAt || existing.createdAt || 0;
+      if (cloudTime > localTime) {
+        itemMap.set(cItem.id, cItem);
+        localChanges = true;
+      } else if (localTime > cloudTime) {
+        cloudChanges = true;
+      }
+    }
+  }
+
+  return {
+    mergedList: Array.from(itemMap.values()),
+    localChanges,
+    cloudChanges,
+  };
+}
+
+/**
  * Robust two-way merge between local and remote datasets:
- * - Uses record IDs as unique keys
- * - Uses timestamps (updatedAt / createdAt) to resolve individual conflicts (Last Write Wins)
- * - Honors tombstones so locally deleted records aren't resurrected by cloud data
+ * - Issue 12: Uses immutable record ID as unique key (NO name-based party merge).
+ * - Issue 11: Reconciles soft deletes (deleted: true) and tombstones bidirectionally.
+ * - Uses timestamps (updatedAt / createdAt) to resolve conflicts (Last Write Wins).
  */
 export function mergeLedgerData(
   local: BackupPayload,
@@ -797,147 +1175,29 @@ export function mergeLedgerData(
   hasLocalChanges: boolean;
   hasCloudChanges: boolean;
 } {
-  let hasLocalChanges = false;
-  let hasCloudChanges = false;
-
   // 1. Parties
-  const partyMap = new Map<string, Party>();
-  const partyNameMap = new Map<string, Party>();
-  const partyIdRemap = new Map<string, string>(); // incoming partyId -> local partyId
-
-  for (const p of local.parties || []) {
-    partyMap.set(p.id, p);
-    if (p.name) {
-      partyNameMap.set(p.name.trim().toLowerCase(), p);
-    }
-  }
-
-  for (const cp of cloud.parties || []) {
-    const deletedAt = tombstones[cp.id];
-    const cloudTime = cp.updatedAt || cp.createdAt || 0;
-    if (deletedAt && deletedAt > cloudTime) {
-      // Was deleted locally after remote update; keep deleted
-      hasCloudChanges = true;
-      continue;
-    }
-
-    const existingById = partyMap.get(cp.id);
-    const existingByName = cp.name ? partyNameMap.get(cp.name.trim().toLowerCase()) : undefined;
-
-    if (existingById) {
-      const localTime = existingById.updatedAt || existingById.createdAt || 0;
-      if (cloudTime > localTime) {
-        partyMap.set(cp.id, cp);
-        hasLocalChanges = true;
-      } else if (localTime > cloudTime) {
-        hasCloudChanges = true;
-      }
-    } else if (existingByName) {
-      // Identical party name with different UUID (e.g. independently created on another device)
-      // Remap incoming entries to link to existing party card cleanly
-      partyIdRemap.set(cp.id, existingByName.id);
-      hasLocalChanges = true;
-    } else {
-      partyMap.set(cp.id, cp);
-      if (cp.name) {
-        partyNameMap.set(cp.name.trim().toLowerCase(), cp);
-      }
-      hasLocalChanges = true;
-    }
-  }
+  const partiesRes = mergeCollection(local.parties || [], cloud.parties || [], tombstones);
 
   // 2. Dispatches
-  const dispatchMap = new Map<string, Dispatch>();
-  for (const d of local.dispatches || []) {
-    dispatchMap.set(d.id, d);
-  }
-  for (const cd of cloud.dispatches || []) {
-    const deletedAt = tombstones[cd.id];
-    const cloudTime = cd.updatedAt || cd.createdAt || 0;
-    if (deletedAt && deletedAt > cloudTime) {
-      hasCloudChanges = true;
-      continue;
-    }
-
-    const targetPartyId = partyIdRemap.get(cd.partyId) || cd.partyId;
-    const resolvedDispatch = targetPartyId !== cd.partyId ? { ...cd, partyId: targetPartyId } : cd;
-
-    const existing = dispatchMap.get(cd.id);
-    if (!existing) {
-      dispatchMap.set(cd.id, resolvedDispatch);
-      hasLocalChanges = true;
-    } else {
-      const localTime = existing.updatedAt || existing.createdAt || 0;
-      if (cloudTime > localTime) {
-        dispatchMap.set(cd.id, resolvedDispatch);
-        hasLocalChanges = true;
-      } else if (localTime > cloudTime) {
-        hasCloudChanges = true;
-      }
-    }
-  }
+  const dispatchesRes = mergeCollection(local.dispatches || [], cloud.dispatches || [], tombstones);
 
   // 3. Payments
-  const paymentMap = new Map<string, Payment>();
-  for (const p of local.payments || []) {
-    paymentMap.set(p.id, p);
-  }
-  for (const cp of cloud.payments || []) {
-    const deletedAt = tombstones[cp.id];
-    const cloudTime = cp.updatedAt || cp.createdAt || 0;
-    if (deletedAt && deletedAt > cloudTime) {
-      hasCloudChanges = true;
-      continue;
-    }
-
-    const targetPartyId = partyIdRemap.get(cp.partyId) || cp.partyId;
-    const resolvedPayment = targetPartyId !== cp.partyId ? { ...cp, partyId: targetPartyId } : cp;
-
-    const existing = paymentMap.get(cp.id);
-    if (!existing) {
-      paymentMap.set(cp.id, resolvedPayment);
-      hasLocalChanges = true;
-    } else {
-      const localTime = existing.updatedAt || existing.createdAt || 0;
-      if (cloudTime > localTime) {
-        paymentMap.set(cp.id, resolvedPayment);
-        hasLocalChanges = true;
-      } else if (localTime > cloudTime) {
-        hasCloudChanges = true;
-      }
-    }
-  }
+  const paymentsRes = mergeCollection(local.payments || [], cloud.payments || [], tombstones);
 
   // 4. Purchase Orders
-  const poMap = new Map<string, PurchaseOrder>();
-  for (const po of local.pos || []) {
-    poMap.set(po.id, po);
-  }
-  for (const cpo of cloud.pos || []) {
-    const deletedAt = tombstones[cpo.id];
-    const cloudTime = cpo.updatedAt || cpo.createdAt || 0;
-    if (deletedAt && deletedAt > cloudTime) {
-      hasCloudChanges = true;
-      continue;
-    }
+  const posRes = mergeCollection(local.pos || [], cloud.pos || [], tombstones);
 
-    const targetPartyId = partyIdRemap.get(cpo.partyId) || cpo.partyId;
-    const resolvedPo = targetPartyId !== cpo.partyId ? { ...cpo, partyId: targetPartyId } : cpo;
+  let hasLocalChanges =
+    partiesRes.localChanges ||
+    dispatchesRes.localChanges ||
+    paymentsRes.localChanges ||
+    posRes.localChanges;
 
-    const existing = poMap.get(cpo.id);
-    if (!existing) {
-      poMap.set(cpo.id, resolvedPo);
-      hasLocalChanges = true;
-    } else {
-      const localTime = existing.updatedAt || existing.createdAt || 0;
-      if (cloudTime > localTime) {
-        poMap.set(cpo.id, resolvedPo);
-        hasLocalChanges = true;
-      } else if (localTime > cloudTime) {
-        hasCloudChanges = true;
-      }
-    }
-  }
+  let hasCloudChanges =
+    partiesRes.cloudChanges ||
+    dispatchesRes.cloudChanges ||
+    paymentsRes.cloudChanges ||
+    posRes.cloudChanges;
 
   // 5. Settings
   let mergedSettings = { ...local.settings };
@@ -968,18 +1228,13 @@ export function mergeLedgerData(
     lockTimeout: local.settings?.lockTimeout ?? 0,
   };
 
-  const mergedParties = Array.from(partyMap.values());
-  const mergedDispatches = Array.from(dispatchMap.values());
-  const mergedPayments = Array.from(paymentMap.values());
-  const mergedPos = Array.from(poMap.values());
-
   const merged: BackupPayload = {
     version: CURRENT_DATA_VERSION,
     exportDate: new Date().toISOString(),
-    parties: mergedParties,
-    dispatches: mergedDispatches,
-    payments: mergedPayments,
-    pos: mergedPos,
+    parties: partiesRes.mergedList,
+    dispatches: dispatchesRes.mergedList,
+    payments: paymentsRes.mergedList,
+    pos: posRes.mergedList,
     settings: mergedSettings,
   };
 

@@ -1,14 +1,37 @@
 import { Share } from '@capacitor/share';
 import { Filesystem, Directory } from '@capacitor/filesystem';
 import { Capacitor } from '@capacitor/core';
-import html2canvas from 'html2canvas';
-import jsPDF from 'jspdf';
-import autoTable from 'jspdf-autotable';
-import ExcelJS from 'exceljs';
+import type ExcelJS from 'exceljs';
 import type { Dispatch, Party, Payment, PurchaseOrder, AppSettings } from '../types';
 import { calculateSettlement, calculatePartyBalance, calculateTransitLoss } from './calculations';
 import { getSettings, getExportBackupData } from '../lib/db';
 import { getCurrencySymbol, formatAmountNumber, getCurrencyExcelFormat } from './currency';
+import { getTodayDateString } from './dateUtils';
+
+// On-demand dynamic loaders for heavy export engines (Issue 15: Bundle Performance)
+async function loadHtml2Canvas() {
+  const mod = await import('html2canvas');
+  const fn = (typeof mod.default === 'function' ? mod.default : mod) as typeof import('html2canvas').default;
+  return fn;
+}
+
+async function loadPdfEngines() {
+  const [jsPdfMod, autoTableMod] = await Promise.all([
+    import('jspdf'),
+    import('jspdf-autotable'),
+  ]);
+  const autoTableFn = (typeof autoTableMod.default === 'function' ? autoTableMod.default : autoTableMod) as unknown as typeof import('jspdf-autotable').default;
+  const JsPdfClass = (typeof jsPdfMod.default === 'function' ? jsPdfMod.default : jsPdfMod.jsPDF) as unknown as typeof import('jspdf').jsPDF;
+  return {
+    jsPDF: JsPdfClass,
+    autoTable: autoTableFn,
+  };
+}
+
+async function loadExcelEngine() {
+  const mod = await import('exceljs');
+  return mod.default || mod;
+}
 
 export interface ShareFileOptions {
   /** Base64 string (with or without data URI prefix) */
@@ -99,6 +122,7 @@ export async function shareReceiptImage(
   dispatch: Dispatch,
   party?: Party
 ): Promise<void> {
+  const html2canvas = await loadHtml2Canvas();
   // Capture high-DPI image with html2canvas (scale: 3 for ultra-sharp mobile rendering)
   const canvas = await html2canvas(element, {
     scale: 3,
@@ -133,6 +157,7 @@ export async function sharePaymentImage(
   payment: Payment,
   party?: Party
 ): Promise<void> {
+  const html2canvas = await loadHtml2Canvas();
   const canvas = await html2canvas(element, {
     scale: 3,
     useCORS: true,
@@ -212,6 +237,7 @@ async function exportPartyStatementPdf(options: ExportDispatchesPdfOptions & { s
   const party = options.party || options.parties.find((p) => p.name === options.partyName);
   const partyName = party?.name || options.partyName || 'Party Client';
 
+  const { jsPDF, autoTable } = await loadPdfEngines();
   const doc = new jsPDF({
     orientation: 'portrait',
     unit: 'mm',
@@ -660,7 +686,7 @@ async function exportPartyStatementPdf(options: ExportDispatchesPdfOptions & { s
 
   const pdfDataUri = doc.output('datauristring');
   const safeName = partyName.replace(/[^a-zA-Z0-9_-]/g, '_');
-  const dateStamp = new Date().toISOString().split('T')[0];
+  const dateStamp = getTodayDateString();
   const fileName = `Statement-${safeName}-${dateStamp}.pdf`;
 
   await shareBase64File({
@@ -688,6 +714,7 @@ async function exportFleetAuditPdf(options: ExportDispatchesPdfOptions & { setti
     settings,
   } = options;
 
+  const { jsPDF, autoTable } = await loadPdfEngines();
   const doc = new jsPDF({
     orientation: 'landscape',
     unit: 'mm',
@@ -1082,7 +1109,7 @@ async function exportFleetAuditPdf(options: ExportDispatchesPdfOptions & { setti
 
   const pdfDataUri = doc.output('datauristring');
   const safeName = (partyName || 'All_Dispatches').replace(/[^a-zA-Z0-9_-]/g, '_');
-  const dateStamp = new Date().toISOString().split('T')[0];
+  const dateStamp = getTodayDateString();
   const fileName = `Ledger-${safeName}-${dateStamp}.pdf`;
 
   await shareBase64File({
@@ -1308,7 +1335,8 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
   const partyName = party?.name || options.partyName;
   const isSingleParty = Boolean(party || (partyName && payments.length > 0));
 
-  const wb = new ExcelJS.Workbook();
+  const ExcelJSModule = await loadExcelEngine();
+  const wb = new ExcelJSModule.Workbook();
   wb.creator = settings.businessName || 'Factory Ledger';
   wb.lastModifiedBy = settings.userName || 'Factory Ledger';
   wb.created = new Date();
@@ -1317,7 +1345,7 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
   const xlCurFmt = getCurrencyExcelFormat(settings.currency);
   const curSym = getCurrencySymbol(settings.currency);
 
-  const dateStamp = new Date().toISOString().split('T')[0];
+  const dateStamp = getTodayDateString();
   const companyName = settings.businessName || 'AWAN COAL LOGISTICS';
   const companySubline = [
     settings.phoneNumber ? `Tel: ${settings.phoneNumber}` : '',
@@ -2745,7 +2773,7 @@ export async function exportDatabaseBackupJson(): Promise<{
 }> {
   const exportData = await getExportBackupData();
   const jsonString = JSON.stringify(exportData, null, 2);
-  const dateStamp = new Date().toISOString().split('T')[0];
+  const dateStamp = getTodayDateString();
   const fileName = `factory-ledger-full-backup-${dateStamp}.json`;
 
   // Safe UTF-8 to Base64 conversion (handles Unicode characters reliably)

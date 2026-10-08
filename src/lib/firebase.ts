@@ -27,6 +27,7 @@ import {
 } from 'firebase/firestore';
 import { Capacitor } from '@capacitor/core';
 import { FirebaseAuthentication } from '@capacitor-firebase/authentication';
+import { markRecordsClean } from './db';
 
 // Web app's Firebase configuration read from environment variables (.env)
 const firebaseConfig = {
@@ -39,11 +40,26 @@ const firebaseConfig = {
   measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID || ""
 };
 
-// Initialize Firebase App singleton
-export const firebaseApp = !getApps().length ? initializeApp(firebaseConfig) : getApp();
+/**
+ * Validates whether valid Firebase environment credentials are configured.
+ * If false, app seamlessly falls back to offline-only local storage mode.
+ */
+export const isFirebaseConfigured: boolean = Boolean(
+  firebaseConfig.apiKey &&
+  firebaseConfig.apiKey.trim().length > 0 &&
+  firebaseConfig.apiKey !== 'your-firebase-api-key' &&
+  firebaseConfig.projectId &&
+  firebaseConfig.projectId.trim().length > 0
+);
+
+// Initialize Firebase App singleton safely
+export const firebaseApp = isFirebaseConfigured
+  ? (!getApps().length ? initializeApp(firebaseConfig) : getApp())
+  : (null as any);
 
 // Initialize Firebase Services with offline IndexedDB persistent cache
 function initFirestore() {
+  if (!isFirebaseConfigured || !firebaseApp) return null as any;
   try {
     return initializeFirestore(firebaseApp, {
       localCache: persistentLocalCache({
@@ -55,13 +71,16 @@ function initFirestore() {
   }
 }
 
-export const auth = getAuth(firebaseApp);
+export const auth = isFirebaseConfigured && firebaseApp ? getAuth(firebaseApp) : ({ currentUser: null } as any);
 export const db = initFirestore();
 
-export const googleProvider = new GoogleAuthProvider();
-googleProvider.setCustomParameters({
-  prompt: 'select_account'
-});
+export const googleProvider = isFirebaseConfigured ? (() => {
+  const provider = new GoogleAuthProvider();
+  provider.setCustomParameters({
+    prompt: 'select_account'
+  });
+  return provider;
+})() : (null as any);
 
 export interface GoogleUserData {
   displayName: string;
@@ -79,7 +98,7 @@ export function getFriendlyAuthErrorMessage(error: any): string {
   const msg = error.message || String(error);
 
   if (msg.includes('10:') || msg.includes('DEVELOPER_ERROR')) {
-    return 'Google Sign-In configuration error (Code 10). Please ensure your Android app (com.coalledger.app) and SHA-1 fingerprint are added in Firebase Console.';
+    return 'Google Sign-In configuration error (Code 10). Please ensure your Android app (com.factoryledger.app) and SHA-1 fingerprint are added in Firebase Console.';
   }
   if (msg.includes('12501') || code === 'auth/popup-closed-by-user' || msg.includes('cancel')) {
     return 'Sign-in was cancelled.';
@@ -105,6 +124,10 @@ export function getFriendlyAuthErrorMessage(error: any): string {
  * - On Web / Desktop: Opens the standard popup
  */
 export async function loginWithGoogle(): Promise<GoogleUserData> {
+  if (!isFirebaseConfigured) {
+    throw new Error('Firebase configuration missing. The app is running in offline-only mode. Set up your Firebase project in .env to enable Google Sign-In.');
+  }
+
   if (Capacitor.isNativePlatform()) {
     try {
       // Native Android Google Play Services account picker
@@ -163,6 +186,8 @@ export async function loginWithGoogle(): Promise<GoogleUserData> {
  * Handle initial/redirect auth check across both native and web
  */
 export async function checkRedirectAuth(): Promise<GoogleUserData | null> {
+  if (!isFirebaseConfigured) return null;
+
   if (Capacitor.isNativePlatform()) {
     try {
       const current = await FirebaseAuthentication.getCurrentUser();
@@ -207,6 +232,8 @@ export async function checkRedirectAuth(): Promise<GoogleUserData | null> {
  * Sign out current Firebase user
  */
 export async function logoutUser(): Promise<void> {
+  if (!isFirebaseConfigured) return;
+
   if (Capacitor.isNativePlatform()) {
     try {
       await FirebaseAuthentication.signOut();
@@ -221,6 +248,10 @@ export async function logoutUser(): Promise<void> {
  * Listen to real-time auth changes
  */
 export function subscribeToAuth(callback: (user: GoogleUserData | null) => void) {
+  if (!isFirebaseConfigured || !auth || typeof auth.onAuthStateChanged !== 'function') {
+    callback(null);
+    return () => {};
+  }
   return onAuthStateChanged(auth, (user: FirebaseUser | null) => {
     if (user) {
       callback({
@@ -238,6 +269,7 @@ export function subscribeToAuth(callback: (user: GoogleUserData | null) => void)
 export interface CloudSyncOptions {
   forceEmptyOverwrite?: boolean;
   tombstones?: Record<string, number>;
+  deltaOnly?: boolean;
 }
 
 export interface CloudSyncResult {
@@ -312,16 +344,29 @@ export async function syncLedgerToCloud(
 ): Promise<CloudSyncResult> {
   const now = new Date().toISOString();
 
-  const partiesList: any[] = backupData.parties || [];
-  const dispatchesList: any[] = backupData.dispatches || [];
-  const paymentsList: any[] = backupData.payments || [];
-  const posList: any[] = backupData.pos || [];
+  if (!isFirebaseConfigured || !db) {
+    return {
+      success: false,
+      timestamp: now,
+      message: 'Offline-only mode: Firebase cloud synchronization is not configured.',
+    };
+  }
+
+  const rawParties: any[] = backupData.parties || [];
+  const rawDispatches: any[] = backupData.dispatches || [];
+  const rawPayments: any[] = backupData.payments || [];
+  const rawPos: any[] = backupData.pos || [];
+
+  const partiesList: any[] = options?.deltaOnly ? rawParties.filter((p) => p.dirty) : rawParties;
+  const dispatchesList: any[] = options?.deltaOnly ? rawDispatches.filter((d) => d.dirty) : rawDispatches;
+  const paymentsList: any[] = options?.deltaOnly ? rawPayments.filter((p) => p.dirty) : rawPayments;
+  const posList: any[] = options?.deltaOnly ? rawPos.filter((po) => po.dirty) : rawPos;
 
   const isLocalEmpty =
-    partiesList.length === 0 &&
-    dispatchesList.length === 0 &&
-    paymentsList.length === 0 &&
-    posList.length === 0;
+    rawParties.length === 0 &&
+    rawDispatches.length === 0 &&
+    rawPayments.length === 0 &&
+    rawPos.length === 0;
 
   // Safeguard: Prevent accidental wipe of cloud records if local storage is cleared / empty
   if (isLocalEmpty && !options?.forceEmptyOverwrite) {
@@ -350,6 +395,10 @@ export async function syncLedgerToCloud(
   }
 
   const operations: Array<{ type: 'set' | 'delete'; ref: DocumentReference; data?: any }> = [];
+  const syncedPartyIds: string[] = [];
+  const syncedDispatchIds: string[] = [];
+  const syncedPaymentIds: string[] = [];
+  const syncedPoIds: string[] = [];
 
   // 1. Parties subcollection
   for (const party of partiesList) {
@@ -359,6 +408,7 @@ export async function syncLedgerToCloud(
         ref: doc(db, 'users', uid, 'parties', party.id),
         data: sanitizeForFirestore({ ...party, updatedAt: party.updatedAt || Date.now() }),
       });
+      syncedPartyIds.push(party.id);
     }
   }
 
@@ -370,6 +420,7 @@ export async function syncLedgerToCloud(
         ref: doc(db, 'users', uid, 'dispatches', dispatch.id),
         data: sanitizeForFirestore({ ...dispatch, updatedAt: dispatch.updatedAt || Date.now() }),
       });
+      syncedDispatchIds.push(dispatch.id);
     }
   }
 
@@ -381,6 +432,7 @@ export async function syncLedgerToCloud(
         ref: doc(db, 'users', uid, 'payments', payment.id),
         data: sanitizeForFirestore({ ...payment, updatedAt: payment.updatedAt || Date.now() }),
       });
+      syncedPaymentIds.push(payment.id);
     }
   }
 
@@ -392,17 +444,24 @@ export async function syncLedgerToCloud(
         ref: doc(db, 'users', uid, 'pos', po.id),
         data: sanitizeForFirestore({ ...po, updatedAt: po.updatedAt || Date.now() }),
       });
+      syncedPoIds.push(po.id);
     }
   }
 
-  // 5. Settings document
+  // 5. Settings document (strictly strips sensitive PIN and device lock credentials per Issue 14)
   if (backupData.settings) {
+    const cloudSettings = { ...backupData.settings };
+    delete cloudSettings.pinHash;
+    delete cloudSettings.pinLength;
+    delete cloudSettings.lockTimeout;
+    delete cloudSettings.appLockEnabled;
+
     operations.push({
       type: 'set',
       ref: doc(db, 'users', uid, 'settings', 'config'),
       data: sanitizeForFirestore({
-        ...backupData.settings,
-        updatedAt: backupData.settings.updatedAt || Date.now(),
+        ...cloudSettings,
+        updatedAt: cloudSettings.updatedAt || Date.now(),
       }),
     });
   }
@@ -415,11 +474,11 @@ export async function syncLedgerToCloud(
       version: backupData.version || '2026.10_clean_production_v2',
       exportDate: backupData.exportDate || now,
       lastCloudSync: now,
-      partiesCount: partiesList.length,
-      dispatchesCount: dispatchesList.length,
-      paymentsCount: paymentsList.length,
-      posCount: posList.length,
-      totalCount: partiesList.length + dispatchesList.length + paymentsList.length + posList.length,
+      partiesCount: rawParties.length,
+      dispatchesCount: rawDispatches.length,
+      paymentsCount: rawPayments.length,
+      posCount: rawPos.length,
+      totalCount: rawParties.length + rawDispatches.length + rawPayments.length + rawPos.length,
       updatedAt: serverTimestamp(),
     }),
   });
@@ -436,6 +495,18 @@ export async function syncLedgerToCloud(
 
   // Commit batch writes
   await commitInBatches(operations);
+
+  // Issue 11: Mark synced records clean in IndexedDB
+  try {
+    await markRecordsClean({
+      partyIds: syncedPartyIds,
+      dispatchIds: syncedDispatchIds,
+      paymentIds: syncedPaymentIds,
+      poIds: syncedPoIds,
+    });
+  } catch (cleanErr) {
+    console.warn('[CloudSync] Warning marking records clean:', cleanErr);
+  }
 
   // Clean up legacy single-document backup (users/{uid}/ledger/backup) so Firebase Console stays clean
   try {
@@ -458,6 +529,7 @@ export async function syncLedgerToCloud(
  * Automatically checks and migrates legacy single-document backup if found.
  */
 export async function fetchLedgerFromCloud(uid: string): Promise<any | null> {
+  if (!isFirebaseConfigured || !db) return null;
   try {
     const [partiesSnap, dispatchesSnap, paymentsSnap, posSnap, settingsSnap, metaSnap] = await Promise.all([
       getDocs(collection(db, 'users', uid, 'parties')),
@@ -521,7 +593,7 @@ export async function syncSingleEntityToCloud(
   entityType: 'party' | 'dispatch' | 'payment' | 'purchase_order' | 'settings',
   item: any
 ): Promise<void> {
-  if (!uid || !item) return;
+  if (!isFirebaseConfigured || !db || !uid || !item) return;
   try {
     if (entityType === 'settings') {
       const ref = doc(db, 'users', uid, 'settings', 'config');
@@ -549,9 +621,10 @@ export async function syncSingleEntityToCloud(
 export async function deleteSingleEntityFromCloud(
   uid: string,
   entityType: 'party' | 'dispatch' | 'payment' | 'purchase_order',
-  id: string
+  id: string,
+  deletedAt = Date.now()
 ): Promise<void> {
-  if (!uid || !id) return;
+  if (!isFirebaseConfigured || !db || !uid || !id) return;
   try {
     const collectionName =
       entityType === 'party' ? 'parties' :
@@ -561,9 +634,54 @@ export async function deleteSingleEntityFromCloud(
 
     if (collectionName) {
       const ref = doc(db, 'users', uid, collectionName, id);
-      await deleteDoc(ref);
+      await setDoc(
+        ref,
+        {
+          id,
+          deleted: true,
+          deletedAt,
+          updatedAt: deletedAt,
+        },
+        { merge: true }
+      );
     }
   } catch (err) {
-    console.warn(`[CloudSync] Warning deleting single ${entityType} from cloud:`, err);
+    console.warn(`[CloudSync] Warning soft-deleting single ${entityType} in cloud:`, err);
   }
 }
+
+/**
+ * Issue 17: Fully wipe user's ledger data from Cloud Firestore
+ */
+export async function wipeCloudUserData(uid: string): Promise<{ success: boolean; message: string }> {
+  if (!uid) return { success: false, message: 'No authenticated user ID provided' };
+  if (!isFirebaseConfigured || !db) return { success: true, message: 'Offline mode: no cloud database to wipe.' };
+
+  try {
+    const subcollections = ['parties', 'dispatches', 'payments', 'pos'];
+    const operations: Array<{ type: 'set' | 'delete'; ref: DocumentReference }> = [];
+
+    for (const sub of subcollections) {
+      try {
+        const snap = await getDocs(collection(db, 'users', uid, sub));
+        snap.forEach((docSnap) => {
+          operations.push({ type: 'delete', ref: docSnap.ref });
+        });
+      } catch (err) {
+        console.warn(`[CloudWipe] Warning querying subcollection ${sub}:`, err);
+      }
+    }
+
+    // Also delete config, meta, and legacy backup
+    operations.push({ type: 'delete', ref: doc(db, 'users', uid, 'settings', 'config') });
+    operations.push({ type: 'delete', ref: doc(db, 'users', uid, 'meta', 'sync') });
+    operations.push({ type: 'delete', ref: doc(db, 'users', uid, 'ledger', 'backup') });
+
+    await commitInBatches(operations);
+    return { success: true, message: 'Cloud database wiped cleanly.' };
+  } catch (err: any) {
+    console.error('[CloudWipe] Error wiping cloud database:', err);
+    return { success: false, message: err?.message || 'Failed to wipe cloud database' };
+  }
+}
+

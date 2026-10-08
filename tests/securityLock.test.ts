@@ -1,0 +1,82 @@
+import { describe, it, expect, beforeEach } from 'vitest';
+import {
+  hashPin,
+  hashPinLegacy,
+  verifyPin,
+  enableAppLock,
+  disableAppLock,
+  getLockoutRemainingSeconds,
+  getFailedAttempts,
+  resetFailedAttempts,
+  recordFailedAttempt,
+  getStoredPinHash,
+} from '../src/utils/securityLock';
+
+describe('Issue 14: PIN Lock Hardening & Rate Limiting', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    resetFailedAttempts();
+  });
+
+  it('hashes PIN using PBKDF2 with a device-unique salt', async () => {
+    const pin = '12345';
+    const hash = await hashPin(pin);
+    expect(hash).toMatch(/^pbkdf2:[a-f0-9]{32}:[a-f0-9]{64}$/);
+  });
+
+  it('enables app lock and verifies correct PIN', async () => {
+    await enableAppLock('54321', false);
+    const storedHash = getStoredPinHash();
+    expect(storedHash).toMatch(/^pbkdf2:/);
+
+    const isCorrect = await verifyPin('54321');
+    expect(isCorrect).toBe(true);
+    expect(getFailedAttempts()).toBe(0);
+  });
+
+  it('increments failed attempts on incorrect PIN and enforces lockout after 5 failures', async () => {
+    await enableAppLock('98765', false);
+
+    // 4 failed attempts: not yet locked out
+    for (let i = 1; i <= 4; i++) {
+      const res = await verifyPin('00000');
+      expect(res).toBe(false);
+      expect(getFailedAttempts()).toBe(i);
+      expect(getLockoutRemainingSeconds()).toBe(0);
+    }
+
+    // 5th failed attempt: triggers 30s lockout
+    const fifthAttempt = await verifyPin('00000');
+    expect(fifthAttempt).toBe(false);
+    expect(getFailedAttempts()).toBe(5);
+    expect(getLockoutRemainingSeconds()).toBeGreaterThan(0);
+    expect(getLockoutRemainingSeconds()).toBeLessThanOrEqual(30);
+
+    // Subsequent attempt during lockout is immediately rejected
+    const blockedAttempt = await verifyPin('98765'); // even if correct PIN
+    expect(blockedAttempt).toBe(false);
+  });
+
+  it('transparently upgrades legacy SHA-256 hash to PBKDF2 on first successful login', async () => {
+    const pin = '11223';
+    const legacyHash = await hashPinLegacy(pin);
+    localStorage.setItem('coal_app_pin_hash', legacyHash);
+    localStorage.setItem('coal_app_lock_enabled', 'true');
+
+    // Verify initial hash is legacy
+    expect(getStoredPinHash()).toBe(legacyHash);
+    expect(getStoredPinHash()?.startsWith('pbkdf2:')).toBe(false);
+
+    // Enter correct PIN
+    const isCorrect = await verifyPin('11223');
+    expect(isCorrect).toBe(true);
+
+    // Verify hash has been upgraded to PBKDF2
+    const upgradedHash = getStoredPinHash();
+    expect(upgradedHash?.startsWith('pbkdf2:')).toBe(true);
+
+    // Verify that subsequent logins work with the upgraded PBKDF2 hash
+    const nextLogin = await verifyPin('11223');
+    expect(nextLogin).toBe(true);
+  });
+});

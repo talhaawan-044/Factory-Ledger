@@ -46,6 +46,7 @@ import {
   Layers,
   /* Info, */
   Sliders,
+  CloudOff,
   // Sparkles,
 } from 'lucide-react';
 import { triggerConfetti, playSuccessSound, playPopSound, playCashChime } from '../utils/delight';
@@ -60,8 +61,11 @@ import IOSTaxFormulaModal from '../components/IOSTaxFormulaModal';
 import IOSSelect, { type IOSSelectOption } from '../components/IOSSelect';
 import {
   loginWithGoogle,
+  logoutUser,
   checkRedirectAuth,
   getFriendlyAuthErrorMessage,
+  wipeCloudUserData,
+  isFirebaseConfigured,
 } from '../lib/firebase';
 import { useSyncStatus, type LoginScenarioResult } from '../lib/syncManager';
 import { useLedgerListener } from '../hooks/useLedgerListener';
@@ -69,6 +73,7 @@ import {
   AccountSwitchModal,
   AnonymousConflictModal,
   SignOutActionSheet,
+  ClearDataOptionsSheet,
 } from '../components/AccountSyncModals';
 import {
   isAppLockEnabled,
@@ -226,6 +231,7 @@ export default function Settings() {
   const [showRemoveLogoConfirm, setShowRemoveLogoConfirm] = useState(false);
   const [showRemoveSignatureConfirm, setShowRemoveSignatureConfirm] = useState(false);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const [showSignedInClearModal, setShowSignedInClearModal] = useState(false);
   const [showDisableLockConfirm, setShowDisableLockConfirm] = useState(false);
   const [showVerifyPinForDisable, setShowVerifyPinForDisable] = useState(false);
   const [showVerifyPinForExport, setShowVerifyPinForExport] = useState(false);
@@ -369,6 +375,10 @@ export default function Settings() {
     playPopSound();
     try {
       const res = await handleSignOut(mode);
+      if (!res.success) {
+        alert(res.message);
+        return;
+      }
       showToast(res.message);
       loadAllData();
     } catch (err: any) {
@@ -695,7 +705,6 @@ export default function Settings() {
 
     try {
       if (mode === 'replace') {
-        await clearAllData({ resetSettings: false });
         const result = await restoreBackup(pendingImportFile.data);
         if (result.success) {
           playSuccessSound();
@@ -729,6 +738,23 @@ export default function Settings() {
   const handleConfirmClear = async () => {
     await clearAllData();
     setShowClearConfirm(false);
+    window.location.reload();
+  };
+
+  const handleClearDeviceOnly = async () => {
+    setShowSignedInClearModal(false);
+    await clearAllData({ resetSettings: true, resetOwner: true });
+    await logoutUser();
+    window.location.reload();
+  };
+
+  const handleClearCloudAndDevice = async () => {
+    setShowSignedInClearModal(false);
+    if (googleUser?.uid) {
+      await wipeCloudUserData(googleUser.uid);
+    }
+    await clearAllData({ resetSettings: true, resetOwner: true });
+    await logoutUser();
     window.location.reload();
   };
 
@@ -943,11 +969,11 @@ export default function Settings() {
                     fontWeight: 600,
                     padding: '3px 8px',
                     borderRadius: 10,
-                    background: googleUser ? 'var(--ios-green)' : 'var(--fill-tertiary)',
+                    background: googleUser ? 'var(--ios-green)' : !isFirebaseConfigured ? 'var(--fill-tertiary)' : 'var(--fill-tertiary)',
                     color: googleUser ? '#FFFFFF' : 'var(--label-secondary)',
                   }}
                 >
-                  {googleUser ? 'Signed IN' : 'Not Linked'}
+                  {googleUser ? 'Signed IN' : !isFirebaseConfigured ? 'Offline Only' : 'Not Linked'}
                 </span>
               )}
               <ChevronDown
@@ -966,7 +992,61 @@ export default function Settings() {
 
           {openSections['google'] && (
             <div>
-              {!googleUser ? (
+              {!isFirebaseConfigured ? (
+                /* Offline-Only Mode (No Firebase Credentials) */
+                <div style={{ padding: '20px 16px 16px' }}>
+                  <div
+                    style={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      textAlign: 'center',
+                      padding: '20px 16px',
+                      background: 'var(--fill-quaternary)',
+                      borderRadius: 14,
+                      border: '0.5px solid var(--separator-opaque)',
+                    }}
+                  >
+                    <div
+                      style={{
+                        width: 52,
+                        height: 52,
+                        borderRadius: '50%',
+                        background: 'var(--bg-card)',
+                        border: '0.5px solid var(--separator-opaque)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        marginBottom: 12,
+                        boxShadow: '0 1px 4px rgba(0,0,0,0.06)',
+                        color: 'var(--ios-blue)',
+                      }}
+                    >
+                      <CloudOff size={24} />
+                    </div>
+                    <div style={{ fontSize: 17, fontWeight: 700, color: 'var(--label-primary)', marginBottom: 6 }}>
+                      Offline-Only Mode Active
+                    </div>
+                    <div style={{ fontSize: 13, color: 'var(--label-secondary)', lineHeight: 1.45, maxWidth: 340, marginBottom: 12 }}>
+                      All financial records and ledger data are securely stored locally on this device in high-capacity IndexedDB.
+                    </div>
+                    <div
+                      style={{
+                        fontSize: 12,
+                        color: 'var(--label-tertiary)',
+                        lineHeight: 1.4,
+                        maxWidth: 340,
+                        background: 'var(--bg-card)',
+                        padding: '10px 14px',
+                        borderRadius: 10,
+                        border: '0.5px solid var(--separator)',
+                      }}
+                    >
+                      To enable Google Sign-In and multi-device cloud synchronization, configure your Firebase project credentials in your <code>.env</code> file.
+                    </div>
+                  </div>
+                </div>
+              ) : !googleUser ? (
                 /* Not Signed In */
                 <div style={{ padding: '20px 16px 16px' }}>
                   <div
@@ -2341,7 +2421,11 @@ export default function Settings() {
                 className="ios-cell"
                 onClick={() => {
                   playPopSound();
-                  setShowClearConfirm(true);
+                  if (googleUser) {
+                    setShowSignedInClearModal(true);
+                  } else {
+                    setShowClearConfirm(true);
+                  }
                 }}
                 style={{ cursor: 'pointer' }}
               >
@@ -2574,6 +2658,16 @@ export default function Settings() {
           onKeepData={() => handleConfirmSignOut('keep_data')}
           onClearData={() => handleConfirmSignOut('clear_data')}
           onCancel={() => setIsSignOutSheetOpen(false)}
+        />
+      )}
+
+      {showSignedInClearModal && googleUser && (
+        <ClearDataOptionsSheet
+          isOpen={showSignedInClearModal}
+          email={googleUser.email || ''}
+          onClearDeviceOnly={handleClearDeviceOnly}
+          onClearCloudAndDevice={handleClearCloudAndDevice}
+          onCancel={() => setShowSignedInClearModal(false)}
         />
       )}
 

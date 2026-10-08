@@ -25,6 +25,9 @@ export interface PurchaseOrder {
   createdAt: number;
   updatedAt?: number;
   isActive: boolean;
+  deleted?: boolean;
+  deletedAt?: number;
+  dirty?: boolean;
 }
 
 export interface Dispatch {
@@ -52,8 +55,12 @@ export interface Dispatch {
   taxSalesPercent?: number; // Snapshot of sales tax % (e.g. 18) when dispatch was saved
   taxIncomePercent?: number; // Snapshot of income tax % (e.g. 5) when dispatch was saved
   notes?: string;
+  status?: 'pending' | 'settled';
   createdAt: number;
   updatedAt: number;
+  deleted?: boolean;
+  deletedAt?: number;
+  dirty?: boolean;
 }
 
 export type TaxMethod = 'manual' | 'formula_18_5';
@@ -66,6 +73,10 @@ export interface Party {
   address: string;
   createdAt: number;
   updatedAt?: number;
+  isArchived?: boolean;
+  deleted?: boolean;
+  deletedAt?: number;
+  dirty?: boolean;
 }
 
 export interface Payment {
@@ -78,6 +89,9 @@ export interface Payment {
   referenceNote?: string;
   createdAt: number;
   updatedAt?: number;
+  deleted?: boolean;
+  deletedAt?: number;
+  dirty?: boolean;
 }
 
 export interface AppSettings {
@@ -103,3 +117,20 @@ export interface AppSettings {
   pinLength?: number;
   lockTimeout?: number;
 }
+
+export interface BackupPayload {
+  version?: string;
+  exportDate: string;
+  exportedAt?: string;
+  app?: string;
+  parties: Party[];
+  dispatches: Dispatch[];
+  payments: Payment[];
+  pos: PurchaseOrder[];
+  settings: AppSettings;
+  deviceInfo?: string;
+  lastCloudSync?: string;
+  images?: Record<string, string>;
+  meta?: Record<string, unknown>;
+}
+

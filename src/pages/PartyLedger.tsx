@@ -16,7 +16,8 @@ import {
   cleanNumber
 } from '../lib/db';
 import type { Party, Dispatch, Payment, PurchaseOrder, AppSettings } from '../types';
-import { calculateSettlement, calculatePartyBalance } from '../utils/calculations';
+import { getTodayDateString, toLocalDateString } from '../utils/dateUtils';
+import { calculateSettlement, calculatePartyBalance, isDispatchPending } from '../utils/calculations';
 import { getCurrencySymbol, getCurrencyCode, formatAmountNumber } from '../utils/currency';
 import { useLedgerListener } from '../hooks/useLedgerListener';
 import { Capacitor } from '@capacitor/core';
@@ -79,7 +80,7 @@ export default function PartyLedger() {
     mode: 'bank' | 'cash' | 'cheque' | 'online';
     referenceNote: string;
   }>(() => ({
-    date: new Date().toISOString().split('T')[0],
+    date: getTodayDateString(),
     amount: '',
     type: 'received',
     mode: 'bank',
@@ -195,7 +196,7 @@ export default function PartyLedger() {
     const newPay: Payment = {
       id: paymentForm.id || uuidv4(),
       partyId,
-      date: paymentForm.date || new Date().toISOString().split('T')[0],
+      date: paymentForm.date || getTodayDateString(),
       amount: amt,
       type: paymentForm.type,
       mode: paymentForm.mode,
@@ -203,19 +204,25 @@ export default function PartyLedger() {
       createdAt: paymentForm.id ? (payments.find(p => p.id === paymentForm.id)?.createdAt || Date.now()) : Date.now()
     };
 
-    await savePayment(newPay);
-    playCashChime();
-    triggerConfetti();
-    setIsAddingPayment(false);
-    setPaymentForm({
-      date: new Date().toISOString().split('T')[0],
-      amount: '',
-      type: 'received',
-      mode: 'bank',
-      referenceNote: ''
-    });
-    showToast('Payment recorded successfully!');
-    refreshLedger();
+    try {
+      await savePayment(newPay);
+      playCashChime();
+      triggerConfetti();
+      setIsAddingPayment(false);
+      setPaymentForm({
+        date: getTodayDateString(),
+        amount: '',
+        type: 'received',
+        mode: 'bank',
+        referenceNote: ''
+      });
+      showToast('Payment recorded successfully!');
+      refreshLedger();
+    } catch (err: any) {
+      console.error('[PartyLedger] Save payment failed:', err);
+      playPopSound();
+      showToast(err?.message || 'Storage error: Failed to save payment.');
+    }
   };
 
   const [deleteTarget, setDeleteTarget] = useState<{
@@ -401,7 +408,7 @@ ${recentDisp.map(d => `• ${d.truckNumber} (${d.date}): ${d.labReceivedWeight}t
       playPopSound();
       showToast('Statement copied to clipboard!');
     }
-  }, [party, dispatches, totalDeliveries, totalTons, totalBilled, netPaymentsReceived, outstandingBalance, settings]);
+  }, [party, dispatches, totalDeliveries, totalTons, totalBilled, netPaymentsReceived, outstandingBalance, settings, curSym]);
 
   const handleSharePaymentVoucher = useCallback(async (pay: Payment) => {
     const isReceived = pay.type === 'received';
@@ -446,7 +453,7 @@ Current Ledger Balance: ${curSym} ${formatAmountNumber(Math.abs(outstandingBalan
       playPopSound();
       showToast('Payment voucher copied to clipboard!');
     }
-  }, [party, outstandingBalance, settings]);
+  }, [party, outstandingBalance, settings, curSym]);
 
   // Unified chronological transactions list
   type LedgerItem =
@@ -481,7 +488,7 @@ Current Ledger Balance: ${curSym} ${formatAmountNumber(Math.abs(outstandingBalan
 
     if (ledgerFilter === 'all' || ledgerFilter === 'pos') {
       pos.forEach((p) => {
-        const dateStr = new Date(p.createdAt).toISOString().split('T')[0];
+        const dateStr = toLocalDateString(p.createdAt);
         items.push({
           kind: 'po',
           data: p,
@@ -592,7 +599,7 @@ Current Ledger Balance: ${curSym} ${formatAmountNumber(Math.abs(outstandingBalan
         <button
           onClick={() => {
             playPopSound();
-            setPaymentForm({ id: undefined, date: new Date().toISOString().split('T')[0], amount: '', type: 'received', mode: 'bank', referenceNote: '' });
+            setPaymentForm({ id: undefined, date: getTodayDateString(), amount: '', type: 'received', mode: 'bank', referenceNote: '' });
             setIsAddingPayment(true);
           }}
           style={{
@@ -744,23 +751,32 @@ Current Ledger Balance: ${curSym} ${formatAmountNumber(Math.abs(outstandingBalan
 
               if (item.kind === 'dispatch') {
                 const d = item.data;
+                const isPending = isDispatchPending(d);
                 const settlement = calculateSettlement(d, settings);
                 const isProfit = settlement.netProfit >= 0;
 
                 return (
                   <div key={`disp-${d.id}`} className="ios-cell" onClick={() => setPreviewDispatch(d)}>
                     <div style={{ width: 44, height: 44, borderRadius: 10, background: 'var(--fill-tertiary)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', marginRight: 14, flexShrink: 0, border: '0.5px solid var(--separator)' }}>
-                      <span style={{ fontSize: 9, fontWeight: 700, color: 'var(--ios-red)', letterSpacing: 0.3 }}>{monthStr}</span>
+                      <span style={{ fontSize: 9, fontWeight: 700, color: isPending ? '#ff9500' : 'var(--ios-red)', letterSpacing: 0.3 }}>{monthStr}</span>
                       <span style={{ fontSize: 17, fontWeight: 700, color: 'var(--label-primary)', lineHeight: 1 }}>{dayStr}</span>
                     </div>
                     <div style={{ flex: 1, minWidth: 0, paddingRight: 8 }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
                         <span style={{ fontSize: 16, fontWeight: 600, color: 'var(--label-primary)' }}>{d.truckNumber}</span>
-                        <span style={{ fontSize: 16, fontWeight: 700, color: 'var(--label-primary)' }} className="tabular-nums">{curSym} {formatAmountNumber(settlement.totalRevenue, settings)}</span>
+                        {isPending ? (
+                          <span style={{ fontSize: 11, fontWeight: 700, color: '#ffffff', background: '#ff9500', padding: '2px 8px', borderRadius: 4, textTransform: 'uppercase', letterSpacing: 0.5 }}>In Transit</span>
+                        ) : (
+                          <span style={{ fontSize: 16, fontWeight: 700, color: 'var(--label-primary)' }} className="tabular-nums">{curSym} {formatAmountNumber(settlement.totalRevenue, settings)}</span>
+                        )}
                       </div>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 2 }}>
-                        <span style={{ fontSize: 13, color: 'var(--label-secondary)' }}>{d.labReceivedWeight || 0} t</span>
-                        <span style={{ fontSize: 12, fontWeight: 600, color: isProfit ? 'var(--ios-green)' : 'var(--ios-red)' }} className="tabular-nums">{isProfit ? `+${curSym} ` : `-${curSym} `}{formatAmountNumber(Math.abs(settlement.netProfit), settings)} {isProfit ? 'profit' : 'loss'}</span>
+                        <span style={{ fontSize: 13, color: 'var(--label-secondary)' }}>{isPending ? `${d.coalInputs?.[0]?.weight || 0} t loaded` : `${d.labReceivedWeight || 0} t`}</span>
+                        {isPending ? (
+                          <span style={{ fontSize: 12, fontWeight: 600, color: '#ff9500' }}>Pending Weighbridge</span>
+                        ) : (
+                          <span style={{ fontSize: 12, fontWeight: 600, color: isProfit ? 'var(--ios-green)' : 'var(--ios-red)' }} className="tabular-nums">{isProfit ? `+${curSym} ` : `-${curSym} `}{formatAmountNumber(Math.abs(settlement.netProfit), settings)} {isProfit ? 'profit' : 'loss'}</span>
+                        )}
                       </div>
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 2, flexShrink: 0 }}>

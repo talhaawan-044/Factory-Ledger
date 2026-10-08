@@ -16,7 +16,8 @@ import {
   Plus,
 } from 'lucide-react';
 import type { Dispatch, CoalInput, Party, PurchaseOrder, AppSettings } from '../types';
-import { getDispatch, saveDispatch, deleteDispatch, getParties, getPartyPurchaseOrders, getDispatches, saveParty, getSettings } from '../lib/db';
+import { getDispatch, saveDispatch, deleteDispatch, getParties, getPartyPurchaseOrders, getDispatches, saveParty, getSettings, cleanNumber } from '../lib/db';
+import { getTodayDateString } from '../utils/dateUtils';
 import { calculateSettlement } from '../utils/calculations';
 import { getCurrencySymbol, formatAmountNumber } from '../utils/currency';
 import { useParams, useNavigate, Link } from 'react-router-dom';
@@ -38,7 +39,7 @@ const defaultOverheads = {
 const emptyDispatch: Omit<Dispatch, 'id' | 'createdAt' | 'updatedAt'> = {
   partyId: '',
   poId: '',
-  date: new Date().toISOString().split('T')[0],
+  date: getTodayDateString(),
   truckNumber: '',
   factoryName: '',
   targetGcv: 0,
@@ -86,6 +87,10 @@ export default function DispatchForm() {
   const [isLoading, setIsLoading] = useState(() => dispatchId !== 'new');
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [isPartyModalOpen, setIsPartyModalOpen] = useState(false);
+  const [validationErrors, setValidationErrors] = useState<Record<string, string>>({});
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [isInTransit, setIsInTransit] = useState(false);
 
   const curSym = getCurrencySymbol(settings?.currency);
   const salesPct = settings?.taxFormulaSalesPercent ?? 18;
@@ -139,6 +144,9 @@ export default function DispatchForm() {
             overheads: { ...defaultOverheads, ...(data.overheads || {}) },
           };
           setDispatch(cleanDispatch);
+          if (data.status === 'pending' || (cleanNumber(data.labReceivedWeight) === 0 && Boolean(data.id))) {
+            setIsInTransit(true);
+          }
           if (cleanDispatch.partyId) {
             getPartyPurchaseOrders(cleanDispatch.partyId).then((orders) => {
               if (active) setPos(orders);
@@ -207,11 +215,58 @@ export default function DispatchForm() {
     };
   })();
 
+  const clearError = (field: string) => {
+    setValidationErrors((prev) => {
+      if (!prev[field]) return prev;
+      const next = { ...prev };
+      delete next[field];
+      return next;
+    });
+  };
+
+  const validateForm = (): boolean => {
+    const errors: Record<string, string> = {};
+    if (!dispatch.partyId) {
+      errors.partyId = 'Please select a factory / party account';
+    }
+    if (!dispatch.truckNumber || dispatch.truckNumber.trim().length < 3) {
+      errors.truckNumber = 'Enter a valid truck number (e.g. TKX-418)';
+    }
+    const totalLoaded = (dispatch.coalInputs || []).reduce((sum, ci) => sum + cleanNumber(ci.weight), 0);
+    if (totalLoaded <= 0) {
+      errors.coalInputs = 'Loaded coal recipe weight must be greater than 0';
+    }
+    if (cleanNumber(dispatch.baseRate) <= 0) {
+      errors.baseRate = 'Base rate must be greater than 0';
+    }
+    if (!isInTransit && cleanNumber(dispatch.labReceivedWeight) <= 0) {
+      errors.labReceivedWeight = 'Enter factory received weight or toggle In-Transit';
+    }
+    setValidationErrors(errors);
+    return Object.keys(errors).length === 0;
+  };
+
   const handleSave = async () => {
-    await saveDispatch(dispatch as Dispatch);
-    playSuccessSound();
-    triggerConfetti();
-    navigate(`/parties/${dispatch.partyId || partyId}`);
+    if (!validateForm()) {
+      playPopSound();
+      return;
+    }
+
+    try {
+      setIsSaving(true);
+      setSaveError(null);
+      const statusToSave: 'pending' | 'settled' = isInTransit || cleanNumber(dispatch.labReceivedWeight) <= 0 ? 'pending' : 'settled';
+      await saveDispatch({ ...dispatch, status: statusToSave } as Dispatch);
+      playSuccessSound();
+      triggerConfetti();
+      navigate(`/parties/${dispatch.partyId || partyId}`);
+    } catch (err: any) {
+      console.error('[DispatchForm] Failed to save dispatch:', err);
+      playPopSound();
+      setSaveError(err?.message || 'Storage full or write failed: Could not save dispatch.');
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const handleDelete = () => {
@@ -228,10 +283,12 @@ export default function DispatchForm() {
   };
 
   const handleChange = (field: keyof typeof dispatch, value: any) => {
+    clearError(field as string);
     setDispatch((prev) => (prev ? { ...prev, [field]: value } : prev));
   };
 
   const handlePartyChange = async (newPartyId: string) => {
+    clearError('partyId');
     handleChange('partyId', newPartyId);
     const partyOrders = await getPartyPurchaseOrders(newPartyId);
     setPos(partyOrders);
@@ -286,6 +343,7 @@ export default function DispatchForm() {
   };
 
   const updateCoalInput = (id: string, field: keyof CoalInput, value: any) => {
+    clearError('coalInputs');
     setDispatch((prev) => {
       if (!prev) return prev;
       return {
@@ -324,13 +382,35 @@ export default function DispatchForm() {
               type="button"
               onClick={handleSave}
               className="ios-nav-action"
-              style={{ fontWeight: 600, fontSize: 16 }}
+              style={{ fontWeight: 600, fontSize: 16, opacity: isSaving ? 0.6 : 1 }}
+              disabled={isSaving}
             >
-              Done
+              {isSaving ? 'Saving...' : 'Done'}
             </button>
           </div>
         </div>
       </div>
+
+      {saveError && (
+        <div
+          style={{
+            margin: '12px 16px 0',
+            padding: '12px 14px',
+            background: 'rgba(255, 59, 48, 0.1)',
+            border: '1px solid #ff3b30',
+            borderRadius: 12,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 10,
+            color: '#ff3b30',
+            fontSize: 14,
+            fontWeight: 500,
+          }}
+        >
+          <AlertTriangle size={18} style={{ flexShrink: 0 }} />
+          <span>{saveError}</span>
+        </div>
+      )}
 
       {/* ── Apple Card Floating Live Settlement Banner ── */}
       <div className="ios-hero-card" style={{ marginTop: 14 }}>
@@ -388,6 +468,7 @@ export default function DispatchForm() {
             label="Factory"
             value={dispatch.partyId}
             onChange={handlePartyChange}
+            error={validationErrors.partyId}
             options={parties.map((p) => ({
               value: p.id,
               label: p.name,
@@ -437,6 +518,7 @@ export default function DispatchForm() {
               label="Truck Number"
               value={dispatch.truckNumber}
               onChange={(v) => handleChange('truckNumber', v.toUpperCase())}
+              error={validationErrors.truckNumber}
               placeholder="e.g. TKX-418"
             />
           </div>
@@ -486,6 +568,7 @@ export default function DispatchForm() {
             type="number"
             value={dispatch.baseRate || ''}
             onChange={(v) => handleChange('baseRate', parseFloat(v) || 0)}
+            error={validationErrors.baseRate}
             placeholder="8500"
             suffix={`${curSym}/t`}
           />
@@ -505,7 +588,7 @@ export default function DispatchForm() {
       {/* ── Section 3: Coal Input Recipe & Blending ── */}
       <div className="ios-group">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 16px 8px' }}>
-          <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 600, color: 'var(--label-secondary)', textTransform: 'uppercase', letterSpacing: 0.3 }}>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 600, color: validationErrors.coalInputs ? '#ff3b30' : 'var(--label-secondary)', textTransform: 'uppercase', letterSpacing: 0.3 }}>
             <Layers size={16} /> Coal Blending Recipe ({dispatch.coalInputs.length})
           </span>
           <button
@@ -637,6 +720,12 @@ export default function DispatchForm() {
             );
           })}
         </div>
+
+        {validationErrors.coalInputs && (
+          <div style={{ padding: '0 18px 6px', color: '#ff3b30', fontSize: 12, fontWeight: 500 }}>
+            {validationErrors.coalInputs}
+          </div>
+        )}
 
         <div className="ios-group-footnote" style={{ padding: '8px 18px 0' }}>
           Total Blend Weight: <strong>{totalInputWeight.toFixed(1)} tons</strong> · Avg Coal Purchase Rate: <strong>{curSym} {formatAmountNumber(avgCoalPurchaseRate, settings)}/t</strong>
@@ -776,6 +865,49 @@ export default function DispatchForm() {
             );
           })()}
 
+          {/* In-Transit Status Toggle */}
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              padding: '10px 14px',
+              background: 'var(--fill-quaternary)',
+              borderRadius: 12,
+              marginBottom: 12,
+              border: '0.5px solid var(--separator)',
+            }}
+          >
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--label-primary)' }}>Truck Status</div>
+              <div style={{ fontSize: 11, color: 'var(--label-secondary)' }}>
+                {isInTransit ? 'In Transit (Pending weighbridge)' : 'Arrived at factory & weighed'}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                const nextVal = !isInTransit;
+                setIsInTransit(nextVal);
+                if (nextVal) {
+                  clearError('labReceivedWeight');
+                }
+              }}
+              style={{
+                padding: '5px 12px',
+                borderRadius: 10,
+                border: 'none',
+                background: isInTransit ? 'var(--ios-blue)' : 'var(--fill-tertiary)',
+                color: isInTransit ? '#FFFFFF' : 'var(--label-secondary)',
+                fontSize: 12,
+                fontWeight: 600,
+                cursor: 'pointer',
+              }}
+            >
+              {isInTransit ? 'In Transit (Pending)' : 'Factory Weighed'}
+            </button>
+          </div>
+
           {totalInputWeight > 0 && (!dispatch.labReceivedWeight || dispatch.labReceivedWeight === 0) && (
             <div style={{ marginBottom: 10 }}>
               <button
@@ -816,6 +948,7 @@ export default function DispatchForm() {
               suffix="tons"
               value={dispatch.labReceivedWeight || ''}
               onChange={(v) => handleChange('labReceivedWeight', parseFloat(v) || 0)}
+              error={validationErrors.labReceivedWeight}
               placeholder="39.5"
             />
           </div>
@@ -1172,10 +1305,11 @@ export default function DispatchForm() {
         <button
           onClick={handleSave}
           className="ios-btn ios-btn-primary"
-          style={{ width: '100%' }}
+          style={{ width: '100%', opacity: isSaving ? 0.7 : 1 }}
+          disabled={isSaving}
         >
           <Save style={{ width: 18, height: 18 }} strokeWidth={2.4} />
-          <span>Save Dispatch</span>
+          <span>{isSaving ? 'Saving Dispatch...' : 'Save Dispatch'}</span>
         </button>
 
         {dispatchId !== 'new' && (

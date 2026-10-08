@@ -130,6 +130,18 @@ export function calculateSettlement(dispatch: Dispatch, settings?: AppSettings |
 
 
 /**
+ * Checks whether a dispatch is pending (in-transit / unweighed).
+ * Dispatches marked 'pending' or with 0 received weight are excluded from aggregate profit
+ * to prevent artificial deficits before weighbridge confirmation (Issue 19 / T6).
+ */
+export function isDispatchPending(dispatch: Dispatch): boolean {
+  if (!dispatch) return false;
+  if (dispatch.status === 'pending') return true;
+  if (dispatch.status === 'settled') return false;
+  return cleanNum(dispatch.labReceivedWeight) === 0;
+}
+
+/**
  * Canonical unified financial balance calculation for a party account.
  * Follows double-entry business ledger rules:
  * - Dispatches are Debits (invoiced receivables from the party).
@@ -142,8 +154,10 @@ export function calculatePartyBalance(dispatches: Dispatch[], payments: Payment[
   const safeDispatches = Array.isArray(dispatches) ? dispatches : [];
   const safePayments = Array.isArray(payments) ? payments : [];
 
-  const totalBilled = safeDispatches.reduce((sum, d) => sum + cleanNum(calculateSettlement(d).totalRevenue), 0);
-  const totalProfit = safeDispatches.reduce((sum, d) => sum + cleanNum(calculateSettlement(d).netProfit), 0);
+  const settledDispatches = safeDispatches.filter((d) => !isDispatchPending(d));
+
+  const totalBilled = settledDispatches.reduce((sum, d) => sum + cleanNum(calculateSettlement(d).totalRevenue), 0);
+  const totalProfit = settledDispatches.reduce((sum, d) => sum + cleanNum(calculateSettlement(d).netProfit), 0);
   const totalTons = safeDispatches.reduce((sum, d) => sum + cleanNum(d?.labReceivedWeight), 0);
 
   const totalPaymentsReceived = safePayments

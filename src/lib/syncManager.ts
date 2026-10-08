@@ -1,5 +1,6 @@
 import {
   auth,
+  isFirebaseConfigured,
   syncLedgerToCloud,
   fetchLedgerFromCloud,
   deleteSingleEntityFromCloud,
@@ -10,6 +11,7 @@ import {
 } from './firebase';
 import {
   getAllBackupData,
+  getLedgerForSync,
   restoreBackup,
   clearAllData,
   mergeLedgerData,
@@ -20,7 +22,6 @@ import {
   type LedgerMutationDetail,
 } from './db';
 import {
-  applyCloudSecuritySettings,
   disableAppLock,
 } from '../utils/securityLock';
 import { useState, useEffect } from 'react';
@@ -216,6 +217,11 @@ class SyncManager {
       this.debounceTimer = null;
     }
 
+    if (!isFirebaseConfigured) {
+      this.updateState({ status: 'idle', lastError: null });
+      return { success: false, timestamp: new Date().toISOString(), message: 'Offline mode: Firebase cloud sync not configured.' };
+    }
+
     const user = this.state.currentUser || (auth.currentUser ? {
       uid: auth.currentUser.uid,
       displayName: auth.currentUser.displayName || '',
@@ -242,11 +248,12 @@ class SyncManager {
     this.updateState({ status: 'syncing', lastError: null });
 
     try {
-      const localData = await getAllBackupData();
+      const localData = await getLedgerForSync();
       const tombstones = getTombstones();
       const result = await syncLedgerToCloud(user.uid, localData, {
         forceEmptyOverwrite: forceOverwrite,
         tombstones,
+        deltaOnly: !forceOverwrite,
       });
 
       if (result.success) {
@@ -285,7 +292,7 @@ class SyncManager {
    * Reconcile local and cloud datasets on startup or login
    */
   public async reconcileWithCloud(uid: string): Promise<void> {
-    if (!this.state.isOnline) return;
+    if (!isFirebaseConfigured || !this.state.isOnline) return;
 
     try {
       this.updateState({ status: 'syncing' });
@@ -328,9 +335,6 @@ class SyncManager {
         // Auto-restore immediately from cloud!
         console.log(`[SyncManager] Empty local database. Auto-restoring ${cloudCount} records from cloud...`);
         const restoreRes = await restoreBackup(cloudData);
-        if (cloudData.settings?.appLockEnabled && cloudData.settings?.pinHash) {
-          applyCloudSecuritySettings(cloudData.settings, true);
-        }
         if (restoreRes.success) {
           const timestamp = cloudData.lastCloudSync || new Date().toISOString();
           localStorage.setItem(STORAGE_KEY_LAST_SYNC, timestamp);
@@ -413,9 +417,6 @@ class SyncManager {
     if (localCount === 0) {
       if (cloudCount > 0 && cloudData) {
         await restoreBackup(cloudData, { silent: false });
-        if (cloudData.settings?.appLockEnabled && cloudData.settings?.pinHash) {
-          applyCloudSecuritySettings(cloudData.settings, true);
-        }
         const timestamp = cloudData.lastCloudSync || new Date().toISOString();
         if (typeof localStorage !== 'undefined') {
           localStorage.setItem(STORAGE_KEY_LAST_SYNC, timestamp);
@@ -433,9 +434,6 @@ class SyncManager {
     // Scenario 2: Same user re-authenticating
     if (owner.uid === user.uid) {
       setLedgerOwner(user.uid, user.email);
-      if (cloudData?.settings?.appLockEnabled && cloudData?.settings?.pinHash) {
-        applyCloudSecuritySettings(cloudData.settings, false);
-      }
       await this.reconcileWithCloud(user.uid);
       return {
         type: 'ready',
@@ -509,20 +507,17 @@ class SyncManager {
     }
 
     if (decision === 'use_cloud') {
-      // Wipe previous local records and load clean cloud data
-      await clearAllData({ resetSettings: true });
       if (cloudData) {
-        await restoreBackup(cloudData, { silent: false });
-        if (cloudData.settings?.appLockEnabled && cloudData.settings?.pinHash) {
-          applyCloudSecuritySettings(cloudData.settings, true);
-        } else {
-          disableAppLock();
+        const restoreRes = await restoreBackup(cloudData, { silent: false });
+        if (!restoreRes.success) {
+          return { success: false, message: `Could not load cloud ledger: ${restoreRes.message}` };
         }
         const timestamp = cloudData.lastCloudSync || new Date().toISOString();
         if (typeof localStorage !== 'undefined') {
           localStorage.setItem(STORAGE_KEY_LAST_SYNC, timestamp);
         }
       } else {
+        await clearAllData({ resetSettings: true });
         disableAppLock();
       }
       setLedgerOwner(user.uid, user.email);
@@ -560,9 +555,12 @@ class SyncManager {
   }
 
   /**
-   * Explicit user-triggered restore from cloud
+   * Explicit user-triggered restore from cloud (merges safely with local records)
    */
   public async restoreFromCloud(): Promise<{ success: boolean; message: string; counts?: any }> {
+    if (!isFirebaseConfigured) {
+      return { success: false, message: 'Offline mode: Firebase cloud synchronization is not configured.' };
+    }
     const user = this.state.currentUser;
     if (!user) {
       return { success: false, message: 'Please sign in with Google first' };
@@ -576,10 +574,12 @@ class SyncManager {
         return { success: false, message: 'No existing cloud backup found for this Google account' };
       }
 
-      const res = await restoreBackup(cloudData);
-      if (cloudData.settings?.appLockEnabled && cloudData.settings?.pinHash) {
-        applyCloudSecuritySettings(cloudData.settings, false);
-      }
+      // Merge local records with cloud data to ensure no unsynced local data is lost
+      const currentLocal = await getAllBackupData();
+      const tombstones = getTombstones();
+      const { merged } = mergeLedgerData(currentLocal, cloudData, tombstones);
+
+      const res = await restoreBackup(merged);
       if (res.success) {
         const timestamp = cloudData.lastCloudSync || new Date().toISOString();
         localStorage.setItem(STORAGE_KEY_LAST_SYNC, timestamp);
@@ -604,12 +604,38 @@ class SyncManager {
    */
   public async handleSignOut(mode: 'keep_data' | 'clear_data'): Promise<{ success: boolean; message: string }> {
     try {
-      // If online, do a final push of any pending changes first
-      if (this.state.isOnline && this.state.currentUser && this.state.hasPendingChanges) {
-        try {
-          await this.executeSync();
-        } catch (e) {
-          console.warn('[SyncManager] Final sync before logout warning:', e);
+      if (mode === 'clear_data') {
+        // If device is offline, cannot safely verify cloud backup
+        if (!this.state.isOnline) {
+          return {
+            success: false,
+            message: 'Device is offline. Cannot clear device data without verifying your cloud backup. Please reconnect to internet or sign out with "Keep Data".',
+          };
+        }
+
+        // Wait for any active sync to finish first
+        while (this.isSyncingBusy) {
+          await new Promise((r) => setTimeout(r, 200));
+        }
+
+        // Run a real sync before clearing
+        if (this.state.currentUser) {
+          const syncResult = await this.executeSync();
+          if (!syncResult.success) {
+            return {
+              success: false,
+              message: `Cannot clear device data: Final cloud sync failed (${syncResult.message || 'Unknown network error'}). Your unsynced records would be lost. Please select "Keep Data" or try again.`,
+            };
+          }
+        }
+      } else {
+        // Mode is keep_data: attempt best-effort sync if online
+        if (this.state.isOnline && this.state.currentUser && this.state.hasPendingChanges) {
+          try {
+            await this.executeSync();
+          } catch (e) {
+            console.warn('[SyncManager] Best-effort final sync warning:', e);
+          }
         }
       }
 

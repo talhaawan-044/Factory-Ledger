@@ -21,18 +21,110 @@ const LOCK_TIMEOUT_KEY = 'coal_lock_timeout'; // in seconds: 0 = immediate, 60 =
 const LAST_ACTIVE_KEY = 'coal_last_active_time';
 const BIOMETRIC_CRED_ID_KEY = 'coal_biometric_cred_id';
 const RECOVERY_KEY_KEY = 'coal_app_recovery_key';
+const DEVICE_SALT_KEY = 'coal_device_pin_salt';
+const FAILED_ATTEMPTS_KEY = 'coal_pin_failed_attempts';
+const LOCKOUT_EXPIRY_KEY = 'coal_pin_lockout_expiry';
 
 export const DEFAULT_PIN_LENGTH = 5;
 
 // Session state (in-memory, lost on full app reload, but checked on startup)
 let isLockedInMemory = false;
 
-// Compute SHA-256 hash of PIN
-export async function hashPin(pin: string): Promise<string> {
+/**
+ * Retrieve or generate a device-unique cryptographically secure random salt
+ */
+export function getOrCreateDeviceSalt(): string {
+  if (typeof window === 'undefined') return 'factory_ledger_salt_device_fallback';
+  let salt = localStorage.getItem(DEVICE_SALT_KEY);
+  if (!salt) {
+    const arr = new Uint8Array(16);
+    crypto.getRandomValues(arr);
+    salt = Array.from(arr).map((b) => b.toString(16).padStart(2, '0')).join('');
+    localStorage.setItem(DEVICE_SALT_KEY, salt);
+  }
+  return salt;
+}
+
+/**
+ * High-security PBKDF2 hash using WebCrypto (100,000 iterations, SHA-256)
+ */
+export async function hashPin(pin: string, customSalt?: string): Promise<string> {
+  const salt = customSalt || getOrCreateDeviceSalt();
+  const enc = new TextEncoder();
+  const keyMaterial = await crypto.subtle.importKey(
+    'raw',
+    enc.encode(pin),
+    { name: 'PBKDF2' },
+    false,
+    ['deriveBits']
+  );
+  const derivedBits = await crypto.subtle.deriveBits(
+    {
+      name: 'PBKDF2',
+      salt: enc.encode(salt),
+      iterations: 100000,
+      hash: 'SHA-256',
+    },
+    keyMaterial,
+    256
+  );
+  const hashArray = Array.from(new Uint8Array(derivedBits));
+  const hex = hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
+  return `pbkdf2:${salt}:${hex}`;
+}
+
+/**
+ * Legacy SHA-256 hash calculator for zero-friction migration
+ */
+export async function hashPinLegacy(pin: string): Promise<string> {
   const msgUint8 = new TextEncoder().encode(pin + '_factory_ledger_salt_2026');
   const hashBuffer = await crypto.subtle.digest('SHA-256', msgUint8);
   const hashArray = Array.from(new Uint8Array(hashBuffer));
   return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * Rate Limiting & Lockout Utilities
+ */
+export function getFailedAttempts(): number {
+  if (typeof window === 'undefined') return 0;
+  const val = localStorage.getItem(FAILED_ATTEMPTS_KEY);
+  return val ? parseInt(val, 10) : 0;
+}
+
+export function getLockoutRemainingSeconds(): number {
+  if (typeof window === 'undefined') return 0;
+  const expiryStr = localStorage.getItem(LOCKOUT_EXPIRY_KEY);
+  if (!expiryStr) return 0;
+  const expiry = parseInt(expiryStr, 10);
+  const remaining = Math.ceil((expiry - Date.now()) / 1000);
+  if (remaining <= 0) {
+    localStorage.removeItem(LOCKOUT_EXPIRY_KEY);
+    return 0;
+  }
+  return remaining;
+}
+
+export function recordFailedAttempt(): { lockedOut: boolean; remainingSeconds: number; attempts: number } {
+  const attempts = getFailedAttempts() + 1;
+  localStorage.setItem(FAILED_ATTEMPTS_KEY, String(attempts));
+
+  if (attempts >= 5) {
+    // 5 attempts = 30s, 6 = 60s, 7 = 120s, capped at 300s
+    const penaltyExponent = Math.min(attempts - 5, 4);
+    const durationSec = 30 * Math.pow(2, penaltyExponent);
+    const expiry = Date.now() + durationSec * 1000;
+    localStorage.setItem(LOCKOUT_EXPIRY_KEY, String(expiry));
+    return { lockedOut: true, remainingSeconds: durationSec, attempts };
+  }
+
+  return { lockedOut: false, remainingSeconds: 0, attempts };
+}
+
+export function resetFailedAttempts(): void {
+  if (typeof window === 'undefined') return;
+  localStorage.removeItem(FAILED_ATTEMPTS_KEY);
+  localStorage.removeItem(LOCKOUT_EXPIRY_KEY);
 }
 
 export function isAppLockEnabled(): boolean {
@@ -253,6 +345,8 @@ export function disableAppLock(): void {
   localStorage.removeItem(BIOMETRIC_ENABLED_KEY);
   localStorage.removeItem(BIOMETRIC_CRED_ID_KEY);
   localStorage.removeItem(RECOVERY_KEY_KEY);
+  localStorage.removeItem(DEVICE_SALT_KEY);
+  resetFailedAttempts();
   isLockedInMemory = false;
   notifyLockStatusChanged();
 }
@@ -264,6 +358,7 @@ export async function updatePin(newPin: string): Promise<void> {
   const hash = await hashPin(newPin);
   localStorage.setItem(PIN_HASH_KEY, hash);
   localStorage.setItem(PIN_LENGTH_KEY, String(newPin.length));
+  resetFailedAttempts();
   notifyLockStatusChanged();
 }
 
@@ -316,57 +411,64 @@ export function verifyRecoveryKey(inputKey: string): boolean {
 
 export async function resetPinWithRecoveryKey(newPin: string): Promise<void> {
   await updatePin(newPin);
+  resetFailedAttempts();
   unlockSession();
 }
 
 /**
- * Apply security settings from cloud profile (e.g. upon login on a new device or account switch)
+ * @deprecated Issue 14: PIN and security credentials are strictly local to this device and never synced to the cloud.
  */
 export function applyCloudSecuritySettings(
-  cloudSettings?: {
+  _cloudSettings?: {
     appLockEnabled?: boolean;
     pinHash?: string;
     pinLength?: number;
     lockTimeout?: number;
   },
-  shouldLockSession = true
+  _shouldLockSession = true
 ): void {
-  if (!cloudSettings) return;
-
-  if (cloudSettings.appLockEnabled && cloudSettings.pinHash) {
-    localStorage.setItem(LOCK_ENABLED_KEY, 'true');
-    localStorage.setItem(PIN_HASH_KEY, cloudSettings.pinHash);
-    const len = cloudSettings.pinLength || (cloudSettings.pinHash ? (cloudSettings.pinLength || 5) : 5);
-    localStorage.setItem(PIN_LENGTH_KEY, String(len));
-    if (typeof cloudSettings.lockTimeout === 'number') {
-      localStorage.setItem(LOCK_TIMEOUT_KEY, String(cloudSettings.lockTimeout));
-    }
-    // Note: Do NOT auto-enable biometrics on a new/different device until user explicitly configures it on this hardware
-    localStorage.removeItem(BIOMETRIC_ENABLED_KEY);
-    localStorage.removeItem(BIOMETRIC_CRED_ID_KEY);
-
-    if (shouldLockSession) {
-      lockSession();
-    } else {
-      notifyLockStatusChanged();
-    }
-  } else if (cloudSettings.appLockEnabled === false) {
-    disableAppLock();
-  }
+  // Intentionally NO-OP for security: PIN is per-device only and never synced via cloud.
 }
 
 /**
- * Verify typed PIN
+ * Verify typed PIN with rate limiting, lockout, and transparent PBKDF2 migration
  */
 export async function verifyPin(pin: string): Promise<boolean> {
+  if (getLockoutRemainingSeconds() > 0) {
+    return false;
+  }
+
   const storedHash = getStoredPinHash();
   if (!storedHash) return true;
-  const hash = await hashPin(pin);
-  const isValid = hash === storedHash;
-  if (isValid) {
-    unlockSession();
+
+  let isValid = false;
+
+  if (storedHash.startsWith('pbkdf2:')) {
+    const parts = storedHash.split(':');
+    if (parts.length === 3) {
+      const salt = parts[1];
+      const computed = await hashPin(pin, salt);
+      isValid = computed === storedHash;
+    }
+  } else {
+    // Check legacy SHA-256 hash
+    const legacy = await hashPinLegacy(pin);
+    if (legacy === storedHash) {
+      isValid = true;
+      // Transparently upgrade to PBKDF2 with device salt
+      const upgraded = await hashPin(pin);
+      localStorage.setItem(PIN_HASH_KEY, upgraded);
+    }
   }
-  return isValid;
+
+  if (isValid) {
+    resetFailedAttempts();
+    unlockSession();
+    return true;
+  } else {
+    recordFailedAttempt();
+    return false;
+  }
 }
 
 /**

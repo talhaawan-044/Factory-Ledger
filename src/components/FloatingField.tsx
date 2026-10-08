@@ -11,6 +11,7 @@ export default function FloatingField({
   step,
   required = false,
   autoFocus = false,
+  error,
   style,
   inputStyle,
 }: {
@@ -23,6 +24,7 @@ export default function FloatingField({
   step?: string;
   required?: boolean;
   autoFocus?: boolean;
+  error?: string;
   style?: React.CSSProperties;
   inputStyle?: React.CSSProperties;
 }) {
@@ -189,35 +191,46 @@ export default function FloatingField({
   };
 
   return (
-    <div
-      className={`floating-field ${isFocused ? 'is-focused' : ''} ${isFloated ? 'is-floated' : ''} ${suffix ? 'has-suffix' : ''}`}
-      style={{ marginBottom: 12, ...style }}
-    >
-      <input
-        ref={inputRef}
-        type={isNumberType ? 'text' : type}
-        inputMode={isNumberType ? 'decimal' : undefined}
-        pattern={isNumberType ? '[0-9,.]*' : undefined}
-        autoComplete="off"
-        step={step}
-        required={required}
-        autoFocus={autoFocus}
-        placeholder={isFloated && placeholder ? placeholder : ''}
-        value={localVal}
-        onChange={handleChange}
-        onKeyDown={isNumberType ? handleKeyDown : undefined}
-        onFocus={() => setIsFocused(true)}
-        onBlur={handleBlur}
-        className="floating-input"
-        style={inputStyle}
-      />
-      <label className="floating-label">
-        {label}
-      </label>
-      {suffix && (
-        <span className="floating-suffix">
-          {suffix}
-        </span>
+    <div style={{ marginBottom: error ? 14 : 12, width: '100%' }}>
+      <div
+        className={`floating-field ${isFocused ? 'is-focused' : ''} ${isFloated ? 'is-floated' : ''} ${suffix ? 'has-suffix' : ''} ${error ? 'has-error' : ''}`}
+        style={{
+          marginBottom: 0,
+          ...(error ? { borderColor: '#ff3b30', borderWidth: 1.5 } : {}),
+          ...style
+        }}
+      >
+        <input
+          ref={inputRef}
+          type={isNumberType ? 'text' : type}
+          inputMode={isNumberType ? 'decimal' : undefined}
+          pattern={isNumberType ? '[0-9,.]*' : undefined}
+          autoComplete="off"
+          step={step}
+          required={required}
+          autoFocus={autoFocus}
+          placeholder={isFloated && placeholder ? placeholder : ''}
+          value={localVal}
+          onChange={handleChange}
+          onKeyDown={isNumberType ? handleKeyDown : undefined}
+          onFocus={() => setIsFocused(true)}
+          onBlur={handleBlur}
+          className="floating-input"
+          style={inputStyle}
+        />
+        <label className="floating-label" style={error ? { color: '#ff3b30' } : undefined}>
+          {label}
+        </label>
+        {suffix && (
+          <span className="floating-suffix">
+            {suffix}
+          </span>
+        )}
+      </div>
+      {error && (
+        <div style={{ fontSize: 11, color: '#ff3b30', marginTop: 3, paddingLeft: 4, fontWeight: 500 }}>
+          {error}
+        </div>
       )}
     </div>
   );

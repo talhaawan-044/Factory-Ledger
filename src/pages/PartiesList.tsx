@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from 'react';
-import { getParties, saveParty, deleteParty, getDispatches, getPayments, getSettings } from '../lib/db';
+import { getParties, saveParty, deleteParty, deletePartyWithRecords, archiveParty, getDispatches, getPayments, getSettings } from '../lib/db';
 import type { Party, Dispatch, Payment, AppSettings } from '../types';
 import { calculatePartyBalance } from '../utils/calculations';
 import { getCurrencySymbol, formatAmountNumber } from '../utils/currency';
@@ -70,6 +70,8 @@ export default function PartiesList() {
   });
 
   const [partyToDelete, setPartyToDelete] = useState<Party | null>(null);
+  const [showCascadeConfirm, setShowCascadeConfirm] = useState(false);
+  const [tabFilter, setTabFilter] = useState<'active' | 'archived'>('active');
 
   const handleViewModeChange = (mode: 'list' | 'grid') => {
     setViewMode(mode);
@@ -80,18 +82,39 @@ export default function PartiesList() {
     e.stopPropagation();
     playPopSound();
     setPartyToDelete(party);
+    setShowCascadeConfirm(false);
+  };
+
+  const handleArchiveParty = async (party: Party, archiveState = true) => {
+    await archiveParty(party.id, archiveState);
+    playPopSound();
+    setPartyToDelete(null);
+    refreshData();
   };
 
   const handleConfirmDeleteParty = async () => {
     if (!partyToDelete) return;
-    await deleteParty(partyToDelete.id);
-    setPartyToDelete(null);
-    refreshData();
+    try {
+      if (showCascadeConfirm) {
+        await deletePartyWithRecords(partyToDelete.id);
+      } else {
+        await deleteParty(partyToDelete.id);
+      }
+      playPopSound();
+      setPartyToDelete(null);
+      setShowCascadeConfirm(false);
+      refreshData();
+    } catch (err: any) {
+      alert(err?.message || 'Could not delete party.');
+    }
   };
 
   // Filter parties by search and category
   const filteredParties = useMemo(() => {
     return parties.filter((p) => {
+      const isArchived = Boolean(p.isArchived);
+      if (tabFilter === 'archived' ? !isArchived : isArchived) return false;
+
       const q = searchQuery.toLowerCase();
       const matchesSearch =
         !q ||
@@ -104,7 +127,7 @@ export default function PartiesList() {
 
       return true;
     });
-  }, [parties, searchQuery]);
+  }, [parties, searchQuery, tabFilter]);
 
   if (loading) {
     return (
@@ -206,9 +229,48 @@ export default function PartiesList() {
           gap: 10
         }}
       >
-        <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--label-secondary)' }}>
-          {filteredParties.length} {filteredParties.length === 1 ? 'account' : 'accounts'}
-        </span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <button
+            type="button"
+            onClick={() => {
+              playPopSound();
+              setTabFilter('active');
+            }}
+            style={{
+              padding: '4px 10px',
+              borderRadius: 8,
+              border: 'none',
+              fontSize: 12,
+              fontWeight: 600,
+              backgroundColor: tabFilter === 'active' ? 'var(--ios-blue)' : 'var(--fill-primary)',
+              color: tabFilter === 'active' ? '#ffffff' : 'var(--label-secondary)',
+              cursor: 'pointer',
+            }}
+          >
+            Active ({parties.filter((p) => !p.isArchived).length})
+          </button>
+          {parties.some((p) => p.isArchived) && (
+            <button
+              type="button"
+              onClick={() => {
+                playPopSound();
+                setTabFilter('archived');
+              }}
+              style={{
+                padding: '4px 10px',
+                borderRadius: 8,
+                border: 'none',
+                fontSize: 12,
+                fontWeight: 600,
+                backgroundColor: tabFilter === 'archived' ? 'var(--ios-blue)' : 'var(--fill-primary)',
+                color: tabFilter === 'archived' ? '#ffffff' : 'var(--label-secondary)',
+                cursor: 'pointer',
+              }}
+            >
+              Archived ({parties.filter((p) => p.isArchived).length})
+            </button>
+          )}
+        </div>
 
         {/* Persistent List vs Grid Switcher */}
         <div
@@ -693,17 +755,61 @@ export default function PartiesList() {
       />
 
       {/* ── iOS Liquid Glass Delete Confirmation Modal ── */}
-      <IOSConfirmModal
-        isOpen={Boolean(partyToDelete)}
-        title="Delete Party?"
-        message={`Are you sure you want to delete "${partyToDelete?.name}"? All related dispatches and ledger records will be unlinked.`}
-        confirmText="Delete Party"
-        cancelText="Cancel"
-        destructive
-        countdownSeconds={2}
-        onConfirm={handleConfirmDeleteParty}
-        onCancel={() => setPartyToDelete(null)}
-      />
+      {partyToDelete && (() => {
+        const cDisp = dispatches.filter((d) => d.partyId === partyToDelete.id).length;
+        const cPay = payments.filter((p) => p.partyId === partyToDelete.id).length;
+        const hasRecords = cDisp > 0 || cPay > 0;
+
+        if (showCascadeConfirm) {
+          return (
+            <IOSConfirmModal
+              isOpen={Boolean(partyToDelete)}
+              title="Delete Party & All Child Records?"
+              message={`WARNING: This will permanently delete "${partyToDelete.name}" along with all ${cDisp} dispatch(es) and ${cPay} payment(s). This action cannot be undone.`}
+              confirmText={`Delete Everything (${cDisp + cPay + 1} records)`}
+              cancelText="Cancel"
+              destructive
+              countdownSeconds={3}
+              onConfirm={handleConfirmDeleteParty}
+              onCancel={() => {
+                setPartyToDelete(null);
+                setShowCascadeConfirm(false);
+              }}
+            />
+          );
+        }
+
+        if (hasRecords) {
+          return (
+            <IOSConfirmModal
+              isOpen={Boolean(partyToDelete)}
+              title="Party Has Existing Records"
+              message={`"${partyToDelete.name}" has ${cDisp} dispatch(es) and ${cPay} payment(s). Deleting the party alone leaves orphaned transactions that distort dashboard figures. We recommend Archiving the party to keep financial ledger records safe.`}
+              confirmText="Archive Party (Recommended)"
+              cancelText="Cancel"
+              destructive={false}
+              icon="warning"
+              countdownSeconds={0}
+              onConfirm={() => handleArchiveParty(partyToDelete, true)}
+              onCancel={() => setPartyToDelete(null)}
+            />
+          );
+        }
+
+        return (
+          <IOSConfirmModal
+            isOpen={Boolean(partyToDelete)}
+            title="Delete Party?"
+            message={`Are you sure you want to delete "${partyToDelete.name}"? This party has no transactions.`}
+            confirmText="Delete Party"
+            cancelText="Cancel"
+            destructive
+            countdownSeconds={2}
+            onConfirm={handleConfirmDeleteParty}
+            onCancel={() => setPartyToDelete(null)}
+          />
+        );
+      })()}
     </div>
   );
 }

@@ -25,24 +25,24 @@
 
 ## Screenshots
 
-<!-- Place your screenshots here! Replace the placeholders below with your images -->
+<!-- Add your application screenshots in docs/images/ -->
 <div align="center">
   <table>
     <tr>
       <td align="center" width="33%">
         <b>Security Lock Screen</b><br>
         <sub>5-digit PIN & Biometrics</sub><br><br>
-        <i><!-- <img src="path/to/lockscreen.png" width="240" /> --></i>
+        <i><!-- <img src="docs/images/lockscreen.png" width="240" /> --></i>
       </td>
       <td align="center" width="33%">
         <b>New Dispatch & Profit</b><br>
         <sub>Live formulas & blending</sub><br><br>
-        <i><!-- <img src="path/to/dispatch.png" width="240" /> --></i>
+        <i><!-- <img src="docs/images/dispatch.png" width="240" /> --></i>
       </td>
       <td align="center" width="33%">
         <b>Settings & Cloud Sync</b><br>
         <sub>Multi-device Google Sync</sub><br><br>
-        <i><!-- <img src="path/to/settings.png" width="240" /> --></i>
+        <i><!-- <img src="docs/images/settings.png" width="240" /> --></i>
       </td>
     </tr>
   </table>
@@ -52,9 +52,9 @@
 
 ## Overview
 
-**Factory Ledger** bridges the gap between field-level logistics and financial accounting. Traditional bookkeeping apps fail when dealing with commodities like coal, minerals, and bulk materials that require complex quality deductions (GCV formulas, moisture adjustments), truck axle weights (gross/tare/net), multi-source recipe blending, and live margin forecasts.
+**Factory Ledger** bridges the gap between field-level logistics and financial accounting. Traditional bookkeeping apps fail when dealing with commodities like coal, minerals, and bulk materials that require complex quality deductions (caloric compliance, moisture adjustments), factory weighbridge readings, multi-source recipe blending, and live margin forecasts.
 
-Factory Ledger provides an **all-in-one mobile and web powerhouse**: manage party debts, track dispatches, calculate truck profits in real-time, generate professional Excel sheets and PDF receipts, and synchronize safely across devices with enterprise security.
+Factory Ledger provides an **all-in-one mobile and web management solution**: manage party balances, track dispatches, calculate truck profits in real-time, generate professional Excel workbooks and PDF receipts, and synchronize safely across devices with robust offline resilience.
 
 ---
 
@@ -63,40 +63,42 @@ Factory Ledger provides an **all-in-one mobile and web powerhouse**: manage part
 ### Smart Logistics & Dispatch Tracking
 - **Live Profit Engine:** Calculates real-time projected profit per truck based on selling rate, purchase costs, transport deductions, and commission.
 - **Coal Blending Recipe Matrix:** Blend multiple coal sources/grades per truck with individual tonnage and cost ratios.
-- **Contract Agreement Formulas:** Custom GCV (Gross Calorific Value) penalty matrices, moisture deductions, and base rate specifications.
-- **Weight Station Integration:** Automatic net weight calculation from gross and tare readings.
+- **Quality Deduction Engine:** Enter manual GCV (Gross Calorific Value) quality deductions or premiums per dispatch with visual caloric compliance gauges.
+- **Weighbridge & Transit Loss:** Compare loaded coal recipe weight against factory weighbridge received weight with instant shortage loss/gain percentages.
+- **In-Transit Pending Dispatches:** Record trucks departing the mine/yard prior to factory weighment; pending trucks are clearly tracked and excluded from profit totals until officially weighed.
 - **Deal Estimator:** Simulate hypothetical multi-truck contracts and margin calculations before dispatching.
 
 ### Commercial Party Ledger & Accounting
-- **Double-Entry Financial Accounting:** Full debit, credit, balance, and running statement tracking.
-- **Receivables & Payables:** Instant visibility into net balances, outstanding invoices, and overpaid advances.
-- **Payment Receipts:** One-tap generated payment and dispatch vouchers with printable views.
+- **Single-Entry Running-Balance Ledger:** Accurate debit/credit ledger tracking invoices, received payments, paid refunds/advances, and running statement balances.
+- **Receivables & Payables:** Instant visibility into net balances, outstanding invoices, and settled accounts.
+- **Payment Vouchers & Receipts:** One-tap generated payment and dispatch vouchers with printable/shareable views.
 - **Automatic Balancing:** Real-time balance recomputation upon editing or removing transactions.
 
-### Enterprise-Grade Privacy & Security
-- **iOS 18 Passcode Lock Screen:** 5-digit PIN lock screen with Apple HIG layout and tactile keypad animations.
+### Privacy & Access Protection
+- **iOS 18 Passcode Lock Screen:** 5-digit PIN lock screen with Apple HIG tactile keypad layout.
+- **Slow PBKDF2 Hashing:** PINs are hashed using WebCrypto PBKDF2 (100,000 iterations) with a device-unique cryptographic salt stored strictly on the local device.
+- **Escalating Lockout Rate Limiting:** 30-second lockout after 5 consecutive incorrect passcode attempts to prevent brute-forcing.
 - **Hardware Biometrics:** Native Android fingerprint and biometric prompt via custom native plugin (`AppBiometricPlugin.java`).
-- **Master Offline Recovery Key (`FL-XXXX-XXXX`):** Self-service, zero-knowledge offline recovery key allowing passcode resets without needing server connectivity.
-- **Sensitive Gate Protection:** PIN verification required to change passcodes, export ledger data, or import backups.
-- **Smart Data Import Protection:** Interactive modal with choice between **Nuke & Overwrite** or intelligent **Merge** resolution.
+- **Master Offline Recovery Key (`FL-XXXX-XXXX`):** Self-service offline recovery key allowing passcode resets without needing server connectivity.
+- **Sensitive Gate Protection:** Passcode verification required to change security settings, export ledger data, or import backups.
 
 ### Cloud Sync & Offline-First Resilience
-- **Offline-First by Design:** Uses local IndexedDB caching so operators can record dispatches without internet access at remote mines or weighing bridges.
+- **Offline-First by Design:** Operates fully without an internet connection or cloud account. All records are stored locally in IndexedDB via Dexie.
 - **Firebase Firestore Subcollections:** Scalable cloud architecture synchronizing party records, dispatches, and payments as subcollections under the user's secure account ID.
-- **Write-Through Synchronization:** Automatic background synchronization with retry handling and manual "Sync Now" triggers.
+- **Delta Sync & Soft Deletes:** Changes are tracked with `dirty` flags for efficient delta synchronization; deleted items are tombstoned via `deleted: true` to prevent cross-device resurrection.
 - **Google Single Sign-On (SSO):** Seamless one-tap authentication via Capacitor Firebase Auth.
 
 ### Professional Exporting & Invoicing
-- **Multi-Sheet Excel Reports:** Formatted `.xlsx` workbooks with color-coded profit badges, summary metrics, and ledger breakdowns.
-- **PDF Slips & Receipts:** Clean, customer-ready printable receipts with business branding and headers.
-- **WhatsApp Formatted Summaries:** Instant text formatting for quick sharing with truck drivers, factory owners, and suppliers.
-- **Full JSON Backups:** Complete data export for off-site archiving and recovery.
+- **Multi-Sheet Excel Reports:** Formatted `.xlsx` workbooks with color-coded profit badges, summary metrics, and ledger breakdowns generated on demand via `exceljs`.
+- **PDF Slips & Statements:** Clean, customer-ready printable receipts and landscape audit reports generated via `jspdf` and `jspdf-autotable`.
+- **WhatsApp Formatted Summaries:** One-tap formatted text statements for rapid WhatsApp sharing with drivers and factory accountants.
+- **Full JSON Backups & Snapshots:** Complete data export for off-site archiving, with automatic pre-restore snapshots and one-click rollback.
 
 ### Apple iOS 18 Design Experience
-- **Adaptive Light & Dark Themes:** Fully responsive interface that seamlessly transitions between deep OLED dark mode and crisp iOS light mode.
+- **Adaptive Light & Dark Themes:** Fully responsive interface designed to transition seamlessly between OLED dark mode and crisp iOS light mode.
 - **Color Accent Themes:** Personalize your interface with presets like *Electric Sapphire*, *Emerald Green*, *Royal Violet*, and *Sunset Amber*.
 - **Haptics & Audio Chimes:** Tactile button feedbacks, cash chime audio cues, and modal pop sounds.
-- **Automatic Currency Formatting:** Native commas, PKR notation, and localized numerical inputs.
+- **Automatic Currency Formatting:** Localized comma notation and PKR formatting.
 
 ---
 
@@ -104,12 +106,12 @@ Factory Ledger provides an **all-in-one mobile and web powerhouse**: manage part
 
 | Layer | Technologies |
 | :--- | :--- |
-| **Frontend Framework** | [React 19](https://react.dev/), [TypeScript](https://www.typescriptlang.org/), [Vite](https://vitejs.dev/) |
-| **Styling & Design System** | [Tailwind CSS v4](https://tailwindcss.com/), Apple iOS 18 HIG Tokens & Glassmorphism |
+| **Frontend Framework** | [React 19](https://react.dev/), [TypeScript](https://www.typescriptlang.org/), [Vite 8](https://vitejs.dev/) |
+| **Styling & Design System** | [Tailwind CSS v4](https://tailwindcss.com/), Apple iOS 18 HIG Tokens & Solid Physical Palette |
 | **Mobile Runtime** | [Capacitor 8](https://capacitorjs.com/) (Android) |
-| **Local Database** | IndexedDB / Browser Storage Engine |
+| **Local Database** | [Dexie.js](https://dexie.com/) (IndexedDB Engine) |
 | **Cloud Backend** | [Firebase Firestore](https://firebase.google.com/docs/firestore), [Firebase Authentication](https://firebase.google.com/docs/auth) |
-| **Reporting & Exporting** | `exceljs`, `xlsx`, `jspdf`, `jspdf-autotable`, `html2canvas` |
+| **Reporting & Exporting** | `exceljs`, `jspdf`, `jspdf-autotable`, `html2canvas` (Code-split on demand) |
 | **Icons & Typography** | [Lucide React](https://lucide.dev/), Plus Jakarta Sans, Outfit, JetBrains Mono |
 
 ---
@@ -168,35 +170,66 @@ cd Factory-Ledger
 npm install
 ```
 
-### 2. Start the Development Server
+### 2. Environment Configuration (Optional Cloud Sync)
+
+Factory Ledger supports two operational modes out of the box:
+
+- **Offline-Only Mode (Default):**
+  If no `.env` file is present, the app starts immediately in standalone offline mode. All records, dispatches, and settings are saved securely on your device inside IndexedDB. No external setup or internet access is required.
+
+- **Cloud Sync Mode (Multi-Device):**
+  To enable Google Sign-In and cloud synchronization:
+  1. Create a project in [Firebase Console](https://console.firebase.google.com/).
+  2. Enable **Authentication** (Google provider) and **Cloud Firestore**.
+  3. Deploy security rules (`firebase deploy --only firestore:rules`).
+  4. Copy `.env.example` to `.env`:
+     ```bash
+     cp .env.example .env
+     ```
+  5. Fill in your Firebase web app configuration in `.env`:
+     ```env
+     VITE_FIREBASE_API_KEY=your_api_key
+     VITE_FIREBASE_AUTH_DOMAIN=your_project.firebaseapp.com
+     VITE_FIREBASE_PROJECT_ID=your_project_id
+     VITE_FIREBASE_STORAGE_BUCKET=your_project.firebasestorage.app
+     VITE_FIREBASE_MESSAGING_SENDER_ID=your_sender_id
+     VITE_FIREBASE_APP_ID=your_app_id
+     ```
+
+#### Android Google Sign-In (Code 10 Configuration)
+For Google Sign-In to function on Android devices:
+1. In Firebase Console, add an Android App with package name `com.factoryledger.app`.
+2. Add your machine's debug and release SHA-1 / SHA-256 fingerprints to your Firebase Android app settings. (To view your SHA-1: `./android/gradlew -p android signingReport`).
+3. Download `google-services.json` and place it in `android/app/google-services.json`.
+
+---
+
+### 3. Start Development Server
 ```bash
 npm run dev
 ```
 Open your browser at `http://localhost:5173`.
 
-### 3. Build & Sync Native Android
+### 4. Build Web Bundle
 ```bash
-# Compile web assets
 npm run build
+```
 
-# Synchronize Capacitor native bridge
+### 5. Build & Sync Native Android
+```bash
 npx cap sync android
 ```
 
-### 4. Run Directly on Connected Android Device
+### 6. Run on Connected Android Device
 ```bash
 npx cap run android
-```
-*(Or use the ADB deployment chain to build and launch immediately):*
-```bash
-./android/gradlew -p android assembleDebug && adb install -r android/app/build/outputs/apk/debug/app-debug.apk
 ```
 
 ---
 
 ## Building a Signed Production APK
 
-The project is preconfigured to generate cryptographically signed release builds using Gradle and Android SDK `apksigner`.
+The project is preconfigured to generate release builds using Gradle and Android SDK `apksigner`.
 
 1. Ensure `android/keystore.properties` is present (excluded from version control):
    ```properties
@@ -211,7 +244,7 @@ The project is preconfigured to generate cryptographically signed release builds
    npm run build && npx cap sync android && cd android && ./gradlew assembleRelease
    ```
 
-3. Your optimized, signed, and aligned production APK is generated at:
+3. Your optimized and aligned production APK is generated at:
    ```text
    android/app/build/outputs/apk/release/app-release.apk
    ```
@@ -221,8 +254,22 @@ The project is preconfigured to generate cryptographically signed release builds
 ## Security & Privacy Architecture
 
 - **No Remote Telemetry:** The app collects zero user tracking or diagnostic metrics.
-- **Zero-Knowledge Recovery:** Your Master Recovery Key is stored exclusively on your device. Even if an attacker gains access to your cloud account, they cannot bypass your local lock without this offline key.
-- **Biometric Hardware Isolation:** Biometric authentication runs entirely on-device via Android's `androidx.biometric` APIs; biometric data never leaves your device's hardware secure enclave.
+- **Passcode Privacy Lock:** A 5-digit PIN screen provides casual privacy. The passcode is hashed using WebCrypto PBKDF2 (100,000 iterations) with a device-unique cryptographic salt stored strictly on the local device. PIN credentials and recovery keys are never synchronized to Firestore.
+- **Lockout Rate Limiting:** 5 consecutive failed passcode attempts trigger an escalating lockout timer (starting at 30 seconds) to slow down guessing attacks.
+- **Biometric Hardware Isolation:** Biometric authentication runs on-device via Android's `androidx.biometric` APIs; biometric data never leaves your device's hardware secure enclave.
+- **Native OS Protection:** Android release builds specify `android:allowBackup="false"` and `FLAG_SECURE` to block unintended data leakage via `adb backup` or recent apps thumbnails.
+
+---
+
+## Architecture & Known Limitations
+
+- **Accounting Model:** Single-entry running-balance commercial ledger (billed invoice amounts minus payments received / refunded), not double-entry general ledger.
+- **Quality Deductions:** GCV and quality deductions/premiums are entered per dispatch with caloric compliance visualization; there is no automated sliding-scale penalty matrix.
+- **Weighbridge Readings:** The factory weighbridge received weight is recorded directly; there is no gross/tare hardware weighbridge scale integration.
+- **In-Transit Dispatches:** Dispatches saved prior to factory weighment are marked as in-transit and automatically excluded from aggregate net profit and billed revenue totals until officially weighed.
+- **Storage Capacity:** Financial records and audit logs are stored locally on the device in IndexedDB via Dexie. Settings and fast-lookup flags stay in `localStorage`.
+- **Cloud Sync:** Multi-device synchronization uses Google sign-in with Firestore subcollections. Conflict resolution uses last-write-wins based on timestamps, with tombstone propagation for soft deletes.
+- **Cloud Setup:** Requires your own Firebase project (see Setup). Without one, the app runs in full offline-only mode.
 
 ---
 

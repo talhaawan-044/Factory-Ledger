@@ -27,6 +27,7 @@ export interface IOSSelectProps<T extends string | number = string> {
   clearable?: boolean;
   onClear?: () => void;
   required?: boolean;
+  error?: string;
   style?: React.CSSProperties;
   inputStyle?: React.CSSProperties;
   className?: string;
@@ -58,6 +59,7 @@ export default function IOSSelect<T extends string | number = string>({
   className = '',
   emptyText = 'No options available',
   actionButton,
+  error,
 }: IOSSelectProps<T>) {
   const [isOpen, setIsOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -129,17 +131,19 @@ export default function IOSSelect<T extends string | number = string>({
     <>
       {/* ── Trigger Component ── */}
       {floating ? (
-        <div
-          className={`floating-field ios-select-trigger ${isOpen ? 'is-focused' : ''} ${isFloated ? 'is-floated' : ''} ${disabled ? 'opacity-50 pointer-events-none' : ''} ${className}`}
-          style={{
-            marginBottom: 12,
-            cursor: disabled ? 'not-allowed' : 'pointer',
-            userSelect: 'none',
-            display: 'flex',
-            alignItems: 'center',
-            position: 'relative',
-            ...style,
-          }}
+        <div style={{ marginBottom: error ? 14 : 12, width: '100%' }}>
+          <div
+            className={`floating-field ios-select-trigger ${isOpen ? 'is-focused' : ''} ${isFloated ? 'is-floated' : ''} ${disabled ? 'opacity-50 pointer-events-none' : ''} ${className}`}
+            style={{
+              marginBottom: 0,
+              cursor: disabled ? 'not-allowed' : 'pointer',
+              userSelect: 'none',
+              display: 'flex',
+              alignItems: 'center',
+              position: 'relative',
+              ...(error ? { borderColor: '#ff3b30', borderWidth: 1.5 } : {}),
+              ...style,
+            }}
           onClick={handleOpen}
           role="button"
           tabIndex={disabled ? -1 : 0}
@@ -199,14 +203,21 @@ export default function IOSSelect<T extends string | number = string>({
             />
           </div>
 
-          <label
-            className="floating-label"
-            style={{
-              pointerEvents: 'none',
-            }}
-          >
-            {label}
-          </label>
+            <label
+              className="floating-label"
+              style={{
+                pointerEvents: 'none',
+                ...(error ? { color: '#ff3b30' } : {}),
+              }}
+            >
+              {label}
+            </label>
+          </div>
+          {error && (
+            <div style={{ fontSize: 11, color: '#ff3b30', marginTop: 3, paddingLeft: 4, fontWeight: 500 }}>
+              {error}
+            </div>
+          )}
         </div>
       ) : (
         <div

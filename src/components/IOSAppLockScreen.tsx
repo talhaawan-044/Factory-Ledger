@@ -6,6 +6,7 @@ import {
   verifyPin,
   authenticateWithBiometrics,
   isSessionLocked,
+  getLockoutRemainingSeconds,
 } from '../utils/securityLock';
 import { playCashChime, playPopSound } from '../utils/delight';
 import { Fingerprint, Delete, ShieldAlert, Lock } from 'lucide-react';
@@ -22,6 +23,7 @@ export default function IOSAppLockScreen({ onUnlocked }: IOSAppLockScreenProps) 
   const [pin, setPin] = useState('');
   const [isShaking, setIsShaking] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
+  const [lockoutRemaining, setLockoutRemaining] = useState(() => getLockoutRemainingSeconds());
   const [isAuthenticatingBio, setIsAuthenticatingBio] = useState(false);
   const [showRecoveryModal, setShowRecoveryModal] = useState(false);
   const [showSetNewPasscodeModal, setShowSetNewPasscodeModal] = useState(false);
@@ -36,9 +38,24 @@ export default function IOSAppLockScreen({ onUnlocked }: IOSAppLockScreenProps) 
     return () => window.removeEventListener('coal_lock_status_changed', handleStatusChange);
   }, []);
 
+  // Lockout countdown timer
+  useEffect(() => {
+    if (lockoutRemaining <= 0) return;
+    const interval = setInterval(() => {
+      const rem = getLockoutRemainingSeconds();
+      setLockoutRemaining(rem);
+      if (rem <= 0) {
+        setErrorMessage('');
+      } else {
+        setErrorMessage(`Too many attempts. Locked for ${rem}s`);
+      }
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [lockoutRemaining]);
+
   // Auto-prompt biometrics once on screen lock mount if enabled
   useEffect(() => {
-    if (isLocked && isBiometricEnabled() && !bioTriggeredRef.current) {
+    if (isLocked && isBiometricEnabled() && !bioTriggeredRef.current && lockoutRemaining <= 0) {
       bioTriggeredRef.current = true;
       triggerBiometrics();
     }
@@ -47,9 +64,10 @@ export default function IOSAppLockScreen({ onUnlocked }: IOSAppLockScreenProps) 
       setPin('');
       setErrorMessage('');
     }
-  }, [isLocked]);
+  }, [isLocked, lockoutRemaining]);
 
   const triggerBiometrics = async () => {
+    if (lockoutRemaining > 0) return;
     setIsAuthenticatingBio(true);
     try {
       const success = await authenticateWithBiometrics();
@@ -64,7 +82,7 @@ export default function IOSAppLockScreen({ onUnlocked }: IOSAppLockScreenProps) 
   };
 
   const handleDigit = async (digit: string) => {
-    if (pin.length >= pinLength) return;
+    if (lockoutRemaining > 0 || pin.length >= pinLength) return;
     playPopSound();
     const nextPin = pin + digit;
     setPin(nextPin);
@@ -78,9 +96,15 @@ export default function IOSAppLockScreen({ onUnlocked }: IOSAppLockScreenProps) 
         setIsLocked(false);
         onUnlocked?.();
       } else {
+        const remaining = getLockoutRemainingSeconds();
+        if (remaining > 0) {
+          setLockoutRemaining(remaining);
+          setErrorMessage(`Too many attempts. Locked for ${remaining}s`);
+        } else {
+          setErrorMessage('Incorrect passcode');
+        }
         // Trigger shake & clear
         setIsShaking(true);
-        setErrorMessage('Incorrect passcode');
         setTimeout(() => {
           setIsShaking(false);
           setPin('');

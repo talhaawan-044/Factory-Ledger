@@ -36,6 +36,13 @@ service cloud.firestore {
       return isAuthenticated() && request.auth.uid == userId;
     }
 
+    // Guard against stale writes: incoming update must not have an older timestamp than existing document
+    function isNotStaleUpdate() {
+      return !('updatedAt' in resource.data) ||
+             !('updatedAt' in request.resource.data) ||
+             request.resource.data.updatedAt >= resource.data.updatedAt;
+    }
+
     // Validate backup payload structure to ensure data integrity
     function isValidBackupPayload(data) {
       return (!('parties' in data) || data.parties is list) &&
@@ -54,25 +61,35 @@ service cloud.firestore {
       // Allow user to read and manage their top-level record
       allow read, write: if isOwner(userId);
 
-      // Granular subcollections for high performance & scalability
+      // Granular subcollections with stale-write protection
       match /parties/{partyId} {
-        allow read, write: if isOwner(userId);
+        allow read, delete: if isOwner(userId);
+        allow create: if isOwner(userId);
+        allow update: if isOwner(userId) && isNotStaleUpdate();
       }
 
       match /dispatches/{dispatchId} {
-        allow read, write: if isOwner(userId);
+        allow read, delete: if isOwner(userId);
+        allow create: if isOwner(userId);
+        allow update: if isOwner(userId) && isNotStaleUpdate();
       }
 
       match /payments/{paymentId} {
-        allow read, write: if isOwner(userId);
+        allow read, delete: if isOwner(userId);
+        allow create: if isOwner(userId);
+        allow update: if isOwner(userId) && isNotStaleUpdate();
       }
 
       match /pos/{poId} {
-        allow read, write: if isOwner(userId);
+        allow read, delete: if isOwner(userId);
+        allow create: if isOwner(userId);
+        allow update: if isOwner(userId) && isNotStaleUpdate();
       }
 
       match /settings/{settingId} {
-        allow read, write: if isOwner(userId);
+        allow read, delete: if isOwner(userId);
+        allow create: if isOwner(userId);
+        allow update: if isOwner(userId) && isNotStaleUpdate();
       }
 
       match /meta/{metaId} {
@@ -81,11 +98,6 @@ service cloud.firestore {
 
       // Legacy single-document backup path (for backward compatibility & migration)
       match /ledger/{document} {
-        allow read, write: if isOwner(userId);
-      }
-
-      // Catch-all for any additional subcollections
-      match /{allChildren=**} {
         allow read, write: if isOwner(userId);
       }
     }
