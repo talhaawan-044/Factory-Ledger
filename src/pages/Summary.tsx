@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { getDispatches, getParties, getPayments, getPurchaseOrders, getSettings } from '../lib/db';
 import type { Dispatch, Party, Payment, PurchaseOrder, AppSettings } from '../types';
-import { calculateSettlement, calculatePartyBalance, isDispatchPending } from '../utils/calculations';
+import { calculateSettlement, calculatePartyBalance, isDispatchPending, calculateLedgerTotals } from '../utils/calculations';
 import { formatCurrency, formatCompactFinancial } from '../utils/currency';
 import { playPopSound, triggerConfetti } from '../utils/delight';
 import { useLedgerListener } from '../hooks/useLedgerListener';
@@ -88,14 +88,14 @@ export default function Summary() {
     });
 
     // Separate settled dispatches from pending (in-transit / unweighed) dispatches (Issue 19 / T6)
-    const settledDispatches = filteredDispatches.filter(d => !isDispatchPending(d));
     const pendingDispatches = filteredDispatches.filter(d => isDispatchPending(d));
 
-    // Calculations based on settled dispatches to prevent unweighed trucks from causing false losses
-    const totalProfit = settledDispatches.reduce((sum, d) => sum + calculateSettlement(d, settings).netProfit, 0);
-    const totalRevenue = settledDispatches.reduce((sum, d) => sum + calculateSettlement(d, settings).totalRevenue, 0);
-    const totalCost = settledDispatches.reduce((sum, d) => sum + calculateSettlement(d, settings).totalCost, 0);
-    const totalTons = settledDispatches.reduce((sum, d) => sum + (d.labReceivedWeight || 0), 0);
+    // Calculations based on canonical calculateLedgerTotals (Issue 19 / Issue 20)
+    const ledgerTotals = calculateLedgerTotals(filteredDispatches, settings);
+    const totalProfit = ledgerTotals.profit;
+    const totalRevenue = ledgerTotals.revenue;
+    const totalCost = ledgerTotals.cost;
+    const totalTons = ledgerTotals.receivedTons;
     const profitMargin = totalRevenue > 0 ? (totalProfit / totalRevenue) * 100 : 0;
     const formattedProfit = formatCurrency(totalProfit, settings, { showSign: true });
 

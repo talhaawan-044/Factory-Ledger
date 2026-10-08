@@ -6,6 +6,7 @@ import {
   deleteSingleEntityFromCloud,
   subscribeToAuth,
   logoutUser,
+  purgeLegacySecurityFieldsFromCloud,
   type GoogleUserData,
   type CloudSyncResult,
 } from './firebase';
@@ -100,6 +101,10 @@ class SyncManager {
       this.broadcast();
 
       if (user) {
+        purgeLegacySecurityFieldsFromCloud(user.uid).catch((err) => {
+          console.warn('[SyncManager] Legacy PIN security purge warning:', err);
+        });
+
         const owner = getLedgerOwner();
         // If owner is not set or matches current user, safe startup reconcile
         if (!owner.uid || owner.uid === user.uid) {
@@ -393,6 +398,7 @@ class SyncManager {
    * 5. Different Google account (e.g. Brother logs in) -> prompts safe account switch
    */
   public async checkLoginScenario(user: GoogleUserData): Promise<LoginScenarioResult> {
+    purgeLegacySecurityFieldsFromCloud(user.uid).catch(() => {});
     const owner = getLedgerOwner();
     const localCounts = await getLocalRecordCounts();
     const localCount = localCounts.total;

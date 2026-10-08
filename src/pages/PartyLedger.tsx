@@ -17,7 +17,7 @@ import {
 } from '../lib/db';
 import type { Party, Dispatch, Payment, PurchaseOrder, AppSettings } from '../types';
 import { getTodayDateString, toLocalDateString } from '../utils/dateUtils';
-import { calculateSettlement, calculatePartyBalance, isDispatchPending } from '../utils/calculations';
+import { calculateSettlement, calculatePartyBalance, isDispatchPending, calculateLedgerTotals } from '../utils/calculations';
 import { getCurrencySymbol, getCurrencyCode, formatAmountNumber } from '../utils/currency';
 import { useLedgerListener } from '../hooks/useLedgerListener';
 import { Capacitor } from '@capacitor/core';
@@ -1195,8 +1195,9 @@ Current Ledger Balance: ${curSym} ${formatAmountNumber(Math.abs(outstandingBalan
             <div className="ios-sheet-body" style={{ flex: 1, overflowY: 'auto', padding: '16px 0 40px', background: 'var(--bg-grouped)' }}>
               {(() => {
                 const poDispatches = dispatches.filter(d => d.poId === previewPO.id);
-                const fulfilledTons = poDispatches.reduce((sum, d) => sum + (d.labReceivedWeight || 0), 0);
-                const poRevenue = poDispatches.reduce((sum, d) => sum + calculateSettlement(d).totalRevenue, 0);
+                const poTotals = calculateLedgerTotals(poDispatches, settings);
+                const fulfilledTons = poTotals.receivedTons;
+                const poRevenue = poTotals.revenue;
                 const hasTonnageTarget = Boolean(previewPO.totalTons && previewPO.totalTons > 0);
                 const progressPct = hasTonnageTarget ? Math.min(100, Math.round((fulfilledTons / (previewPO.totalTons || 1)) * 100)) : 0;
 

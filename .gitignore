@@ -41,7 +41,9 @@ Ai-always-read-this/
 .agents/
 scratch/
 ISSUES_AND_FIXES.*
+ISSUES_AND_FIXES_PART_2.*
 SOLVED_ISSUES.*
+SOLVED_ISSUES_PART_2.*
 
 # Python cache & virtual environments
 __pycache__/

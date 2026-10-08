@@ -2,7 +2,7 @@ import { useEffect, useState, useMemo } from 'react';
 import IOSDatePicker from '../components/IOSDatePicker';
 import { getDispatches, getParties, getPurchaseOrders, getSettings } from '../lib/db';
 import type { Dispatch, Party, PurchaseOrder, AppSettings } from '../types';
-import { calculateSettlement } from '../utils/calculations';
+import { calculateSettlement, calculateLedgerTotals, isDispatchPending } from '../utils/calculations';
 import { formatCurrency, formatCompactFinancial } from '../utils/currency';
 import { useLedgerListener } from '../hooks/useLedgerListener';
 import {
@@ -75,30 +75,27 @@ export default function AllEntries() {
             if (dateFrom && d.date < dateFrom) matchDate = false;
             if (dateTo && d.date > dateTo) matchDate = false;
 
-            // Status filter
+            // Status filter: in-transit (unweighed) dispatches do not have finalized profit/loss yet (Issue 20)
             let matchStatus = true;
+            const isPending = isDispatchPending(d);
             if (activeFilter === 'profit') {
-                matchStatus = settlement.netProfit >= 0;
+                matchStatus = !isPending && settlement.netProfit >= 0;
             } else if (activeFilter === 'loss') {
-                matchStatus = settlement.netProfit < 0;
+                matchStatus = !isPending && settlement.netProfit < 0;
             }
 
             return matchSearch && matchParty && matchPo && matchDate && matchStatus;
         });
     }, [dispatches, parties, pos, searchQuery, activeFilter, selectedPartyId, selectedPoId, dateFrom, dateTo]);
 
-    // Live Aggregations for Filtered Dispatches
-    const filteredTons = useMemo(() => {
-        return filteredDispatches.reduce((sum, d) => sum + (d.labReceivedWeight || 0), 0);
-    }, [filteredDispatches]);
-
-    const filteredRevenue = useMemo(() => {
-        return filteredDispatches.reduce((sum, d) => sum + calculateSettlement(d, settings).totalRevenue, 0);
+    // Live Aggregations for Filtered Dispatches using unified calculateLedgerTotals (Issue 20)
+    const ledgerTotals = useMemo(() => {
+        return calculateLedgerTotals(filteredDispatches, settings);
     }, [filteredDispatches, settings]);
 
-    const filteredProfit = useMemo(() => {
-        return filteredDispatches.reduce((sum, d) => sum + calculateSettlement(d, settings).netProfit, 0);
-    }, [filteredDispatches, settings]);
+    const filteredTons = ledgerTotals.receivedTons;
+    const filteredRevenue = ledgerTotals.revenue;
+    const filteredProfit = ledgerTotals.profit;
 
     const formattedProfit = useMemo(() => {
         return formatCurrency(filteredProfit, settings, { showSign: true });
@@ -406,6 +403,11 @@ export default function AllEntries() {
                                 className="tabular-nums"
                             >
                                 {filteredDispatches.length} <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--label-secondary)' }}>trucks</span>
+                                {ledgerTotals.pendingCount > 0 && (
+                                    <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--ios-blue)', marginLeft: 4 }}>
+                                        ({ledgerTotals.pendingCount} in transit)
+                                    </span>
+                                )}
                                 <span style={{ margin: '0 6px', color: 'var(--label-tertiary)', fontWeight: 400 }}>·</span>
                                 {filteredTons.toFixed(1)} <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--label-secondary)' }}>tons</span>
                             </div>

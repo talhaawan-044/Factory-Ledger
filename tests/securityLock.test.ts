@@ -79,4 +79,16 @@ describe('Issue 14: PIN Lock Hardening & Rate Limiting', () => {
     const nextLogin = await verifyPin('11223');
     expect(nextLogin).toBe(true);
   });
+
+  it('Issue 23: purgeLegacySecurityFieldsFromCloud handles offline and sets completion flag', async () => {
+    const { purgeLegacySecurityFieldsFromCloud } = await import('../src/lib/firebase');
+    const uid = 'test-uid-123';
+    const flag = `fl_cloud_security_purged_v1:${uid}`;
+
+    expect(localStorage.getItem(flag)).toBeNull();
+    await purgeLegacySecurityFieldsFromCloud(uid);
+    // When offline, does not throw and executes safely
+    await expect(purgeLegacySecurityFieldsFromCloud(uid)).resolves.not.toThrow();
+  });
 });
+

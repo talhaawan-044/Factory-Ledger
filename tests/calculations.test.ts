@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { calculateSettlement, calculatePartyBalance, calculateTransitLoss } from '../src/utils/calculations';
+import { calculateSettlement, calculatePartyBalance, calculateTransitLoss, calculateLedgerTotals, isDispatchPending } from '../src/utils/calculations';
 import type { Dispatch, Payment } from '../src/types';
 
 describe('T1: Settlement and Financial Calculations Golden Values', () => {
@@ -154,3 +154,76 @@ describe('T1: Settlement and Financial Calculations Golden Values', () => {
     expect(loss.lossPercentage).toBeCloseTo(2, 2); // 0.6 / 30 = 2%
   });
 });
+
+describe('Issue 20: Unified Aggregation & In-Transit Consistency (T9 & T10)', () => {
+  const settledTruck = (receivedWeight = 29.4): Dispatch => ({
+    id: 'disp-settled-t9',
+    date: '2026-10-08',
+    partyId: 'party-1',
+    truckNumber: 'TK-111',
+    factoryName: 'Settled Factory',
+    status: 'settled',
+    coalInputs: [{ id: 'c1', sourceName: 'Mine A', weight: 30, purchaseRate: 30000 }],
+    overheads: { loading: 3000, freight: 90000, crush: 0, royalty: 0, other: 0 },
+    baseRate: 38000,
+    manualDeduction: 0,
+    manualPremium: 0,
+    manualTax: 0,
+    taxMethod: 'manual',
+    commissionPerTon: 0,
+    labReceivedWeight: receivedWeight,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  });
+
+  const pendingTruck = (): Dispatch => ({
+    id: 'disp-pending-t9',
+    date: '2026-10-08',
+    partyId: 'party-1',
+    truckNumber: 'TK-222',
+    factoryName: 'Pending Factory',
+    status: 'pending',
+    coalInputs: [{ id: 'c2', sourceName: 'Mine B', weight: 30, purchaseRate: 30000 }],
+    overheads: { loading: 3000, freight: 90000, crush: 0, royalty: 0, other: 0 },
+    baseRate: 38000,
+    manualDeduction: 0,
+    manualPremium: 0,
+    manualTax: 0,
+    taxMethod: 'manual',
+    commissionPerTon: 0,
+    labReceivedWeight: 0,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  });
+
+  it('T9: every aggregate agrees when an in-transit truck exists', () => {
+    const list = [settledTruck(29.4), pendingTruck()];
+    const totals = calculateLedgerTotals(list);
+    const partyBal = calculatePartyBalance(list, []);
+
+    expect(totals.settledCount).toBe(1);
+    expect(totals.pendingCount).toBe(1);
+    expect(totals.pendingLoadedTons).toBe(30);
+    // Profit must match calculatePartyBalance exactly
+    expect(totals.profit).toBeCloseTo(partyBal.totalProfit, 6);
+    // Revenue must match totalBilled
+    expect(totals.revenue).toBeCloseTo(partyBal.totalBilled, 6);
+    // Transit diff must only reflect settled truck (29.4 - 30 = -0.6) and NOT count pending truck as 100% loss
+    expect(totals.transitDiffTons).toBeCloseTo(29.4 - 30, 6);
+  });
+
+  it('T10: calculateTransitLoss never reports a loss for a pending truck', () => {
+    const pending = pendingTruck();
+    const transit = calculateTransitLoss(pending);
+
+    expect(isDispatchPending(pending)).toBe(true);
+    expect(transit.isPending).toBe(true);
+    expect(transit.isLoss).toBe(false);
+    expect(transit.isGain).toBe(false);
+    expect(transit.diff).toBe(0);
+    expect(transit.lossPercentage).toBe(0);
+    expect(transit.totalLoadedWeight).toBe(30);
+    expect(transit.receivedWeight).toBe(0);
+  });
+});
+

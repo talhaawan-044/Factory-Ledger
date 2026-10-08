@@ -23,6 +23,8 @@ import {
   deleteDoc,
   writeBatch,
   serverTimestamp,
+  updateDoc,
+  deleteField,
   type DocumentReference,
 } from 'firebase/firestore';
 import { Capacitor } from '@capacitor/core';
@@ -684,4 +686,34 @@ export async function wipeCloudUserData(uid: string): Promise<{ success: boolean
     return { success: false, message: err?.message || 'Failed to wipe cloud database' };
   }
 }
+
+/**
+ * One-time cloud purge for legacy security fields (pinHash, pinLength, lockTimeout, appLockEnabled)
+ * previously stored in Firestore under users/{uid}/settings/config (Issue 23).
+ * Protects accounts that synced before the local PIN security hardening fix.
+ */
+export async function purgeLegacySecurityFieldsFromCloud(uid: string): Promise<void> {
+  if (!isFirebaseConfigured || !db || !uid) return;
+  const flag = `fl_cloud_security_purged_v1:${uid}`;
+  if (typeof localStorage !== 'undefined' && localStorage.getItem(flag)) return;
+
+  try {
+    const ref = doc(db, 'users', uid, 'settings', 'config');
+    const snap = await getDoc(ref);
+    if (snap.exists()) {
+      const data = snap.data();
+      const stale = ['pinHash', 'pinLength', 'lockTimeout', 'appLockEnabled'].filter((k) => k in data);
+      if (stale.length > 0) {
+        console.log(`[Firebase] Purging ${stale.length} legacy PIN security fields from cloud for user:`, uid);
+        await updateDoc(ref, Object.fromEntries(stale.map((k) => [k, deleteField()])));
+      }
+    }
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(flag, '1');
+    }
+  } catch (err) {
+    console.warn('[Firebase] Warning: Failed to purge legacy security fields from cloud:', err);
+  }
+}
+
 

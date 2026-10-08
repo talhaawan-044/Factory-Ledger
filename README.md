@@ -2,7 +2,8 @@
 
 <div align="center">
 
-![License](https://img.shields.io/badge/license-MIT-blue.svg?style=for-the-badge)
+[![CI](https://github.com/talhaawan-044/Factory-Ledger/actions/workflows/ci.yml/badge.svg)](https://github.com/talhaawan-044/Factory-Ledger/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge)](LICENSE)
 ![React](https://img.shields.io/badge/React-19-61DAFB?style=for-the-badge&logo=react&logoColor=black)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
 ![Capacitor](https://img.shields.io/badge/Capacitor-8.x-119EFF?style=for-the-badge&logo=capacitor&logoColor=white)
@@ -16,7 +17,7 @@
 </p>
 
 <p align="center">
-  <sub>Offline-First • Real-Time Cloud Sync • Native Biometric Security • Apple iOS 18 HIG Interface</sub>
+  <sub>Offline-First • Reliable Cloud Sync • Native Biometric Security • Apple iOS 18 HIG Interface</sub>
 </p>
 
 </div>
@@ -25,24 +26,23 @@
 
 ## Screenshots
 
-<!-- Add your application screenshots in docs/images/ -->
 <div align="center">
   <table>
     <tr>
       <td align="center" width="33%">
         <b>Security Lock Screen</b><br>
         <sub>5-digit PIN & Biometrics</sub><br><br>
-        <i><!-- <img src="docs/images/lockscreen.png" width="240" /> --></i>
+        <img src="docs/images/lockscreen.png" width="240" alt="Security Lock Screen" />
       </td>
       <td align="center" width="33%">
         <b>New Dispatch & Profit</b><br>
         <sub>Live formulas & blending</sub><br><br>
-        <i><!-- <img src="docs/images/dispatch.png" width="240" /> --></i>
+        <img src="docs/images/dispatch.png" width="240" alt="New Dispatch and Profit" />
       </td>
       <td align="center" width="33%">
         <b>Settings & Cloud Sync</b><br>
-        <sub>Multi-device Google Sync</sub><br><br>
-        <i><!-- <img src="docs/images/settings.png" width="240" /> --></i>
+        <sub>Google Cloud Sync & Settings</sub><br><br>
+        <img src="docs/images/settings.png" width="240" alt="Settings and Cloud Sync" />
       </td>
     </tr>
   </table>
@@ -84,6 +84,7 @@ Factory Ledger provides an **all-in-one mobile and web management solution**: ma
 
 ### Cloud Sync & Offline-First Resilience
 - **Offline-First by Design:** Operates fully without an internet connection or cloud account. All records are stored locally in IndexedDB via Dexie.
+- **Reliable Cloud Sync:** Changes are pushed automatically to Firestore subcollections shortly after saving locally. Remote updates are pulled when you sign in, when the app starts, or when you tap *Refresh from cloud*. No persistent websocket listeners or background battery drain.
 - **Firebase Firestore Subcollections:** Scalable cloud architecture synchronizing party records, dispatches, and payments as subcollections under the user's secure account ID.
 - **Delta Sync & Soft Deletes:** Changes are tracked with `dirty` flags for efficient delta synchronization; deleted items are tombstoned via `deleted: true` to prevent cross-device resurrection.
 - **Google Single Sign-On (SSO):** Seamless one-tap authentication via Capacitor Firebase Auth.
@@ -160,8 +161,8 @@ Factory Ledger provides an **all-in-one mobile and web management solution**: ma
 ### Prerequisites
 - **Node.js:** v18.0.0 or higher
 - **npm:** v9.0.0 or higher
-- **Android SDK:** Platform tools & Build tools (for Android compilation)
-- **Java Development Kit:** OpenJDK 17 or 21
+- **Android SDK:** Platform tools & Build tools (Compile SDK 34, Target SDK 34)
+- **Java Development Kit:** OpenJDK 21 (configured for Gradle 8.14 & Android build toolchain)
 
 ### 1. Clone & Install Dependencies
 ```bash
@@ -254,10 +255,10 @@ The project is preconfigured to generate release builds using Gradle and Android
 ## Security & Privacy Architecture
 
 - **No Remote Telemetry:** The app collects zero user tracking or diagnostic metrics.
-- **Passcode Privacy Lock:** A 5-digit PIN screen provides casual privacy. The passcode is hashed using WebCrypto PBKDF2 (100,000 iterations) with a device-unique cryptographic salt stored strictly on the local device. PIN credentials and recovery keys are never synchronized to Firestore.
+- **Passcode Convenience Lock:** A 5-digit PIN screen provides casual privacy against unauthorized device handlers, not database-at-rest encryption. Passcodes are hashed using WebCrypto PBKDF2 (100,000 iterations) with a device-unique cryptographic salt stored strictly on the local device. PIN credentials and recovery keys are never synchronized to Firestore.
 - **Lockout Rate Limiting:** 5 consecutive failed passcode attempts trigger an escalating lockout timer (starting at 30 seconds) to slow down guessing attacks.
-- **Biometric Hardware Isolation:** Biometric authentication runs on-device via Android's `androidx.biometric` APIs; biometric data never leaves your device's hardware secure enclave.
-- **Native OS Protection:** Android release builds specify `android:allowBackup="false"` and `FLAG_SECURE` to block unintended data leakage via `adb backup` or recent apps thumbnails.
+- **Biometric Hardware Isolation:** Biometric unlock uses Android's `BiometricPrompt` via custom native plugin; the app never sees fingerprint or face data.
+- **Native OS Protection:** Android release builds specify `android:allowBackup="false"` and `FLAG_SECURE` to block unintended data leakage via `adb backup` or recent apps thumbnails. (In debug builds, `FLAG_SECURE` is disabled to facilitate automated testing and QA).
 
 ---
 
@@ -268,7 +269,9 @@ The project is preconfigured to generate release builds using Gradle and Android
 - **Weighbridge Readings:** The factory weighbridge received weight is recorded directly; there is no gross/tare hardware weighbridge scale integration.
 - **In-Transit Dispatches:** Dispatches saved prior to factory weighment are marked as in-transit and automatically excluded from aggregate net profit and billed revenue totals until officially weighed.
 - **Storage Capacity:** Financial records and audit logs are stored locally on the device in IndexedDB via Dexie. Settings and fast-lookup flags stay in `localStorage`.
-- **Cloud Sync:** Multi-device synchronization uses Google sign-in with Firestore subcollections. Conflict resolution uses last-write-wins based on timestamps, with tombstone propagation for soft deletes.
+- **Cloud Sync:** Changes are pushed automatically shortly after you save locally. Changes made on another device are pulled when you sign in, when the app starts, and when you tap *Refresh from cloud*. There is no live push between devices, and conflicts are resolved per record, newest edit wins.
+- **Settings Multi-Device Scope:** Settings are currently shared as one block; per-field merge is not implemented. Use one device per ledger unless you have tested the multi-device flow you need.
+- **Security Scope:** The PIN screen provides casual privacy for shared device environments, not cryptographic database-at-rest encryption.
 - **Cloud Setup:** Requires your own Firebase project (see Setup). Without one, the app runs in full offline-only mode.
 
 ---

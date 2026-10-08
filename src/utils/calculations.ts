@@ -141,6 +141,61 @@ export function isDispatchPending(dispatch: Dispatch): boolean {
   return cleanNum(dispatch.labReceivedWeight) === 0;
 }
 
+export interface LedgerTotals {
+  settledCount: number;
+  pendingCount: number;
+  revenue: number;          // settled only
+  cost: number;             // settled only
+  profit: number;           // settled only
+  receivedTons: number;     // settled only
+  loadedTonsSettled: number;
+  transitDiffTons: number;  // settled only: received - loaded
+  pendingLoadedTons: number; // on the road, shown separately
+}
+
+/**
+ * Single canonical ledger aggregator for all dispatches across the application (Issue 20).
+ * Prevents in-transit / unweighed dispatches from creating artificial revenue deficits or transit losses.
+ */
+export function calculateLedgerTotals(dispatches: Dispatch[], settings?: AppSettings | null): LedgerTotals {
+  const live = (dispatches || []).filter((d) => !d?.deleted);
+  const settled = live.filter((d) => !isDispatchPending(d));
+  const pending = live.filter((d) => isDispatchPending(d));
+
+  let revenue = 0;
+  let cost = 0;
+  let profit = 0;
+  let receivedTons = 0;
+  let loadedTonsSettled = 0;
+
+  for (const d of settled) {
+    const s = calculateSettlement(d, settings);
+    revenue += s.totalRevenue;
+    cost += s.totalCost;
+    profit += s.netProfit;
+    const t = calculateTransitLoss(d);
+    receivedTons += t.receivedWeight;
+    loadedTonsSettled += t.totalLoadedWeight;
+  }
+
+  const pendingLoadedTons = pending.reduce(
+    (sum, d) => sum + (d.coalInputs || []).reduce((cSum, c) => cSum + cleanNum(c?.weight), 0),
+    0
+  );
+
+  return {
+    settledCount: settled.length,
+    pendingCount: pending.length,
+    revenue: cleanNum(revenue),
+    cost: cleanNum(cost),
+    profit: cleanNum(profit),
+    receivedTons: cleanNum(receivedTons),
+    loadedTonsSettled: cleanNum(loadedTonsSettled),
+    transitDiffTons: cleanNum(receivedTons - loadedTonsSettled),
+    pendingLoadedTons: cleanNum(pendingLoadedTons),
+  };
+}
+
 /**
  * Canonical unified financial balance calculation for a party account.
  * Follows double-entry business ledger rules:
@@ -154,18 +209,18 @@ export function calculatePartyBalance(dispatches: Dispatch[], payments: Payment[
   const safeDispatches = Array.isArray(dispatches) ? dispatches : [];
   const safePayments = Array.isArray(payments) ? payments : [];
 
-  const settledDispatches = safeDispatches.filter((d) => !isDispatchPending(d));
+  const totals = calculateLedgerTotals(safeDispatches);
 
-  const totalBilled = settledDispatches.reduce((sum, d) => sum + cleanNum(calculateSettlement(d).totalRevenue), 0);
-  const totalProfit = settledDispatches.reduce((sum, d) => sum + cleanNum(calculateSettlement(d).netProfit), 0);
-  const totalTons = safeDispatches.reduce((sum, d) => sum + cleanNum(d?.labReceivedWeight), 0);
+  const totalBilled = totals.revenue;
+  const totalProfit = totals.profit;
+  const totalTons = totals.receivedTons;
 
   const totalPaymentsReceived = safePayments
-    .filter((p) => (p.type === 'received' || (p as any).paymentType === 'received'))
+    .filter((p) => !p?.deleted && (p.type === 'received' || (p as any).paymentType === 'received'))
     .reduce((sum, p) => sum + cleanNum(p.amount), 0);
 
   const totalPaymentsPaid = safePayments
-    .filter((p) => (p.type === 'paid' || (p as any).paymentType === 'paid'))
+    .filter((p) => !p?.deleted && (p.type === 'paid' || (p as any).paymentType === 'paid'))
     .reduce((sum, p) => sum + cleanNum(p.amount), 0);
 
   const netPaymentsReceived = totalPaymentsReceived - totalPaymentsPaid;
@@ -193,6 +248,7 @@ export function calculatePartyBalance(dispatches: Dispatch[], payments: Payment[
 
 /**
  * Calculates transit loss / shortage between loaded coal recipe weight and factory weighbridge received weight.
+ * Handles in-transit (pending) trucks by setting isLoss to false and diff/lossPercentage to 0 (Issue 20).
  */
 export function calculateTransitLoss(dispatch: Dispatch): {
   totalLoadedWeight: number;
@@ -201,20 +257,24 @@ export function calculateTransitLoss(dispatch: Dispatch): {
   isLoss: boolean;
   isGain: boolean;
   lossPercentage: number;
+  isPending: boolean;
 } {
-  const totalLoadedWeight = (dispatch.coalInputs || []).reduce((sum, c) => sum + (c.weight || 0), 0);
-  const receivedWeight = dispatch.labReceivedWeight || 0;
-  const diff = receivedWeight - totalLoadedWeight;
-  const isLoss = diff < -0.01;
-  const isGain = diff > 0.01;
-  const lossPercentage = totalLoadedWeight > 0 ? (Math.abs(diff) / totalLoadedWeight) * 100 : 0;
+  const isPending = isDispatchPending(dispatch);
+  const totalLoadedWeight = (dispatch?.coalInputs || []).reduce((sum, c) => sum + cleanNum(c?.weight), 0);
+  const receivedWeight = isPending ? 0 : cleanNum(dispatch?.labReceivedWeight);
+  const diff = isPending ? 0 : (receivedWeight - totalLoadedWeight);
+  const isLoss = !isPending && diff < -0.01;
+  const isGain = !isPending && diff > 0.01;
+  const lossPercentage = (!isPending && totalLoadedWeight > 0) ? (Math.abs(diff) / totalLoadedWeight) * 100 : 0;
 
   return {
-    totalLoadedWeight,
-    receivedWeight,
-    diff,
+    totalLoadedWeight: cleanNum(totalLoadedWeight),
+    receivedWeight: cleanNum(receivedWeight),
+    diff: cleanNum(diff),
     isLoss,
     isGain,
-    lossPercentage,
+    lossPercentage: cleanNum(lossPercentage),
+    isPending,
   };
 }
+

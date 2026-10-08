@@ -3,7 +3,7 @@ import { Filesystem, Directory } from '@capacitor/filesystem';
 import { Capacitor } from '@capacitor/core';
 import type ExcelJS from 'exceljs';
 import type { Dispatch, Party, Payment, PurchaseOrder, AppSettings } from '../types';
-import { calculateSettlement, calculatePartyBalance, calculateTransitLoss } from './calculations';
+import { calculateSettlement, calculatePartyBalance, calculateTransitLoss, calculateLedgerTotals, isDispatchPending } from './calculations';
 import { getSettings, getExportBackupData } from '../lib/db';
 import { getCurrencySymbol, formatAmountNumber, getCurrencyExcelFormat } from './currency';
 import { getTodayDateString } from './dateUtils';
@@ -765,20 +765,21 @@ async function exportFleetAuditPdf(options: ExportDispatchesPdfOptions & { setti
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(9);
   doc.setTextColor(71, 85, 105);
+  // Summary Metrics Banner using unified calculateLedgerTotals (Issue 20)
+  const ledgerTotals = calculateLedgerTotals(dispatches, settings);
+  const totalTons = ledgerTotals.receivedTons;
+  const totalRevenue = ledgerTotals.revenue;
+  const totalCost = ledgerTotals.cost;
+  const totalProfit = ledgerTotals.profit;
+
   const metaParts = [
     partyName ? `Party: ${partyName}` : null,
     dateRange ? `Period: ${dateRange}` : null,
     subtitle ? subtitle : null,
     `Generated: ${new Date().toLocaleDateString('en-PK', { day: '2-digit', month: 'short', year: 'numeric' })}`,
-    `Total Dispatches: ${dispatches.length}`,
+    `Total Dispatches: ${dispatches.length}${ledgerTotals.pendingCount > 0 ? ` (${ledgerTotals.settledCount} Settled, ${ledgerTotals.pendingCount} In-Transit)` : ''}`,
   ].filter(Boolean);
   doc.text(metaParts.join('   •   '), margin, 35);
-
-  // Summary Metrics Banner
-  const totalTons = dispatches.reduce((sum, d) => sum + (d.labReceivedWeight || 0), 0);
-  const totalRevenue = dispatches.reduce((sum, d) => sum + calculateSettlement(d).totalRevenue, 0);
-  const totalCost = dispatches.reduce((sum, d) => sum + calculateSettlement(d).totalCost, 0);
-  const totalProfit = dispatches.reduce((sum, d) => sum + calculateSettlement(d).netProfit, 0);
 
   const bannerY = 40;
   const bannerHeight = 14;
@@ -820,10 +821,11 @@ async function exportFleetAuditPdf(options: ExportDispatchesPdfOptions & { setti
     const po = pos.find((p) => p.id === d.poId);
     const s = calculateSettlement(d);
     const transit = calculateTransitLoss(d);
+    const isPending = transit.isPending;
 
     const gcvDelta = d.targetGcv && d.labActualGcv ? d.labActualGcv - d.targetGcv : null;
     const gcvDeltaStr = gcvDelta !== null ? `(${gcvDelta >= 0 ? '+' : ''}${gcvDelta} kcal)` : '';
-    const marginPct = s.totalRevenue > 0 ? ((s.netProfit / s.totalRevenue) * 100).toFixed(1) : '0';
+    const marginPct = !isPending && s.totalRevenue > 0 ? ((s.netProfit / s.totalRevenue) * 100).toFixed(1) : '0';
 
     const sourcesStr =
       d.coalInputs && d.coalInputs.length > 0
@@ -840,12 +842,12 @@ async function exportFleetAuditPdf(options: ExportDispatchesPdfOptions & { setti
       d.truckNumber || '-',
       party?.name || d.factoryName || '-',
       po?.poNumber || '-',
-      (d.labReceivedWeight || 0).toFixed(2),
+      isPending ? '0.00 (In-Transit)' : (d.labReceivedWeight || 0).toFixed(2),
       Math.round(d.baseRate || 0).toLocaleString('en-PK'),
       s.payableRate.toFixed(2),
-      Math.round(s.totalRevenue).toLocaleString('en-PK'),
-      Math.round(s.totalCost).toLocaleString('en-PK'),
-      `${s.netProfit >= 0 ? '+' : ''}${Math.round(s.netProfit).toLocaleString('en-PK')}`,
+      isPending ? '0 (Pending)' : Math.round(s.totalRevenue).toLocaleString('en-PK'),
+      isPending ? '0 (Pending)' : Math.round(s.totalCost).toLocaleString('en-PK'),
+      isPending ? 'Pending' : `${s.netProfit >= 0 ? '+' : ''}${Math.round(s.netProfit).toLocaleString('en-PK')}`,
     ];
 
     // Line 2: Lab specifications & quality audit
@@ -856,9 +858,11 @@ async function exportFleetAuditPdf(options: ExportDispatchesPdfOptions & { setti
       d.labAsh ? `Ash: ${d.labAsh}%` : null,
       d.labMoisture ? `Moisture: ${d.labMoisture}%` : null,
       d.labVm ? `VM: ${d.labVm}%` : null,
-      transit.totalLoadedWeight > 0 && Math.abs(transit.diff) >= 0.01
-        ? `Transit: ${transit.diff < 0 ? '-' : '+'}${Math.abs(transit.diff).toFixed(2)}t (${transit.lossPercentage.toFixed(1)}%)`
-        : null,
+      isPending
+        ? 'Status: In-Transit (Awaiting Weighbridge)'
+        : (transit.totalLoadedWeight > 0 && Math.abs(transit.diff) >= 0.01
+            ? `Transit: ${transit.diff < 0 ? '-' : '+'}${Math.abs(transit.diff).toFixed(2)}t (${transit.lossPercentage.toFixed(1)}%)`
+            : null),
     ].filter(Boolean);
 
     const labText = `LAB QUALITY & ANALYSIS: ${labSpecsList.join('  •  ')}`;
@@ -1844,6 +1848,7 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
       const po = pos.find((p) => p.id === d.poId);
       const s = calculateSettlement(d);
       const transit = calculateTransitLoss(d);
+      const isPending = transit.isPending;
       const gcvDiff = d.targetGcv && d.labActualGcv ? d.labActualGcv - d.targetGcv : 0;
 
       row.values = [
@@ -1852,7 +1857,7 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
         d.truckNumber || '-',
         po?.poNumber || '-',
         transit.totalLoadedWeight || 0,
-        d.labReceivedWeight || 0,
+        isPending ? 0 : (d.labReceivedWeight || 0),
         parseFloat(transit.diff.toFixed(2)),
         parseFloat((transit.lossPercentage / 100).toFixed(4)),
         d.targetGcv || 0,
@@ -1866,8 +1871,8 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
         d.manualPremium || 0,
         s.taxDeduction ? parseFloat(s.taxDeduction.toFixed(2)) : 0,
         parseFloat(s.payableRate.toFixed(2)),
-        Math.round(s.totalRevenue),
-        d.notes || '',
+        isPending ? 0 : Math.round(s.totalRevenue),
+        isPending ? (d.notes ? `[In-Transit] ${d.notes}` : 'In-Transit (Awaiting Weighbridge)') : (d.notes || ''),
       ];
 
       for (let c = 1; c <= 21; c++) {
@@ -1909,17 +1914,18 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
       dispRowIdx++;
     });
 
-    // Totals row for dispatches
+    // Totals row for dispatches using unified calculateLedgerTotals (Issue 20)
     const dTotRow = wsDispatches.getRow(dispRowIdx);
     dTotRow.height = 26;
-    const totLoaded = sortedDispatches.reduce((acc, d) => acc + (calculateTransitLoss(d).totalLoadedWeight || 0), 0);
-    const totReceived = sortedDispatches.reduce((acc, d) => acc + (d.labReceivedWeight || 0), 0);
-    const totTransitDiff = totReceived - totLoaded;
+    const dispTotals = calculateLedgerTotals(sortedDispatches, settings);
+    const totLoaded = dispTotals.loadedTonsSettled;
+    const totReceived = dispTotals.receivedTons;
+    const totTransitDiff = dispTotals.transitDiffTons;
 
     dTotRow.values = [
       '',
-      'TOTALS',
-      `${dispatches.length} Trucks`,
+      dispTotals.pendingCount > 0 ? 'TOTALS (SETTLED)' : 'TOTALS',
+      dispTotals.pendingCount > 0 ? `${dispTotals.settledCount} Settled Trucks` : `${dispatches.length} Trucks`,
       '',
       totLoaded,
       totReceived,
@@ -2145,11 +2151,12 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
     // ════════════════════════════════════════════════════════════════════════
     const sortedDispatches = [...dispatches].sort((a, b) => b.date.localeCompare(a.date));
 
-    // Aggregate Enterprise Metrics
-    const totalFleetTons = sortedDispatches.reduce((acc, d) => acc + (d.labReceivedWeight || 0), 0);
-    const totalFleetRevenue = sortedDispatches.reduce((acc, d) => acc + calculateSettlement(d).totalRevenue, 0);
-    const totalFleetCost = sortedDispatches.reduce((acc, d) => acc + calculateSettlement(d).totalCost, 0);
-    const totalFleetProfit = totalFleetRevenue - totalFleetCost;
+    // Aggregate Enterprise Metrics using unified calculateLedgerTotals (Issue 20)
+    const fleetTotals = calculateLedgerTotals(sortedDispatches, settings);
+    const totalFleetTons = fleetTotals.receivedTons;
+    const totalFleetRevenue = fleetTotals.revenue;
+    const totalFleetCost = fleetTotals.cost;
+    const totalFleetProfit = fleetTotals.profit;
     const fleetMargin = totalFleetRevenue > 0 ? (totalFleetProfit / totalFleetRevenue) * 100 : 0;
 
     // ── SHEET 1: DISPATCHES MASTER ──
@@ -2263,8 +2270,11 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
       const po = pos.find((poItem) => poItem.id === d.poId);
       const s = calculateSettlement(d);
       const transit = calculateTransitLoss(d);
-      const profit = Math.round(s.netProfit);
-      const margin = s.totalRevenue > 0 ? (s.netProfit / s.totalRevenue) : 0;
+      const isPending = transit.isPending;
+      const profit = isPending ? 0 : Math.round(s.netProfit);
+      const margin = !isPending && s.totalRevenue > 0 ? (s.netProfit / s.totalRevenue) : 0;
+      const revenue = isPending ? 0 : Math.round(s.totalRevenue);
+      const cost = isPending ? 0 : Math.round(s.totalCost);
 
       row.values = [
         idx + 1,
@@ -2273,7 +2283,7 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
         p?.name || d.factoryName || '-',
         po?.poNumber || '-',
         transit.totalLoadedWeight || 0,
-        d.labReceivedWeight || 0,
+        isPending ? 0 : (d.labReceivedWeight || 0),
         parseFloat(transit.diff.toFixed(2)),
         d.targetGcv || 0,
         d.labActualGcv || 0,
@@ -2281,11 +2291,11 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
         d.labMoisture ? parseFloat(d.labMoisture.toFixed(2)) : 0,
         d.baseRate || 0,
         parseFloat(s.payableRate.toFixed(2)),
-        Math.round(s.totalRevenue),
-        Math.round(s.totalCost),
+        revenue,
+        cost,
         profit,
         parseFloat(margin.toFixed(4)),
-        d.notes || '',
+        isPending ? (d.notes ? `[In-Transit] ${d.notes}` : 'In-Transit (Awaiting Weighbridge)') : (d.notes || ''),
       ];
 
       for (let c = 1; c <= 19; c++) {
@@ -2346,13 +2356,13 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
     mTotRow.height = 28;
     mTotRow.values = [
       '',
-      'TOTALS',
-      `${sortedDispatches.length} Trucks`,
+      fleetTotals.pendingCount > 0 ? 'TOTALS (SETTLED)' : 'TOTALS',
+      fleetTotals.pendingCount > 0 ? `${fleetTotals.settledCount} Settled Trucks` : `${sortedDispatches.length} Trucks`,
       '',
       '',
-      sortedDispatches.reduce((acc, d) => acc + (calculateTransitLoss(d).totalLoadedWeight || 0), 0),
+      fleetTotals.loadedTonsSettled,
       totalFleetTons,
-      sortedDispatches.reduce((acc, d) => acc + calculateTransitLoss(d).diff, 0),
+      fleetTotals.transitDiffTons,
       '',
       '',
       '',
@@ -2466,9 +2476,12 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
       row.height = 21;
       const isEven = idx % 2 === 0;
       const p = parties.find((partyItem) => partyItem.id === d.partyId);
+      const isPending = isDispatchPending(d);
       const s = calculateSettlement(d);
-      const profit = Math.round(s.netProfit);
-      const profitPerTon = (d.labReceivedWeight || 0) > 0 ? Math.round(s.netProfit / (d.labReceivedWeight || 1)) : 0;
+      const profit = isPending ? 0 : Math.round(s.netProfit);
+      const cost = isPending ? 0 : Math.round(s.totalCost);
+      const revenue = isPending ? 0 : Math.round(s.totalRevenue);
+      const profitPerTon = !isPending && (d.labReceivedWeight || 0) > 0 ? Math.round(s.netProfit / (d.labReceivedWeight || 1)) : 0;
       const blendsStr = (d.coalInputs || [])
         .filter((c) => (c.weight || 0) > 0)
         .map((c) => `${c.sourceName || 'Coal'}: ${c.weight}t @ ${curSym}${c.purchaseRate}`)
@@ -2479,12 +2492,12 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
         d.date || '-',
         d.truckNumber || '-',
         p?.name || d.factoryName || '-',
-        d.labReceivedWeight || 0,
-        blendsStr || 'Direct Procurement',
-        d.overheads?.freight || 0,
-        d.overheads?.loading || 0,
-        Math.round(s.totalCost),
-        Math.round(s.totalRevenue),
+        isPending ? 0 : (d.labReceivedWeight || 0),
+        blendsStr || (isPending ? 'In-Transit Procurement' : 'Direct Procurement'),
+        isPending ? 0 : (d.overheads?.freight || 0),
+        isPending ? 0 : (d.overheads?.loading || 0),
+        cost,
+        revenue,
         profit,
         profitPerTon,
       ];
@@ -2530,13 +2543,13 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
     cTotRow.height = 26;
     cTotRow.values = [
       '',
-      'TOTALS',
-      `${sortedDispatches.length} Trucks`,
+      fleetTotals.pendingCount > 0 ? 'TOTALS (SETTLED)' : 'TOTALS',
+      fleetTotals.pendingCount > 0 ? `${fleetTotals.settledCount} Settled Trucks` : `${sortedDispatches.length} Trucks`,
       '',
       totalFleetTons,
       '',
-      sortedDispatches.reduce((acc, d) => acc + (d.overheads?.freight || 0), 0),
-      sortedDispatches.reduce((acc, d) => acc + (d.overheads?.loading || 0), 0),
+      sortedDispatches.filter(d => !isDispatchPending(d)).reduce((acc, d) => acc + (d.overheads?.freight || 0), 0),
+      sortedDispatches.filter(d => !isDispatchPending(d)).reduce((acc, d) => acc + (d.overheads?.loading || 0), 0),
       Math.round(totalFleetCost),
       Math.round(totalFleetRevenue),
       Math.round(totalFleetProfit),
@@ -2623,11 +2636,14 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
         partyMap[pName] = { name: pName, trucks: 0, tons: 0, revenue: 0, cost: 0, profit: 0 };
       }
       const s = calculateSettlement(d);
+      const isPending = isDispatchPending(d);
       partyMap[pName].trucks += 1;
-      partyMap[pName].tons += d.labReceivedWeight || 0;
-      partyMap[pName].revenue += s.totalRevenue;
-      partyMap[pName].cost += s.totalCost;
-      partyMap[pName].profit += s.netProfit;
+      if (!isPending) {
+        partyMap[pName].tons += d.labReceivedWeight || 0;
+        partyMap[pName].revenue += s.totalRevenue;
+        partyMap[pName].cost += s.totalCost;
+        partyMap[pName].profit += s.netProfit;
+      }
     });
 
     let pmRowIdx = 6;
@@ -2694,8 +2710,8 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
     pmTotRow.height = 28;
     pmTotRow.values = [
       '',
-      'TOTALS',
-      sortedDispatches.length,
+      fleetTotals.pendingCount > 0 ? 'TOTALS (SETTLED)' : 'TOTALS',
+      fleetTotals.pendingCount > 0 ? `${fleetTotals.settledCount} Settled Trucks` : sortedDispatches.length,
       totalFleetTons,
       Math.round(totalFleetRevenue),
       Math.round(totalFleetCost),
