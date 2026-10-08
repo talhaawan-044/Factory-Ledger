@@ -1,5 +1,5 @@
 import Dexie, { type Table } from 'dexie';
-import type { Dispatch, Party, Payment, PurchaseOrder } from '../types';
+import type { Dispatch, Party, Payment, PurchaseOrder, InventoryLot } from '../types';
 
 export interface ImageRecord {
   key: string;
@@ -18,6 +18,7 @@ export class FactoryLedgerDB extends Dexie {
   dispatches!: Table<Dispatch, string>;
   payments!: Table<Payment, string>;
   pos!: Table<PurchaseOrder, string>;
+  lots!: Table<InventoryLot, string>;
   images!: Table<ImageRecord, string>;
   meta!: Table<MetaRecord, string>;
 
@@ -30,6 +31,9 @@ export class FactoryLedgerDB extends Dexie {
       pos: 'id, partyId, updatedAt, dirty, deleted',
       images: 'key',
       meta: 'key',
+    });
+    this.version(2).stores({
+      lots: 'id, supplier, date, updatedAt, dirty, deleted',
     });
   }
 }

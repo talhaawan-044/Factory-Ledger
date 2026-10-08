@@ -281,8 +281,8 @@ The project is preconfigured to generate release builds using Gradle and Android
 - **Weighbridge Readings:** The factory weighbridge received weight is recorded directly; there is no gross/tare hardware weighbridge scale integration.
 - **In-Transit Dispatches:** Dispatches saved prior to factory weighment are marked as in-transit and automatically excluded from aggregate net profit and billed revenue totals until officially weighed.
 - **Storage Capacity:** Financial records and audit logs are stored locally on the device in IndexedDB via Dexie. Settings and fast-lookup flags stay in `localStorage`.
-- **Cloud Sync:** Changes are pushed automatically shortly after you save locally. Changes made on another device are pulled when you sign in, when the app starts, and when you tap *Refresh from cloud*. There is no live push between devices, and conflicts are resolved per record, newest edit wins.
-- **Settings Multi-Device Scope:** Settings are currently shared as one block; per-field merge is not implemented. Use one device per ledger unless you have tested the multi-device flow you need.
+- **Cloud Sync & Conflict Resolution:** Changes are pushed automatically shortly after you save locally. Changes made on another device are pulled when you sign in, when the app starts, and when you tap *Refresh from cloud*. There is no live WebSocket push between devices. Conflicts are resolved per record by last edit time (`updatedAt`) using each device's clock (newest edit wins). Keep automatic date and time network synchronization enabled on every phone to avoid timestamp drift.
+- **Settings Multi-Device Scope:** Shared business settings (business name, phone, tax rates) are synchronized across devices when modified. Device-specific preferences (theme, biometric credentials, PIN hashes) remain strictly isolated to the local device.
 - **Security Scope:** The PIN screen provides casual privacy for shared device environments, not cryptographic database-at-rest encryption.
 - **Cloud Setup:** Requires your own Firebase project (see Setup). Without one, the app runs in full offline-only mode.
 

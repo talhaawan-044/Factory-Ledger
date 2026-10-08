@@ -214,6 +214,7 @@ export default function Settings() {
     lastSyncTime,
     isOnline,
     hasPendingChanges,
+    unresolvedCount,
     isAutoSyncEnabled: autoSyncEnabled,
     currentUser: googleUser,
     syncNow,
@@ -1253,11 +1254,13 @@ export default function Settings() {
                       <div style={{ fontSize: 12, color: 'var(--label-secondary)', marginTop: 1 }}>
                         {isSyncing
                           ? 'Syncing with Firebase…'
-                          : hasPendingChanges
-                            ? 'Local changes waiting to sync'
-                            : lastSyncTime
-                              ? `Last: ${new Date(lastSyncTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
-                              : 'Upload ledgers to Firebase'}
+                          : unresolvedCount && unresolvedCount > 0
+                            ? `⚠️ ${unresolvedCount} item(s) could not sync with cloud`
+                            : hasPendingChanges
+                              ? 'Local changes waiting to sync'
+                              : lastSyncTime
+                                ? `Last: ${new Date(lastSyncTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+                                : 'Upload ledgers to Firebase'}
                       </div>
                     </div>
                     <button

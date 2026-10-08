@@ -233,3 +233,125 @@ describe('Issue 20: Unified Aggregation & In-Transit Consistency (T9 & T10)', ()
   });
 });
 
+describe('Issue 36: Cleanups & Aggregation Resilience (T28 & T29)', () => {
+  it('T28: calculatePartyBalance counts and totals ignore soft-deleted dispatches and payments (Issue 36a)', () => {
+    const activeDispatch: Dispatch = {
+      id: 'd-active',
+      date: '2026-10-08',
+      partyId: 'p-1',
+      truckNumber: 'TK-101',
+      factoryName: 'Factory 1',
+      targetGcv: 6000,
+      labActualGcv: 6000,
+      labSulphur: 1,
+      status: 'settled',
+      coalInputs: [{ id: 'c1', sourceName: 'Mine', weight: 10, purchaseRate: 20000 }],
+      overheads: { loading: 0, freight: 0, crush: 0, royalty: 0, other: 0 },
+      baseRate: 30000,
+      manualDeduction: 0,
+      manualPremium: 0,
+      manualTax: 0,
+      taxMethod: 'manual',
+      commissionPerTon: 0,
+      labReceivedWeight: 10,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    const deletedDispatch: Dispatch = {
+      ...activeDispatch,
+      id: 'd-deleted',
+      deleted: true,
+      labReceivedWeight: 50, // Should NOT affect total tons or revenue
+    };
+
+    const activePayment: Payment = {
+      id: 'pay-active',
+      partyId: 'p-1',
+      amount: 100000,
+      type: 'received',
+      date: '2026-10-08',
+      mode: 'bank',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    const deletedPayment: Payment = {
+      ...activePayment,
+      id: 'pay-deleted',
+      deleted: true,
+      amount: 500000, // Should NOT affect received payments
+    };
+
+    const balance = calculatePartyBalance([activeDispatch, deletedDispatch], [activePayment, deletedPayment]);
+
+    // Financial calculations ignore deleted
+    expect(balance.totalBilled).toBe(300000);
+    expect(balance.totalPaymentsReceived).toBe(100000);
+    expect(balance.outstandingBalance).toBe(200000);
+    expect(balance.totalTons).toBe(10);
+
+    // Counts MUST ignore deleted
+    expect(balance.dispatchesCount).toBe(1);
+    expect(balance.paymentsCount).toBe(1);
+  });
+
+  it('T29: PO progress totals ignore in-transit pending trucks (Issue 36b)', () => {
+    const poDispatches: Dispatch[] = [
+      {
+        id: 'd-settled',
+        poId: 'po-1',
+        date: '2026-10-08',
+        partyId: 'p-1',
+        truckNumber: 'TK-101',
+        factoryName: 'Factory 1',
+        targetGcv: 6000,
+        labActualGcv: 6000,
+        labSulphur: 1,
+        status: 'settled',
+        coalInputs: [{ id: 'c1', sourceName: 'Mine', weight: 25, purchaseRate: 20000 }],
+        overheads: { loading: 0, freight: 0, crush: 0, royalty: 0, other: 0 },
+        baseRate: 30000,
+        manualDeduction: 0,
+        manualPremium: 0,
+        manualTax: 0,
+        taxMethod: 'manual',
+        commissionPerTon: 0,
+        labReceivedWeight: 24.8,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      },
+      {
+        id: 'd-in-transit',
+        poId: 'po-1',
+        date: '2026-10-08',
+        partyId: 'p-1',
+        truckNumber: 'TK-102',
+        factoryName: 'Factory 1',
+        targetGcv: 6000,
+        labActualGcv: 6000,
+        labSulphur: 1,
+        status: 'pending', // in-transit!
+        coalInputs: [{ id: 'c2', sourceName: 'Mine', weight: 30, purchaseRate: 20000 }],
+        overheads: { loading: 0, freight: 0, crush: 0, royalty: 0, other: 0 },
+        baseRate: 30000,
+        manualDeduction: 0,
+        manualPremium: 0,
+        manualTax: 0,
+        taxMethod: 'manual',
+        commissionPerTon: 0,
+        labReceivedWeight: 30, // Typed in but truck is still in-transit
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      },
+    ];
+
+    const poTotals = calculateLedgerTotals(poDispatches);
+    // Only the settled truck's received tons should count
+    expect(poTotals.receivedTons).toBeCloseTo(24.8, 2);
+    expect(poTotals.pendingCount).toBe(1);
+    expect(poTotals.settledCount).toBe(1);
+  });
+});
+
+

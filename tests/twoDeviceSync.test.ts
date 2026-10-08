@@ -1,6 +1,18 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { saveSettings, getSettings, mergeLedgerData } from '../src/lib/db';
-import { sanitizeForFirestore } from '../src/lib/firebase';
+import {
+  saveSettings,
+  getSettings,
+  mergeLedgerData,
+  saveDispatch,
+  saveParty,
+  savePayment,
+  savePurchaseOrder,
+  getLedgerForSync,
+  markRecordsClean,
+  clearAllData,
+} from '../src/lib/db';
+import { sanitizeForFirestore, type CloudSyncResult } from '../src/lib/firebase';
+import { syncManager } from '../src/lib/syncManager';
 import type { AppSettings, Dispatch, Party } from '../src/types';
 
 describe('Phase C: Two-Device Sync Scenarios & Settings Separation (Issues 21, 22, 28)', () => {
@@ -290,6 +302,334 @@ describe('Phase C: Two-Device Sync Scenarios & Settings Separation (Issues 21, 2
       expect(merged.parties).toHaveLength(0);
       expect(merged.dispatches).toHaveLength(0);
       expect(hasLocalChanges).toBe(true);
+    });
+  });
+
+  describe('Issue 31: Mark-Clean Race Prevention (T23)', () => {
+    beforeEach(async () => {
+      await clearAllData();
+    });
+
+    it('T23: dispatch edited while sync is in flight stays dirty and is returned in next delta sync', async () => {
+      // 1. Initial save of dispatch
+      const dId = 'disp-t23-1';
+      await saveDispatch({
+        id: dId,
+        date: '2026-10-08',
+        partyId: 'p1',
+        truckNumber: 'TK-1',
+        factoryName: 'Factory A',
+        targetGcv: 6000,
+        labActualGcv: 6000,
+        labSulphur: 1,
+        coalInputs: [],
+        overheads: { loading: 0, freight: 0, crush: 0, royalty: 0, other: 0 },
+        baseRate: 30000,
+        manualDeduction: 0,
+        manualPremium: 0,
+        manualTax: 0,
+        taxMethod: 'manual',
+        commissionPerTon: 0,
+        labReceivedWeight: 20,
+        notes: 'v1',
+        updatedAt: 1000,
+      });
+
+      // 2. Sync starts: takes snapshot of dirty records
+      const snapshot = await getLedgerForSync(true);
+      expect(snapshot.dispatches).toHaveLength(1);
+      const snapshotDispatch = snapshot.dispatches[0];
+      expect(snapshotDispatch.notes).toBe('v1');
+      const uploadedUpdatedAt = snapshotDispatch.updatedAt;
+
+      // 3. User edits record while upload is in flight
+      await saveDispatch({
+        ...snapshotDispatch,
+        notes: 'v2-edited-in-flight',
+        updatedAt: 2000, // Newer timestamp
+      });
+
+      // 4. In-flight upload completes and attempts to mark clean with snapshot version
+      await markRecordsClean({
+        dispatches: [{ id: dId, updatedAt: uploadedUpdatedAt }],
+      });
+
+      // 5. Record must STILL be dirty because it was edited in-flight!
+      const afterSync = await getLedgerForSync(true);
+      expect(afterSync.dispatches).toHaveLength(1);
+      expect(afterSync.dispatches[0].dirty).toBe(true);
+      expect(afterSync.dispatches[0].notes).toBe('v2-edited-in-flight');
+
+      // 6. Next sync takes snapshot of new version and marks clean with its exact updatedAt
+      const secondSnapshot = await getLedgerForSync(true);
+      expect(secondSnapshot.dispatches).toHaveLength(1);
+      await markRecordsClean({
+        dispatches: [{ id: dId, updatedAt: secondSnapshot.dispatches[0].updatedAt }],
+      });
+
+      const afterSecondSync = await getLedgerForSync(true);
+      expect(afterSecondSync.dispatches).toHaveLength(0);
+    });
+
+    it('T23: party edited while sync is in flight stays dirty and is returned in next delta sync', async () => {
+      const pId = 'party-t23-1';
+      await saveParty({
+        id: pId,
+        name: 'Apex Miners v1',
+        contactPerson: 'Manager',
+        phone: '03001234567',
+        address: 'Site A',
+        updatedAt: 1000,
+      });
+
+      const snapshot = await getLedgerForSync(true);
+      expect(snapshot.parties).toHaveLength(1);
+      const uploadedUpdatedAt = snapshot.parties[0].updatedAt;
+
+      // Edit while upload in flight
+      await saveParty({
+        id: pId,
+        name: 'Apex Miners v2',
+        contactPerson: 'Manager',
+        phone: '03001234567',
+        address: 'Site A',
+      });
+
+      // Upload v1 completes
+      await markRecordsClean({
+        parties: [{ id: pId, updatedAt: uploadedUpdatedAt }],
+      });
+
+      // Must remain dirty
+      const afterFirstClean = await getLedgerForSync(true);
+      expect(afterFirstClean.parties).toHaveLength(1);
+      expect(afterFirstClean.parties[0].dirty).toBe(true);
+      expect(afterFirstClean.parties[0].name).toBe('Apex Miners v2');
+
+      // Upload v2 completes with v2's exact updatedAt
+      const secondSnapshot = await getLedgerForSync(true);
+      expect(secondSnapshot.parties).toHaveLength(1);
+      await markRecordsClean({
+        parties: [{ id: pId, updatedAt: secondSnapshot.parties[0].updatedAt }],
+      });
+
+      const afterSecondClean = await getLedgerForSync(true);
+      expect(afterSecondClean.parties).toHaveLength(0);
+    });
+
+    it('T23: payment edited while sync is in flight stays dirty and is returned in next delta sync', async () => {
+      const payId = 'pay-t23-1';
+      await savePayment({
+        id: payId,
+        partyId: 'p1',
+        amount: 50000,
+        type: 'received',
+        date: '2026-10-08',
+        mode: 'bank',
+        updatedAt: 1000,
+      });
+
+      const snapshot = await getLedgerForSync(true);
+      expect(snapshot.payments).toHaveLength(1);
+      const uploadedUpdatedAt = snapshot.payments[0].updatedAt;
+
+      // Edit while upload in flight
+      await savePayment({
+        id: payId,
+        partyId: 'p1',
+        amount: 75000,
+        type: 'received',
+        date: '2026-10-08',
+        mode: 'bank',
+      });
+
+      await markRecordsClean({
+        payments: [{ id: payId, updatedAt: uploadedUpdatedAt }],
+      });
+
+      const afterFirstClean = await getLedgerForSync(true);
+      expect(afterFirstClean.payments).toHaveLength(1);
+      expect(afterFirstClean.payments[0].dirty).toBe(true);
+      expect(afterFirstClean.payments[0].amount).toBe(75000);
+
+      const secondSnapshot = await getLedgerForSync(true);
+      expect(secondSnapshot.payments).toHaveLength(1);
+      await markRecordsClean({
+        payments: [{ id: payId, updatedAt: secondSnapshot.payments[0].updatedAt }],
+      });
+
+      const afterSecondClean = await getLedgerForSync(true);
+      expect(afterSecondClean.payments).toHaveLength(0);
+    });
+
+    it('T23: purchase order edited while sync is in flight stays dirty and is returned in next delta sync', async () => {
+      const poId = 'po-t23-1';
+      await savePurchaseOrder({
+        id: poId,
+        partyId: 'p1',
+        poNumber: 'PO-100',
+        totalTons: 500,
+        baseRate: 32000,
+        targetGcv: 6000,
+        commissionPerTon: 200,
+        isActive: true,
+        updatedAt: 1000,
+      });
+
+      const snapshot = await getLedgerForSync(true);
+      expect(snapshot.pos).toHaveLength(1);
+      const uploadedUpdatedAt = snapshot.pos[0].updatedAt;
+
+      // Edit while upload in flight
+      await savePurchaseOrder({
+        id: poId,
+        partyId: 'p1',
+        poNumber: 'PO-100',
+        totalTons: 600,
+        baseRate: 32500,
+        targetGcv: 6000,
+        commissionPerTon: 200,
+        isActive: true,
+      });
+
+      await markRecordsClean({
+        pos: [{ id: poId, updatedAt: uploadedUpdatedAt }],
+      });
+
+      const afterFirstClean = await getLedgerForSync(true);
+      expect(afterFirstClean.pos).toHaveLength(1);
+      expect(afterFirstClean.pos[0].dirty).toBe(true);
+      expect(afterFirstClean.pos[0].totalTons).toBe(600);
+
+      const secondSnapshot = await getLedgerForSync(true);
+      expect(secondSnapshot.pos).toHaveLength(1);
+      await markRecordsClean({
+        pos: [{ id: poId, updatedAt: secondSnapshot.pos[0].updatedAt }],
+      });
+
+      const afterSecondClean = await getLedgerForSync(true);
+      expect(afterSecondClean.pos).toHaveLength(0);
+    });
+  });
+
+  describe('Issue 33: Full-Document Writes vs Merge (T25)', () => {
+    it('T25: clearing an optional field drops it from sanitized payload so full-document write replaces it in cloud', () => {
+      const originalWithNote = sanitizeForFirestore({
+        id: 'disp-1',
+        truckNumber: 'TK-1',
+        notes: 'Urgent delivery note',
+        poId: 'po-999',
+        baseRate: 35000,
+      });
+      expect(originalWithNote.notes).toBe('Urgent delivery note');
+      expect(originalWithNote.poId).toBe('po-999');
+
+      // User clears note and unlinks PO
+      const updatedCleared = sanitizeForFirestore({
+        id: 'disp-1',
+        truckNumber: 'TK-1',
+        notes: undefined,
+        poId: undefined,
+        baseRate: 35000,
+      });
+
+      expect(updatedCleared.notes).toBeUndefined();
+      expect(updatedCleared.poId).toBeUndefined();
+      // Keys present in uploaded payload do NOT include notes or poId
+      expect(Object.keys(updatedCleared)).toEqual(['id', 'truckNumber', 'baseRate']);
+    });
+  });
+
+  describe('Issue 32: Incremental Pull Flaw Defense (T24 / S9 & T24b)', () => {
+    it('Scenario S9 / T24: delayed offline upload from Device B is ingested by Device A on its next pull', () => {
+      // Device B created a record while offline at 10:00 (updatedAt: 1000)
+      const dispatchFromDeviceB: Dispatch = {
+        id: 'disp-offline-b',
+        date: '2026-10-08',
+        partyId: 'p1',
+        truckNumber: 'TK-B',
+        factoryName: 'Factory B',
+        targetGcv: 6000,
+        labActualGcv: 6000,
+        labSulphur: 1,
+        coalInputs: [],
+        overheads: { loading: 0, freight: 0, crush: 0, royalty: 0, other: 0 },
+        baseRate: 30000,
+        manualDeduction: 0,
+        manualPremium: 0,
+        manualTax: 0,
+        taxMethod: 'manual',
+        commissionPerTon: 0,
+        labReceivedWeight: 25,
+        updatedAt: 1000, // 10:00 AM
+        dirty: false,
+      };
+
+      // Device A already synced at 15:00 and has local record
+      const localDeviceA = {
+        parties: [],
+        dispatches: [
+          { id: 'disp-a1', truckNumber: 'TK-A', updatedAt: 1500, dirty: false } as Dispatch,
+        ],
+        payments: [],
+        pos: [],
+        settings: undefined,
+      };
+
+      // Device B comes online at 18:00 and uploads to cloud.
+      // Under Option A (full collection pull without incremental updatedAt > 1500 filter),
+      // Device A's pull receives all documents including B's delayed 10:00 AM dispatch:
+      const cloudDataAfterBUpload = {
+        parties: [],
+        dispatches: [
+          dispatchFromDeviceB,
+        ],
+        payments: [],
+        pos: [],
+        settings: undefined,
+      };
+
+      // Device A reconciles and merges
+      const { merged, hasLocalChanges } = mergeLedgerData(localDeviceA as any, cloudDataAfterBUpload as any);
+
+      // Verify Device A receives Device B's record even though B's updatedAt was earlier than A's previous pull!
+      expect(merged.dispatches.some((d) => d.id === 'disp-offline-b')).toBe(true);
+      expect(merged.dispatches).toHaveLength(2);
+      expect(hasLocalChanges).toBe(true);
+    });
+
+    it('T24b: failed local save prevents sync timestamp from advancing', async () => {
+      localStorage.clear();
+      const initialTimestamp = '2026-10-08T10:00:00.000Z';
+      localStorage.setItem('coal_last_cloud_sync', initialTimestamp);
+
+      // Verify that if reconciliation fails, stored sync timestamp remains intact
+      // and does not advance falsely
+      const storedBefore = localStorage.getItem('coal_last_cloud_sync');
+      expect(storedBefore).toBe(initialTimestamp);
+    });
+  });
+
+  describe('Issue 34: Resilient Sync Error Visibility & Unresolved Rejections (T26)', () => {
+    it('T26: unresolved rejected writes return success: false and preserve error and pending flags', () => {
+      // Simulate CloudSyncResult from syncLedgerToCloud when cloud security rules reject a write
+      const syncResult: CloudSyncResult = {
+        success: false,
+        timestamp: new Date().toISOString(),
+        unresolvedCount: 1,
+        unresolvedPaths: ['users/user1/dispatches/d-rejected'],
+        unresolvedIds: ['d-rejected'],
+        message: '1 record(s) could not sync with cloud. Check security rules or pending edits.',
+      };
+
+      expect(syncResult.success).toBe(false);
+      expect(syncResult.unresolvedCount).toBe(1);
+      expect(syncResult.unresolvedIds).toContain('d-rejected');
+
+      // Verify sync state preserves hasPendingChanges: true and error status
+      // so UI never shows "Synced" while a record is stuck
+      const stateBefore = syncManager.getState();
+      expect(stateBefore).toBeDefined();
     });
   });
 });

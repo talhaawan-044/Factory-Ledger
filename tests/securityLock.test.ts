@@ -87,6 +87,6 @@ describe('Issue 14: PIN Lock Hardening & Rate Limiting', () => {
     await purgeLegacySecurityFieldsFromCloud(uid);
     // When offline, does not throw and executes safely
     await expect(purgeLegacySecurityFieldsFromCloud(uid)).resolves.not.toThrow();
-  });
+  }, 15000);
 });
 

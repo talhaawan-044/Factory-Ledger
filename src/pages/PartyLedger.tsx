@@ -103,6 +103,8 @@ export default function PartyLedger() {
     totalTons: string;
     notes: string;
     isActive: boolean;
+    gcvAdjustment: 'manual' | 'prorata';
+    gcvAdjustmentRounding: 'rupee' | 'paisa';
   }>({
     poNumber: '',
     targetGcv: '6000',
@@ -110,7 +112,9 @@ export default function PartyLedger() {
     commissionPerTon: '0',
     totalTons: '',
     notes: '',
-    isActive: true
+    isActive: true,
+    gcvAdjustment: 'manual',
+    gcvAdjustmentRounding: 'rupee'
   });
 
   // Previews State
@@ -259,6 +263,8 @@ export default function PartyLedger() {
       totalTons: parseFloat(poForm.totalTons) || undefined,
       notes: poForm.notes.trim() || undefined,
       isActive: poForm.isActive,
+      gcvAdjustment: poForm.gcvAdjustment,
+      gcvAdjustmentRounding: poForm.gcvAdjustmentRounding,
       createdAt: poForm.id ? (pos.find(p => p.id === poForm.id)?.createdAt || Date.now()) : Date.now()
     };
 
@@ -310,7 +316,9 @@ export default function PartyLedger() {
       commissionPerTon: '500',
       totalTons: '',
       notes: '',
-      isActive: true
+      isActive: true,
+      gcvAdjustment: 'manual',
+      gcvAdjustmentRounding: 'rupee'
     });
     setIsAddingPO(true);
   };
@@ -325,7 +333,9 @@ export default function PartyLedger() {
       commissionPerTon: (po.commissionPerTon || '0').toString(),
       totalTons: (po.totalTons || '').toString(),
       notes: po.notes || '',
-      isActive: po.isActive ?? true
+      isActive: po.isActive ?? true,
+      gcvAdjustment: po.gcvAdjustment || 'manual',
+      gcvAdjustmentRounding: po.gcvAdjustmentRounding || 'rupee'
     });
     setIsAddingPO(true);
   };
@@ -939,7 +949,8 @@ Current Ledger Balance: ${curSym} ${formatAmountNumber(Math.abs(outstandingBalan
               } else if (item.kind === 'po') {
                 const po = item.data;
                 const poDispatches = dispatches.filter(d => d.poId === po.id);
-                const poTons = poDispatches.reduce((sum, d) => sum + (d.labReceivedWeight || 0), 0);
+                const poTotals = calculateLedgerTotals(poDispatches, settings);
+                const poTons = poTotals.receivedTons;
                 const hasTarget = Boolean(po.totalTons && po.totalTons > 0);
                 const progressPct = hasTarget ? Math.min(100, Math.round((poTons / (po.totalTons || 1)) * 100)) : 0;
 
@@ -1313,6 +1324,14 @@ Current Ledger Balance: ${curSym} ${formatAmountNumber(Math.abs(outstandingBalan
                           <span style={{ color: 'var(--label-secondary)' }}>Commission Deduction</span>
                           <span style={{ fontWeight: 600 }} className="tabular-nums">{curSym} {previewPO.commissionPerTon}/t</span>
                         </div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 10 }}>
+                          <span style={{ color: 'var(--label-secondary)' }}>GCV Pricing Rule</span>
+                          <span style={{ fontWeight: 600 }}>
+                            {previewPO.gcvAdjustment === 'prorata'
+                              ? `Auto Pro-Rata (${previewPO.gcvAdjustmentRounding === 'paisa' ? 'Paisa' : 'Rupee'})`
+                              : 'Manual Adjustments'}
+                          </span>
+                        </div>
                         {previewPO.totalTons && (
                           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15 }}>
                             <span style={{ color: 'var(--label-secondary)' }}>Total Contract Tonnage</span>
@@ -1496,6 +1515,99 @@ Current Ledger Balance: ${curSym} ${formatAmountNumber(Math.abs(outstandingBalan
                 </div>
                 <div className="ios-group-footnote" style={{ padding: '6px 18px 0' }}>
                   When dispatching trucks, selecting this PO will auto-populate target GCV, base rate, and commission.
+                </div>
+              </div>
+
+              <div className="ios-group">
+                <div className="ios-group-title">GCV Pricing & Adjustment Rule</div>
+                <div style={{ padding: '0 16px' }}>
+                  <div style={{ display: 'flex', background: 'var(--fill-tertiary)', borderRadius: 10, padding: 3, marginBottom: 12 }}>
+                    <button
+                      type="button"
+                      onClick={() => setPoForm({ ...poForm, gcvAdjustment: 'manual' })}
+                      style={{
+                        flex: 1,
+                        padding: '8px 12px',
+                        borderRadius: 8,
+                        border: 'none',
+                        fontSize: 13,
+                        fontWeight: 600,
+                        cursor: 'pointer',
+                        background: poForm.gcvAdjustment === 'manual' ? 'var(--bg-card)' : 'transparent',
+                        color: poForm.gcvAdjustment === 'manual' ? 'var(--label-primary)' : 'var(--label-secondary)',
+                        boxShadow: poForm.gcvAdjustment === 'manual' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
+                      }}
+                    >
+                      Manual Adjustments
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPoForm({ ...poForm, gcvAdjustment: 'prorata' })}
+                      style={{
+                        flex: 1,
+                        padding: '8px 12px',
+                        borderRadius: 8,
+                        border: 'none',
+                        fontSize: 13,
+                        fontWeight: 600,
+                        cursor: 'pointer',
+                        background: poForm.gcvAdjustment === 'prorata' ? 'var(--ios-blue)' : 'transparent',
+                        color: poForm.gcvAdjustment === 'prorata' ? 'white' : 'var(--label-secondary)',
+                        boxShadow: poForm.gcvAdjustment === 'prorata' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
+                      }}
+                    >
+                      Auto Pro-Rata Formula
+                    </button>
+                  </div>
+
+                  {poForm.gcvAdjustment === 'prorata' && (
+                    <div>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--label-secondary)', marginBottom: 6 }}>
+                        Rounding Precision:
+                      </div>
+                      <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+                        <button
+                          type="button"
+                          onClick={() => setPoForm({ ...poForm, gcvAdjustmentRounding: 'rupee' })}
+                          style={{
+                            flex: 1,
+                            padding: '8px 12px',
+                            borderRadius: 8,
+                            border: '0.5px solid var(--separator)',
+                            fontSize: 12,
+                            fontWeight: 600,
+                            cursor: 'pointer',
+                            background: poForm.gcvAdjustmentRounding === 'rupee' ? 'var(--fill-primary)' : 'transparent',
+                            color: poForm.gcvAdjustmentRounding === 'rupee' ? 'var(--label-primary)' : 'var(--label-secondary)',
+                          }}
+                        >
+                          Whole Rupee (Rs)
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setPoForm({ ...poForm, gcvAdjustmentRounding: 'paisa' })}
+                          style={{
+                            flex: 1,
+                            padding: '8px 12px',
+                            borderRadius: 8,
+                            border: '0.5px solid var(--separator)',
+                            fontSize: 12,
+                            fontWeight: 600,
+                            cursor: 'pointer',
+                            background: poForm.gcvAdjustmentRounding === 'paisa' ? 'var(--fill-primary)' : 'transparent',
+                            color: poForm.gcvAdjustmentRounding === 'paisa' ? 'var(--label-primary)' : 'var(--label-secondary)',
+                          }}
+                        >
+                          Paisa (0.01)
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+                <div className="ios-group-footnote" style={{ padding: '4px 18px 0' }}>
+                  {poForm.gcvAdjustment === 'prorata'
+                    ? 'Dispatches referencing this PO will automatically calculate deduction/premium via: Base Rate × (1 − Lab GCV ÷ Target GCV).'
+                    : 'Dispatches referencing this PO will use manual adjustment inputs by default.'}
                 </div>
               </div>
             </form>

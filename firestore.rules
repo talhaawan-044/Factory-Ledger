@@ -77,6 +77,12 @@ service cloud.firestore {
         allow update: if isOwner(userId) && isNotStaleUpdate();
       }
 
+      match /lots/{lotId} {
+        allow read, delete: if isOwner(userId);
+        allow create: if isOwner(userId);
+        allow update: if isOwner(userId) && isNotStaleUpdate();
+      }
+
       match /settings/{settingId} {
         allow read, delete: if isOwner(userId);
         allow create: if isOwner(userId);

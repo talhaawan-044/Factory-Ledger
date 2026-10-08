@@ -43,6 +43,9 @@ describe('Issue 29: Firestore Security Rules Unit Tests', () => {
     await assertSucceeds(
       setDoc(doc(alice, 'users/alice/parties/p1'), { id: 'p1', updatedAt: 200 })
     );
+    await assertSucceeds(
+      setDoc(doc(alice, 'users/alice/lots/lot1'), { id: 'lot1', supplier: 'Hashim Coal', updatedAt: 200 })
+    );
   });
 
   it('stale update is denied when updatedAt is older than stored document', async () => {

@@ -37,6 +37,7 @@ export interface SyncState {
   hasPendingChanges: boolean;
   isAutoSyncEnabled: boolean;
   currentUser: GoogleUserData | null;
+  unresolvedCount?: number;
 }
 
 export type LoginScenarioType =
@@ -276,6 +277,17 @@ class SyncManager {
           lastSyncTime: result.timestamp,
           hasPendingChanges: false,
           lastError: null,
+          unresolvedCount: 0,
+        });
+      } else if (result.unresolvedCount && result.unresolvedCount > 0) {
+        // Issue 34: Unresolved rejections - do NOT mask as synced, keep hasPendingChanges: true
+        this.consecutiveFailures = 0;
+        this.updateState({
+          status: 'error',
+          lastSyncTime: result.timestamp,
+          hasPendingChanges: true,
+          lastError: result.message || `${result.unresolvedCount} record(s) rejected by cloud security rules.`,
+          unresolvedCount: result.unresolvedCount,
         });
       } else if (result.protected) {
         this.consecutiveFailures = 0;
@@ -390,6 +402,15 @@ class SyncManager {
             status: 'synced',
             lastSyncTime: syncRes.timestamp,
             hasPendingChanges: false,
+            unresolvedCount: 0,
+          });
+        } else if (syncRes.unresolvedCount && syncRes.unresolvedCount > 0) {
+          this.updateState({
+            status: 'error',
+            lastSyncTime: syncRes.timestamp,
+            hasPendingChanges: true,
+            lastError: syncRes.message || `${syncRes.unresolvedCount} record(s) rejected by cloud rules.`,
+            unresolvedCount: syncRes.unresolvedCount,
           });
         }
       } else {
@@ -398,6 +419,7 @@ class SyncManager {
           status: 'synced',
           lastSyncTime: timestamp,
           hasPendingChanges: false,
+          unresolvedCount: 0,
         });
       }
     } catch (err: any) {

@@ -25,15 +25,13 @@ import {
   serverTimestamp,
   updateDoc,
   deleteField,
-  query,
-  where,
   type DocumentReference,
 } from 'firebase/firestore';
 import { Capacitor } from '@capacitor/core';
 import { FirebaseAuthentication } from '@capacitor-firebase/authentication';
 import { markRecordsClean, getSettings, saveSettings } from './db';
 import { idb } from './dexieDb';
-import type { Party, Dispatch, Payment, PurchaseOrder, AppSettings } from '../types';
+import type { Party, Dispatch, Payment, PurchaseOrder, InventoryLot, AppSettings } from '../types';
 
 // Web app's Firebase configuration read from environment variables (.env)
 const firebaseConfig = {
@@ -281,14 +279,19 @@ export interface CloudSyncResult {
   protected?: boolean;
   message?: string;
   mergedCount?: number;
+  unresolvedCount?: number;
+  unresolvedPaths?: string[];
+  unresolvedIds?: string[];
 }
 
 export interface FirestoreBatchOp {
   type: 'set' | 'delete';
   ref: DocumentReference;
   data?: any;
-  collectionName?: 'parties' | 'dispatches' | 'payments' | 'pos' | 'settings' | 'meta';
+  collectionName?: 'parties' | 'dispatches' | 'payments' | 'pos' | 'settings' | 'meta' | 'lots';
   id?: string;
+  uploadedUpdatedAt?: number;
+  merge?: boolean;
 }
 
 /**
@@ -323,6 +326,7 @@ export function sanitizeForFirestore(obj: any): any {
 
 /**
  * Commits Firestore operations in chunks of 400.
+ * Writes full documents for entities (no merge: true) so cleared fields are removed in the cloud (Issue 33).
  * On permission-denied (e.g. stale write rejected by security rule),
  * splits the chunk and retries per-document to isolate rejected writes (Issue 21).
  */
@@ -339,7 +343,11 @@ async function commitResilient(
       const batch = writeBatch(db);
       for (const op of chunk) {
         if (op.type === 'set') {
-          batch.set(op.ref, op.data, { merge: true });
+          if (op.merge) {
+            batch.set(op.ref, op.data, { merge: true });
+          } else {
+            batch.set(op.ref, op.data);
+          }
         } else if (op.type === 'delete') {
           batch.delete(op.ref);
         }
@@ -360,7 +368,11 @@ async function commitResilient(
       for (const op of chunk) {
         try {
           if (op.type === 'set') {
-            await setDoc(op.ref, op.data, { merge: true });
+            if (op.merge) {
+              await setDoc(op.ref, op.data, { merge: true });
+            } else {
+              await setDoc(op.ref, op.data);
+            }
           } else if (op.type === 'delete') {
             await deleteDoc(op.ref);
           }
@@ -414,17 +426,20 @@ export async function syncLedgerToCloud(
   const rawDispatches: any[] = backupData.dispatches || [];
   const rawPayments: any[] = backupData.payments || [];
   const rawPos: any[] = backupData.pos || [];
+  const rawLots: any[] = backupData.lots || [];
 
   const partiesList: any[] = options?.deltaOnly ? rawParties.filter((p) => p.dirty) : rawParties;
   const dispatchesList: any[] = options?.deltaOnly ? rawDispatches.filter((d) => d.dirty) : rawDispatches;
   const paymentsList: any[] = options?.deltaOnly ? rawPayments.filter((p) => p.dirty) : rawPayments;
   const posList: any[] = options?.deltaOnly ? rawPos.filter((po) => po.dirty) : rawPos;
+  const lotsList: any[] = options?.deltaOnly ? rawLots.filter((l) => l.dirty) : rawLots;
 
   const isLocalEmpty =
     rawParties.length === 0 &&
     rawDispatches.length === 0 &&
     rawPayments.length === 0 &&
-    rawPos.length === 0;
+    rawPos.length === 0 &&
+    rawLots.length === 0;
 
   // Safeguard: Prevent accidental wipe of cloud records if local storage is cleared / empty
   if (isLocalEmpty && !options?.forceEmptyOverwrite) {
@@ -435,7 +450,8 @@ export async function syncLedgerToCloud(
           (existingCloud.parties?.length || 0) +
           (existingCloud.dispatches?.length || 0) +
           (existingCloud.payments?.length || 0) +
-          (existingCloud.pos?.length || 0);
+          (existingCloud.pos?.length || 0) +
+          (existingCloud.lots?.length || 0);
 
         if (cloudCount > 0) {
           console.warn('[CloudSync] Protected: Prevented accidental wipe of remote cloud database with 0 local records.');
@@ -457,12 +473,14 @@ export async function syncLedgerToCloud(
   // 1. Parties subcollection
   for (const party of partiesList) {
     if (party.id) {
+      const partyUpdatedAt = Number(party.updatedAt || Date.now());
       operations.push({
         type: 'set',
         ref: doc(db, 'users', uid, 'parties', party.id),
         collectionName: 'parties',
         id: party.id,
-        data: sanitizeForFirestore({ ...party, updatedAt: party.updatedAt || Date.now() }),
+        uploadedUpdatedAt: partyUpdatedAt,
+        data: sanitizeForFirestore({ ...party, updatedAt: partyUpdatedAt }),
       });
     }
   }
@@ -470,12 +488,14 @@ export async function syncLedgerToCloud(
   // 2. Dispatches subcollection
   for (const dispatch of dispatchesList) {
     if (dispatch.id) {
+      const dispatchUpdatedAt = Number(dispatch.updatedAt || Date.now());
       operations.push({
         type: 'set',
         ref: doc(db, 'users', uid, 'dispatches', dispatch.id),
         collectionName: 'dispatches',
         id: dispatch.id,
-        data: sanitizeForFirestore({ ...dispatch, updatedAt: dispatch.updatedAt || Date.now() }),
+        uploadedUpdatedAt: dispatchUpdatedAt,
+        data: sanitizeForFirestore({ ...dispatch, updatedAt: dispatchUpdatedAt }),
       });
     }
   }
@@ -483,12 +503,14 @@ export async function syncLedgerToCloud(
   // 3. Payments subcollection
   for (const payment of paymentsList) {
     if (payment.id) {
+      const paymentUpdatedAt = Number(payment.updatedAt || Date.now());
       operations.push({
         type: 'set',
         ref: doc(db, 'users', uid, 'payments', payment.id),
         collectionName: 'payments',
         id: payment.id,
-        data: sanitizeForFirestore({ ...payment, updatedAt: payment.updatedAt || Date.now() }),
+        uploadedUpdatedAt: paymentUpdatedAt,
+        data: sanitizeForFirestore({ ...payment, updatedAt: paymentUpdatedAt }),
       });
     }
   }
@@ -496,17 +518,34 @@ export async function syncLedgerToCloud(
   // 4. Purchase Orders subcollection
   for (const po of posList) {
     if (po.id) {
+      const poUpdatedAt = Number(po.updatedAt || Date.now());
       operations.push({
         type: 'set',
         ref: doc(db, 'users', uid, 'pos', po.id),
         collectionName: 'pos',
         id: po.id,
-        data: sanitizeForFirestore({ ...po, updatedAt: po.updatedAt || Date.now() }),
+        uploadedUpdatedAt: poUpdatedAt,
+        data: sanitizeForFirestore({ ...po, updatedAt: poUpdatedAt }),
       });
     }
   }
 
-  // 5. Settings document (strips PIN credentials and theme preference per Issue 14 & 22)
+  // 5. Inventory Lots subcollection
+  for (const lot of lotsList) {
+    if (lot.id) {
+      const lotUpdatedAt = Number(lot.updatedAt || Date.now());
+      operations.push({
+        type: 'set',
+        ref: doc(db, 'users', uid, 'lots', lot.id),
+        collectionName: 'lots',
+        id: lot.id,
+        uploadedUpdatedAt: lotUpdatedAt,
+        data: sanitizeForFirestore({ ...lot, updatedAt: lotUpdatedAt }),
+      });
+    }
+  }
+
+  // 6. Settings document (strips PIN credentials and theme preference per Issue 14 & 22)
   // Only push settings if they actually changed locally (Issue 21)
   const lastSyncedSettingsKey = `fl_last_synced_settings_${uid}`;
   const lastSyncedSettingsAt = typeof localStorage !== 'undefined'
@@ -538,12 +577,13 @@ export async function syncLedgerToCloud(
     });
   }
 
-  // 6. Metadata document
+  // 7. Metadata document
   operations.push({
     type: 'set',
     ref: doc(db, 'users', uid, 'meta', 'sync'),
     collectionName: 'meta',
     id: 'sync',
+    merge: true,
     data: sanitizeForFirestore({
       version: backupData.version || '2026.10_clean_production_v2',
       exportDate: backupData.exportDate || now,
@@ -552,7 +592,8 @@ export async function syncLedgerToCloud(
       dispatchesCount: rawDispatches.length,
       paymentsCount: rawPayments.length,
       posCount: rawPos.length,
-      totalCount: rawParties.length + rawDispatches.length + rawPayments.length + rawPos.length,
+      lotsCount: rawLots.length,
+      totalCount: rawParties.length + rawDispatches.length + rawPayments.length + rawPos.length + rawLots.length,
       updatedAt: serverTimestamp(),
     }),
   });
@@ -567,27 +608,42 @@ export async function syncLedgerToCloud(
     }
   }
 
-  // Issue 11 & Issue 21: Mark ONLY successfully committed records clean in IndexedDB
-  const successPartyIds = succeeded.filter((o) => o.collectionName === 'parties' && o.id).map((o) => o.id!);
-  const successDispatchIds = succeeded.filter((o) => o.collectionName === 'dispatches' && o.id).map((o) => o.id!);
-  const successPaymentIds = succeeded.filter((o) => o.collectionName === 'payments' && o.id).map((o) => o.id!);
-  const successPoIds = succeeded.filter((o) => o.collectionName === 'pos' && o.id).map((o) => o.id!);
+  // Issue 11 & Issue 31: Mark ONLY successfully committed records clean if updatedAt still matches
+  const successParties = succeeded
+    .filter((o) => o.collectionName === 'parties' && o.id && o.uploadedUpdatedAt !== undefined)
+    .map((o) => ({ id: o.id!, updatedAt: o.uploadedUpdatedAt! }));
+  const successDispatches = succeeded
+    .filter((o) => o.collectionName === 'dispatches' && o.id && o.uploadedUpdatedAt !== undefined)
+    .map((o) => ({ id: o.id!, updatedAt: o.uploadedUpdatedAt! }));
+  const successPayments = succeeded
+    .filter((o) => o.collectionName === 'payments' && o.id && o.uploadedUpdatedAt !== undefined)
+    .map((o) => ({ id: o.id!, updatedAt: o.uploadedUpdatedAt! }));
+  const successPos = succeeded
+    .filter((o) => o.collectionName === 'pos' && o.id && o.uploadedUpdatedAt !== undefined)
+    .map((o) => ({ id: o.id!, updatedAt: o.uploadedUpdatedAt! }));
+  const successLots = succeeded
+    .filter((o) => o.collectionName === 'lots' && o.id && o.uploadedUpdatedAt !== undefined)
+    .map((o) => ({ id: o.id!, updatedAt: o.uploadedUpdatedAt! }));
 
   try {
     await markRecordsClean({
-      partyIds: successPartyIds,
-      dispatchIds: successDispatchIds,
-      paymentIds: successPaymentIds,
-      poIds: successPoIds,
+      parties: successParties,
+      dispatches: successDispatches,
+      payments: successPayments,
+      pos: successPos,
+      lots: successLots,
     });
   } catch (cleanErr) {
     console.warn('[CloudSync] Warning marking records clean:', cleanErr);
   }
 
-  // Issue 21: Resolve rejected documents by pulling newer cloud record and merging into Dexie
+  // Issue 21 & Issue 34: Resolve rejected documents by pulling newer cloud record and merging into Dexie
   let mergedConflictCount = 0;
+  const unresolvedRejections: Array<{ path: string; id?: string; collectionName?: string; error?: any }> = [];
+
   if (rejected.length > 0) {
-    for (const { op } of rejected) {
+    for (const { op, error } of rejected) {
+      let resolved = false;
       try {
         const cloudSnap = await getDoc(op.ref);
         if (cloudSnap.exists()) {
@@ -600,15 +656,23 @@ export async function syncLedgerToCloud(
             if (op.collectionName === 'parties' && op.id) {
               await idb.parties.put({ ...cloudData, dirty: false } as Party);
               mergedConflictCount++;
+              resolved = true;
             } else if (op.collectionName === 'dispatches' && op.id) {
               await idb.dispatches.put({ ...cloudData, dirty: false } as Dispatch);
               mergedConflictCount++;
+              resolved = true;
             } else if (op.collectionName === 'payments' && op.id) {
               await idb.payments.put({ ...cloudData, dirty: false } as Payment);
               mergedConflictCount++;
+              resolved = true;
             } else if (op.collectionName === 'pos' && op.id) {
               await idb.pos.put({ ...cloudData, dirty: false } as PurchaseOrder);
               mergedConflictCount++;
+              resolved = true;
+            } else if (op.collectionName === 'lots' && op.id) {
+              await idb.lots.put({ ...cloudData, dirty: false } as InventoryLot);
+              mergedConflictCount++;
+              resolved = true;
             } else if (op.collectionName === 'settings') {
               const localSettings = await getSettings();
               const merged: AppSettings = {
@@ -625,11 +689,21 @@ export async function syncLedgerToCloud(
                 localStorage.setItem(lastSyncedSettingsKey, String(cloudTime));
               }
               mergedConflictCount++;
+              resolved = true;
             }
           }
         }
       } catch (mergeErr) {
         console.warn(`[CloudSync] Warning resolving rejected doc ${op.ref.path}:`, mergeErr);
+      }
+
+      if (!resolved) {
+        unresolvedRejections.push({
+          path: op.ref.path,
+          id: op.id,
+          collectionName: op.collectionName,
+          error,
+        });
       }
     }
   }
@@ -642,51 +716,46 @@ export async function syncLedgerToCloud(
     // Non-fatal if legacy doc is already gone or non-existent
   }
 
-  const successMessage = mergedConflictCount > 0
-    ? `Sync found newer changes on another device and merged them (${mergedConflictCount} records).`
-    : 'Synchronized with Firebase Cloud subcollections successfully.';
+  const unresolvedCount = unresolvedRejections.length;
+  const isSuccess = unresolvedCount === 0;
+
+  let message = 'Synchronized with Firebase Cloud subcollections successfully.';
+  if (unresolvedCount > 0) {
+    message = `${unresolvedCount} record(s) could not sync with cloud. Check security rules or pending edits.`;
+  } else if (mergedConflictCount > 0) {
+    message = `Sync found newer changes on another device and merged them (${mergedConflictCount} records).`;
+  }
 
   return {
-    success: true,
+    success: isSuccess,
     timestamp: now,
-    message: successMessage,
+    message,
     mergedCount: mergedConflictCount,
+    unresolvedCount,
+    unresolvedPaths: unresolvedRejections.map((r) => r.path),
+    unresolvedIds: unresolvedRejections.filter((r) => r.id).map((r) => r.id!),
   };
 }
 
 /**
  * Pull cloud records from Cloud Firestore subcollections:
  * parties, dispatches, payments, pos, settings, and meta.
- * Supports incremental pull using lastPulledAt (Issue 28b) and marks ingested records clean (Issue 28a).
+ * Issue 32 (Option A): Always pulls full subcollections without incremental updatedAt filter,
+ * ensuring delayed offline uploads from other devices (with earlier updatedAt) are never permanently missed.
+ * All pulled documents are ingested as clean (dirty: false) per Issue 28a.
  */
 export async function fetchLedgerFromCloud(
   uid: string,
-  options?: { full?: boolean }
+  _options?: { full?: boolean }
 ): Promise<any | null> {
   if (!isFirebaseConfigured || !db) return null;
   try {
-    const lastPulledKey = `fl_last_pulled_at_${uid}`;
-    const lastPulledVal = typeof localStorage !== 'undefined' ? localStorage.getItem(lastPulledKey) : null;
-    const lastPulledAt = (!options?.full && lastPulledVal) ? Number(lastPulledVal) : 0;
-
-    const qParties = lastPulledAt > 0
-      ? query(collection(db, 'users', uid, 'parties'), where('updatedAt', '>', lastPulledAt))
-      : collection(db, 'users', uid, 'parties');
-    const qDispatches = lastPulledAt > 0
-      ? query(collection(db, 'users', uid, 'dispatches'), where('updatedAt', '>', lastPulledAt))
-      : collection(db, 'users', uid, 'dispatches');
-    const qPayments = lastPulledAt > 0
-      ? query(collection(db, 'users', uid, 'payments'), where('updatedAt', '>', lastPulledAt))
-      : collection(db, 'users', uid, 'payments');
-    const qPos = lastPulledAt > 0
-      ? query(collection(db, 'users', uid, 'pos'), where('updatedAt', '>', lastPulledAt))
-      : collection(db, 'users', uid, 'pos');
-
-    const [partiesSnap, dispatchesSnap, paymentsSnap, posSnap, settingsSnap, metaSnap] = await Promise.all([
-      getDocs(qParties),
-      getDocs(qDispatches),
-      getDocs(qPayments),
-      getDocs(qPos),
+    const [partiesSnap, dispatchesSnap, paymentsSnap, posSnap, lotsSnap, settingsSnap, metaSnap] = await Promise.all([
+      getDocs(collection(db, 'users', uid, 'parties')),
+      getDocs(collection(db, 'users', uid, 'dispatches')),
+      getDocs(collection(db, 'users', uid, 'payments')),
+      getDocs(collection(db, 'users', uid, 'pos')),
+      getDocs(collection(db, 'users', uid, 'lots')),
       getDoc(doc(db, 'users', uid, 'settings', 'config')),
       getDoc(doc(db, 'users', uid, 'meta', 'sync')),
     ]);
@@ -696,17 +765,14 @@ export async function fetchLedgerFromCloud(
     const dispatches = dispatchesSnap.docs.map((d) => ({ ...d.data(), dirty: false }));
     const payments = paymentsSnap.docs.map((d) => ({ ...d.data(), dirty: false }));
     const pos = posSnap.docs.map((d) => ({ ...d.data(), dirty: false }));
+    const lots = lotsSnap.docs.map((d) => ({ ...d.data(), dirty: false }));
     const settings = settingsSnap.exists() ? settingsSnap.data() : null;
     const meta = metaSnap.exists() ? metaSnap.data() : null;
 
-    if (typeof localStorage !== 'undefined') {
-      localStorage.setItem(lastPulledKey, String(Date.now()));
-    }
-
-    const totalSubrecords = parties.length + dispatches.length + payments.length + pos.length;
+    const totalSubrecords = parties.length + dispatches.length + payments.length + pos.length + lots.length;
 
     // Backward-compatibility: Check if legacy single-document backup exists
-    if (totalSubrecords === 0 && !settings && !lastPulledAt) {
+    if (totalSubrecords === 0 && !settings) {
       const legacyDocRef = doc(db, 'users', uid, 'ledger', 'backup');
       const legacySnap = await getDoc(legacyDocRef);
       if (legacySnap.exists()) {
@@ -733,6 +799,7 @@ export async function fetchLedgerFromCloud(
       dispatches,
       payments,
       pos,
+      lots,
       settings: settings || {},
     };
   } catch (err: any) {
@@ -746,7 +813,7 @@ export async function fetchLedgerFromCloud(
  */
 export async function syncSingleEntityToCloud(
   uid: string,
-  entityType: 'party' | 'dispatch' | 'payment' | 'purchase_order' | 'settings',
+  entityType: 'party' | 'dispatch' | 'payment' | 'purchase_order' | 'lot' | 'settings',
   item: any
 ): Promise<void> {
   if (!isFirebaseConfigured || !db || !uid || !item) return;
@@ -760,11 +827,13 @@ export async function syncSingleEntityToCloud(
       entityType === 'party' ? 'parties' :
       entityType === 'dispatch' ? 'dispatches' :
       entityType === 'payment' ? 'payments' :
-      entityType === 'purchase_order' ? 'pos' : null;
+      entityType === 'purchase_order' ? 'pos' :
+      entityType === 'lot' ? 'lots' : null;
 
     if (collectionName && item.id) {
       const ref = doc(db, 'users', uid, collectionName, item.id);
-      await setDoc(ref, sanitizeForFirestore({ ...item, updatedAt: item.updatedAt || Date.now() }), { merge: true });
+      // Issue 33: Write full entity document without merge: true so cleared fields are removed in cloud
+      await setDoc(ref, sanitizeForFirestore({ ...item, updatedAt: item.updatedAt || Date.now() }));
     }
   } catch (err) {
     console.warn(`[CloudSync] Warning writing single ${entityType} to cloud:`, err);
@@ -776,7 +845,7 @@ export async function syncSingleEntityToCloud(
  */
 export async function deleteSingleEntityFromCloud(
   uid: string,
-  entityType: 'party' | 'dispatch' | 'payment' | 'purchase_order',
+  entityType: 'party' | 'dispatch' | 'payment' | 'purchase_order' | 'lot',
   id: string,
   deletedAt = Date.now()
 ): Promise<void> {
@@ -786,7 +855,8 @@ export async function deleteSingleEntityFromCloud(
       entityType === 'party' ? 'parties' :
       entityType === 'dispatch' ? 'dispatches' :
       entityType === 'payment' ? 'payments' :
-      entityType === 'purchase_order' ? 'pos' : null;
+      entityType === 'purchase_order' ? 'pos' :
+      entityType === 'lot' ? 'lots' : null;
 
     if (collectionName) {
       const ref = doc(db, 'users', uid, collectionName, id);
@@ -814,7 +884,7 @@ export async function wipeCloudUserData(uid: string): Promise<{ success: boolean
   if (!isFirebaseConfigured || !db) return { success: true, message: 'Offline mode: no cloud database to wipe.' };
 
   try {
-    const subcollections = ['parties', 'dispatches', 'payments', 'pos'];
+    const subcollections = ['parties', 'dispatches', 'payments', 'pos', 'lots'];
     const operations: Array<{ type: 'set' | 'delete'; ref: DocumentReference }> = [];
 
     for (const sub of subcollections) {

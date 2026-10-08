@@ -7,6 +7,7 @@ const PartiesList = lazy(() => import('./pages/PartiesList'));
 const PartyLedger = lazy(() => import('./pages/PartyLedger'));
 const DispatchForm = lazy(() => import('./pages/DispatchForm'));
 const AllEntries = lazy(() => import('./pages/AllEntries'));
+const Inventory = lazy(() => import('./pages/Inventory'));
 const Settings = lazy(() => import('./pages/Settings'));
 
 function RouteLoadingFallback() {
@@ -27,6 +28,7 @@ export default function App() {
             <Route path="parties" element={<PartiesList />} />
             <Route path="parties/:partyId" element={<PartyLedger />} />
             <Route path="parties/:partyId/dispatch/:dispatchId" element={<DispatchForm />} />
+            <Route path="inventory" element={<Inventory />} />
             <Route path="entries" element={<AllEntries />} />
             <Route path="settings" element={<Settings />} />
           </Route>

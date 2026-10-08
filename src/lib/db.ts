@@ -1,4 +1,4 @@
-import type { Dispatch, Party, AppSettings, Payment, PurchaseOrder, BackupPayload } from "../types";
+import type { Dispatch, Party, AppSettings, Payment, PurchaseOrder, BackupPayload, InventoryLot } from "../types";
 import { getTodayDateString } from "../utils/dateUtils";
 import { idb, requestPersistentStorage } from "./dexieDb";
 
@@ -20,6 +20,7 @@ export const INITIAL_PARTIES: Party[] = [];
 export const INITIAL_POS: PurchaseOrder[] = [];
 export const INITIAL_DISPATCHES: Dispatch[] = [];
 export const INITIAL_PAYMENTS: Payment[] = [];
+export const INITIAL_LOTS: InventoryLot[] = [];
 
 export const INITIAL_SETTINGS: AppSettings = {
   userName: "",
@@ -30,7 +31,7 @@ export const INITIAL_SETTINGS: AppSettings = {
   theme: "light",
   currency: "PKR (Rs.)",
   numberFormat: "million",
-  defaultTaxMethod: "formula_18_5",
+  defaultTaxMethod: "manual",
   taxFormulaSalesPercent: 18,
   taxFormulaIncomePercent: 5,
   accountType: "Commercial Coal Trader",
@@ -42,7 +43,7 @@ export const INITIAL_SETTINGS: AppSettings = {
   lockTimeout: 0,
 };
 
-export type LedgerEntityType = 'dispatch' | 'party' | 'payment' | 'purchase_order' | 'settings' | 'all';
+export type LedgerEntityType = 'dispatch' | 'party' | 'payment' | 'purchase_order' | 'lot' | 'settings' | 'all';
 export type LedgerMutationAction = 'create' | 'update' | 'delete' | 'restore';
 
 export interface LedgerMutationDetail {
@@ -146,17 +147,19 @@ export async function getLocalRecordCounts(): Promise<{
   dispatches: number;
   payments: number;
   pos: number;
+  lots: number;
   total: number;
 }> {
   await ensureInitialized();
-  const [parties, dispatches, payments, pos] = await Promise.all([
+  const [parties, dispatches, payments, pos, lots] = await Promise.all([
     idb.parties.filter((p) => !p.deleted).count(),
     idb.dispatches.filter((d) => !d.deleted).count(),
     idb.payments.filter((p) => !p.deleted).count(),
     idb.pos.filter((po) => !po.deleted).count(),
+    idb.lots.filter((l) => !l.deleted).count(),
   ]);
-  const total = parties + dispatches + payments + pos;
-  return { parties, dispatches, payments, pos, total };
+  const total = parties + dispatches + payments + pos + lots;
+  return { parties, dispatches, payments, pos, lots, total };
 }
 
 /**
@@ -245,8 +248,11 @@ export function sanitizeDispatch(d: Partial<Dispatch>): Dispatch {
           sourceName: ci.sourceName || '',
           weight: cleanNumber(ci.weight),
           purchaseRate: cleanNumber(ci.purchaseRate),
+          lotId: ci.lotId || undefined,
         }))
       : [],
+    gcvAdjustment: d.gcvAdjustment === 'prorata' ? 'prorata' : (d.gcvAdjustment === 'manual' ? 'manual' : undefined),
+    gcvAdjustmentRounding: d.gcvAdjustmentRounding === 'rupee' ? 'rupee' : (d.gcvAdjustmentRounding === 'paisa' ? 'paisa' : undefined),
     notes: d.notes || undefined,
     createdAt: cleanNumber(d.createdAt, now),
     updatedAt: cleanNumber(d.updatedAt, now),
@@ -305,12 +311,42 @@ export function sanitizePurchaseOrder(po: Partial<PurchaseOrder>): PurchaseOrder
     commissionPerTon: cleanNumber(po.commissionPerTon),
     totalTons: po.totalTons !== undefined ? cleanNumber(po.totalTons) : undefined,
     notes: po.notes || undefined,
+    gcvAdjustment: po.gcvAdjustment === 'prorata' ? 'prorata' : 'manual',
+    gcvAdjustmentRounding: po.gcvAdjustmentRounding === 'rupee' ? 'rupee' : 'paisa',
     isActive: typeof po.isActive === 'boolean' ? po.isActive : true,
     createdAt: cleanNumber(po.createdAt, now),
     updatedAt: cleanNumber(po.updatedAt, now),
     deleted: isDeleted,
     deletedAt: isDeleted ? cleanNumber(po.deletedAt, now) : undefined,
     dirty: po.dirty !== undefined ? Boolean(po.dirty) : true,
+  };
+}
+
+export function sanitizeLot(l: Partial<InventoryLot>): InventoryLot {
+  const now = Date.now();
+  const isDeleted = Boolean(l.deleted);
+  const billedWeight = cleanNumber(l.billedWeight);
+  const receivedWeight = cleanNumber(l.receivedWeight);
+  const purchaseRate = cleanNumber(l.purchaseRate);
+  const landedRate = receivedWeight > 0 ? (billedWeight * purchaseRate) / receivedWeight : purchaseRate;
+
+  return {
+    id: l.id || '',
+    supplier: (l.supplier || '').trim(),
+    date: l.date || getTodayDateString(),
+    billedWeight: Math.round(billedWeight * 100) / 100,
+    receivedWeight: Math.round(receivedWeight * 100) / 100,
+    purchaseRate: Math.round(purchaseRate * 100) / 100,
+    landedRate: Math.round(landedRate * 100) / 100,
+    gcv: l.gcv !== undefined && l.gcv !== null ? cleanNumber(l.gcv) : undefined,
+    truckNumber: (l.truckNumber || '').trim() || undefined,
+    mineSource: (l.mineSource || '').trim() || undefined,
+    notes: (l.notes || '').trim() || undefined,
+    createdAt: cleanNumber(l.createdAt, now),
+    updatedAt: cleanNumber(l.updatedAt, now),
+    deleted: isDeleted,
+    deletedAt: isDeleted ? cleanNumber(l.deletedAt, now) : undefined,
+    dirty: l.dirty !== undefined ? Boolean(l.dirty) : true,
   };
 }
 
@@ -730,6 +766,70 @@ export async function deletePurchaseOrder(id: string): Promise<void> {
   notifyLedgerMutation('purchase_order', id, 'delete');
 }
 
+// -- Inventory Lots (IndexedDB) --
+export async function getLots(): Promise<InventoryLot[]> {
+  await ensureInitialized();
+  const lots = await idb.lots.toArray();
+  const active = lots.filter((l) => !l.deleted);
+  active.sort((a, b) => new Date(b.date || 0).getTime() - new Date(a.date || 0).getTime() || (b.createdAt || 0) - (a.createdAt || 0));
+  return active;
+}
+
+export async function getLot(id: string): Promise<InventoryLot | null> {
+  await ensureInitialized();
+  const lot = await idb.lots.get(id);
+  if (!lot || lot.deleted) return null;
+  return lot;
+}
+
+export async function saveLot(lot: InventoryLot): Promise<void> {
+  await ensureInitialized();
+  const sanitized = sanitizeLot(lot);
+  const existing = await idb.lots.get(sanitized.id);
+  const now = Date.now();
+  const itemToSave: InventoryLot = {
+    ...sanitized,
+    createdAt: sanitized.createdAt || now,
+    updatedAt: now,
+    dirty: true,
+  };
+
+  await idb.lots.put(itemToSave);
+  notifyLedgerMutation('lot', sanitized.id, existing ? 'update' : 'create');
+}
+
+export async function deleteLot(id: string): Promise<void> {
+  await ensureInitialized();
+  const existing = await idb.lots.get(id);
+  const now = Date.now();
+  if (existing) {
+    await idb.lots.put({
+      ...existing,
+      deleted: true,
+      deletedAt: now,
+      updatedAt: now,
+      dirty: true,
+    });
+  } else {
+    await idb.lots.put({
+      id,
+      supplier: '',
+      date: getTodayDateString(),
+      billedWeight: 0,
+      receivedWeight: 0,
+      purchaseRate: 0,
+      landedRate: 0,
+      createdAt: now,
+      updatedAt: now,
+      deleted: true,
+      deletedAt: now,
+      dirty: true,
+    });
+  }
+  recordTombstone(id);
+  notifyLedgerMutation('lot', id, 'delete');
+}
+
 // -- Settings (Cached Synchronously in localStorage) --
 let cachedSettings: AppSettings = INITIAL_SETTINGS;
 
@@ -831,11 +931,12 @@ export type { BackupPayload };
 
 export async function getAllBackupData(): Promise<BackupPayload> {
   await ensureInitialized();
-  const [parties, dispatches, payments, pos, settings] = await Promise.all([
+  const [parties, dispatches, payments, pos, lots, settings] = await Promise.all([
     getParties(),
     getDispatches(),
     getPayments(),
     getPurchaseOrders(),
+    getLots(),
     getSettings(),
   ]);
 
@@ -849,6 +950,7 @@ export async function getAllBackupData(): Promise<BackupPayload> {
     dispatches,
     payments,
     pos,
+    lots,
     settings,
   };
 }
@@ -884,14 +986,16 @@ export async function getLedgerForSync(onlyDirty = false): Promise<{
   dispatches: Dispatch[];
   payments: Payment[];
   pos: PurchaseOrder[];
+  lots: InventoryLot[];
   settings: AppSettings;
 }> {
   await ensureInitialized();
-  const [parties, dispatches, payments, pos, settings] = await Promise.all([
+  const [parties, dispatches, payments, pos, lots, settings] = await Promise.all([
     idb.parties.toArray(),
     idb.dispatches.toArray(),
     idb.payments.toArray(),
     idb.pos.toArray(),
+    idb.lots.toArray(),
     getSettings(),
   ]);
 
@@ -901,56 +1005,42 @@ export async function getLedgerForSync(onlyDirty = false): Promise<{
       dispatches: dispatches.filter((d) => d.dirty),
       payments: payments.filter((p) => p.dirty),
       pos: pos.filter((po) => po.dirty),
+      lots: lots.filter((l) => l.dirty),
       settings,
     };
   }
 
-  return { parties, dispatches, payments, pos, settings };
+  return { parties, dispatches, payments, pos, lots, settings };
 }
 
 /**
- * Issue 11: Marks synced records as clean (dirty: false) in IndexedDB after successful cloud commit.
+ * Issue 11 & Issue 31: Marks synced records as clean (dirty: false) in IndexedDB after successful cloud commit.
+ * Only clears dirty flag if the record's updatedAt matches the uploaded version, preventing race condition
+ * where local edits during an in-flight upload are accidentally marked clean.
  */
-export async function markRecordsClean(syncedIds: {
-  partyIds?: string[];
-  dispatchIds?: string[];
-  paymentIds?: string[];
-  poIds?: string[];
+export async function markRecordsClean(synced: {
+  parties?: Array<{ id: string; updatedAt: number }>;
+  dispatches?: Array<{ id: string; updatedAt: number }>;
+  payments?: Array<{ id: string; updatedAt: number }>;
+  pos?: Array<{ id: string; updatedAt: number }>;
+  lots?: Array<{ id: string; updatedAt: number }>;
 }): Promise<void> {
   await ensureInitialized();
-  await idb.transaction('rw', [idb.parties, idb.dispatches, idb.payments, idb.pos], async () => {
-    if (syncedIds.partyIds?.length) {
-      for (const id of syncedIds.partyIds) {
-        const item = await idb.parties.get(id);
-        if (item && item.dirty) {
-          await idb.parties.update(id, { dirty: false });
+  await idb.transaction('rw', [idb.parties, idb.dispatches, idb.payments, idb.pos, idb.lots], async () => {
+    const clean = async (table: any, list?: Array<{ id: string; updatedAt: number }>) => {
+      for (const { id, updatedAt } of list ?? []) {
+        const item = await table.get(id);
+        // Only clear if nobody edited it since we uploaded that exact version (Issue 31)
+        if (item && item.dirty && item.updatedAt === updatedAt) {
+          await table.update(id, { dirty: false });
         }
       }
-    }
-    if (syncedIds.dispatchIds?.length) {
-      for (const id of syncedIds.dispatchIds) {
-        const item = await idb.dispatches.get(id);
-        if (item && item.dirty) {
-          await idb.dispatches.update(id, { dirty: false });
-        }
-      }
-    }
-    if (syncedIds.paymentIds?.length) {
-      for (const id of syncedIds.paymentIds) {
-        const item = await idb.payments.get(id);
-        if (item && item.dirty) {
-          await idb.payments.update(id, { dirty: false });
-        }
-      }
-    }
-    if (syncedIds.poIds?.length) {
-      for (const id of syncedIds.poIds) {
-        const item = await idb.pos.get(id);
-        if (item && item.dirty) {
-          await idb.pos.update(id, { dirty: false });
-        }
-      }
-    }
+    };
+    await clean(idb.parties, synced.parties);
+    await clean(idb.dispatches, synced.dispatches);
+    await clean(idb.payments, synced.payments);
+    await clean(idb.pos, synced.pos);
+    await clean(idb.lots, synced.lots);
   });
 }
 
@@ -961,6 +1051,7 @@ export interface PreRestoreSnapshotMeta {
   partyCount: number;
   paymentCount: number;
   poCount: number;
+  lotCount: number;
 }
 
 const PRE_RESTORE_SNAPSHOT_KEY = 'last_pre_restore_snapshot';
@@ -1009,6 +1100,7 @@ export async function getPreRestoreSnapshotMeta(): Promise<PreRestoreSnapshotMet
   const dispatches = Array.isArray(payload.dispatches) ? payload.dispatches.length : 0;
   const payments = Array.isArray(payload.payments) ? payload.payments.length : 0;
   const pos = Array.isArray(payload.pos) ? payload.pos.length : 0;
+  const lots = Array.isArray(payload.lots) ? payload.lots.length : 0;
   const timestamp = typeof record.updatedAt === 'number' ? record.updatedAt : Date.now();
 
   const dateObj = new Date(timestamp);
@@ -1026,6 +1118,7 @@ export async function getPreRestoreSnapshotMeta(): Promise<PreRestoreSnapshotMet
     partyCount: parties,
     paymentCount: payments,
     poCount: pos,
+    lotCount: lots,
   };
 }
 
@@ -1037,7 +1130,7 @@ export async function getPreRestoreSnapshotMeta(): Promise<PreRestoreSnapshotMet
 export async function rollbackToPreRestoreSnapshot(): Promise<{
   success: boolean;
   message: string;
-  counts?: { parties: number; dispatches: number; payments: number; pos: number };
+  counts?: { parties: number; dispatches: number; payments: number; pos: number; lots?: number };
 }> {
   const snapshot = await getPreRestoreSnapshot();
   if (!snapshot) {
@@ -1060,7 +1153,7 @@ export async function restoreBackup(
 ): Promise<{
   success: boolean;
   message: string;
-  counts?: { parties: number; dispatches: number; payments: number; pos: number };
+  counts?: { parties: number; dispatches: number; payments: number; pos: number; lots: number };
 }> {
   await ensureInitialized();
 
@@ -1073,11 +1166,13 @@ export async function restoreBackup(
   const rawDispatches = Array.isArray(backup.dispatches) ? backup.dispatches : [];
   const rawPayments = Array.isArray(backup.payments) ? backup.payments : [];
   const rawPos = Array.isArray(backup.pos) ? backup.pos : [];
+  const rawLots = Array.isArray(backup.lots) ? backup.lots : [];
 
   const sanitizedParties = rawParties.map(sanitizeParty);
   const sanitizedDispatches = rawDispatches.map(sanitizeDispatch);
   const sanitizedPayments = rawPayments.map(sanitizePayment);
   const sanitizedPos = rawPos.map(sanitizePurchaseOrder);
+  const sanitizedLots = rawLots.map(sanitizeLot);
 
   // 2. Take automatic pre-restore snapshot and store in IndexedDB
   if (!options?.skipSnapshot) {
@@ -1095,16 +1190,18 @@ export async function restoreBackup(
 
   // 3. Atomically replace records in IndexedDB
   try {
-    await idb.transaction('rw', [idb.parties, idb.dispatches, idb.payments, idb.pos], async () => {
+    await idb.transaction('rw', [idb.parties, idb.dispatches, idb.payments, idb.pos, idb.lots], async () => {
       await idb.parties.clear();
       await idb.dispatches.clear();
       await idb.payments.clear();
       await idb.pos.clear();
+      await idb.lots.clear();
 
       if (sanitizedParties.length > 0) await idb.parties.bulkPut(sanitizedParties);
       if (sanitizedDispatches.length > 0) await idb.dispatches.bulkPut(sanitizedDispatches);
       if (sanitizedPayments.length > 0) await idb.payments.bulkPut(sanitizedPayments);
       if (sanitizedPos.length > 0) await idb.pos.bulkPut(sanitizedPos);
+      if (sanitizedLots.length > 0) await idb.lots.bulkPut(sanitizedLots);
     });
 
     // 4. Update settings safely (protecting local PIN / App lock credentials)
@@ -1136,6 +1233,7 @@ export async function restoreBackup(
         dispatches: sanitizedDispatches.length,
         payments: sanitizedPayments.length,
         pos: sanitizedPos.length,
+        lots: sanitizedLots.length,
       },
     };
   } catch (err: any) {
@@ -1146,11 +1244,12 @@ export async function restoreBackup(
 
 export async function clearAllData(options?: { resetSettings?: boolean; resetOwner?: boolean }): Promise<void> {
   await ensureInitialized();
-  await idb.transaction('rw', [idb.parties, idb.dispatches, idb.payments, idb.pos], async () => {
+  await idb.transaction('rw', [idb.parties, idb.dispatches, idb.payments, idb.pos, idb.lots], async () => {
     await idb.parties.clear();
     await idb.dispatches.clear();
     await idb.payments.clear();
     await idb.pos.clear();
+    await idb.lots.clear();
   });
 
   if (typeof localStorage !== 'undefined') {
@@ -1170,7 +1269,6 @@ export async function clearAllData(options?: { resetSettings?: boolean; resetOwn
   notifyLedgerMutation('all', undefined, 'delete');
 }
 
-/**
 /**
  * Helper to reconcile a single entity collection between local and remote datasets:
  * - Honors soft deletes (deleted: true, deletedAt) across both local and remote.
@@ -1285,19 +1383,24 @@ export function mergeLedgerData(
   // 4. Purchase Orders
   const posRes = mergeCollection(local.pos || [], cloud.pos || [], tombstones);
 
+  // 5. Lots
+  const lotsRes = mergeCollection(local.lots || [], cloud.lots || [], tombstones);
+
   let hasLocalChanges =
     partiesRes.localChanges ||
     dispatchesRes.localChanges ||
     paymentsRes.localChanges ||
-    posRes.localChanges;
+    posRes.localChanges ||
+    lotsRes.localChanges;
 
   let hasCloudChanges =
     partiesRes.cloudChanges ||
     dispatchesRes.cloudChanges ||
     paymentsRes.cloudChanges ||
-    posRes.cloudChanges;
+    posRes.cloudChanges ||
+    lotsRes.cloudChanges;
 
-  // 5. Settings
+  // 6. Settings
   let mergedSettings = { ...local.settings };
   const cloudSettings = cloud.settings;
   if (cloudSettings) {
@@ -1334,6 +1437,7 @@ export function mergeLedgerData(
     dispatches: dispatchesRes.mergedList,
     payments: paymentsRes.mergedList,
     pos: posRes.mergedList,
+    lots: lotsRes.mergedList,
     settings: mergedSettings,
   };
 

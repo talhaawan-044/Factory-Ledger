@@ -563,8 +563,9 @@ describe('T3 & Issue 11: Merge Honors Tombstones (No Deleted Resurrections)', ()
     let syncData = await getLedgerForSync(true);
     expect(syncData.dispatches.some((d) => d.id === 'disp-delta-1')).toBe(true);
 
-    // Mark records clean
-    await markRecordsClean({ dispatchIds: ['disp-delta-1'] });
+    // Mark records clean with exact updatedAt (Issue 31)
+    const dispItem = syncData.dispatches.find((d) => d.id === 'disp-delta-1')!;
+    await markRecordsClean({ dispatches: [{ id: 'disp-delta-1', updatedAt: dispItem.updatedAt }] });
     syncData = await getLedgerForSync(true);
     expect(syncData.dispatches.some((d) => d.id === 'disp-delta-1')).toBe(false);
 

@@ -462,53 +462,53 @@ export default function PartiesList() {
             }}
           >
             <button
-            onClick={() => {
-              playPopSound();
-              handleViewModeChange('list');
-            }}
-            title="List View"
-            style={{
-              border: 'none',
-              background: viewMode === 'list' ? 'var(--bg-card)' : 'transparent',
-              color: viewMode === 'list' ? 'var(--label-primary)' : 'var(--label-tertiary)',
-              padding: '5px 8px',
-              borderRadius: 7,
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              boxShadow: viewMode === 'list' ? '0 1px 4px rgba(0,0,0,0.12)' : 'none',
-              transition: 'all 0.15s ease'
-            }}
-          >
-            <List style={{ width: 17, height: 17 }} strokeWidth={2.4} />
-          </button>
+              onClick={() => {
+                playPopSound();
+                handleViewModeChange('list');
+              }}
+              title="List View"
+              style={{
+                border: 'none',
+                background: viewMode === 'list' ? 'var(--bg-card)' : 'transparent',
+                color: viewMode === 'list' ? 'var(--label-primary)' : 'var(--label-tertiary)',
+                padding: '5px 8px',
+                borderRadius: 7,
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                boxShadow: viewMode === 'list' ? '0 1px 4px rgba(0,0,0,0.12)' : 'none',
+                transition: 'all 0.15s ease'
+              }}
+            >
+              <List style={{ width: 17, height: 17 }} strokeWidth={2.4} />
+            </button>
 
-          <button
-            onClick={() => {
-              playPopSound();
-              handleViewModeChange('grid');
-            }}
-            title="Grid View"
-            style={{
-              border: 'none',
-              background: viewMode === 'grid' ? 'var(--bg-card)' : 'transparent',
-              color: viewMode === 'grid' ? 'var(--label-primary)' : 'var(--label-tertiary)',
-              padding: '5px 8px',
-              borderRadius: 7,
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              boxShadow: viewMode === 'grid' ? '0 1px 4px rgba(0,0,0,0.12)' : 'none',
-              transition: 'all 0.15s ease'
-            }}
-          >
-            <LayoutGrid style={{ width: 17, height: 17 }} strokeWidth={2.4} />
-          </button>
+            <button
+              onClick={() => {
+                playPopSound();
+                handleViewModeChange('grid');
+              }}
+              title="Grid View"
+              style={{
+                border: 'none',
+                background: viewMode === 'grid' ? 'var(--bg-card)' : 'transparent',
+                color: viewMode === 'grid' ? 'var(--label-primary)' : 'var(--label-tertiary)',
+                padding: '5px 8px',
+                borderRadius: 7,
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                boxShadow: viewMode === 'grid' ? '0 1px 4px rgba(0,0,0,0.12)' : 'none',
+                transition: 'all 0.15s ease'
+              }}
+            >
+              <LayoutGrid style={{ width: 17, height: 17 }} strokeWidth={2.4} />
+            </button>
+          </div>
         </div>
       </div>
-    </div>
 
       {/* ── View 1: List View (Apple Grouped Inset) ── */}
       {viewMode === 'list' && (
@@ -584,8 +584,8 @@ export default function PartiesList() {
                                 style={{
                                   fontSize: 10,
                                   fontWeight: 600,
-                                  color: 'var(--ios-orange)',
-                                  background: 'rgba(255, 149, 0, 0.12)',
+                                  color: 'white',
+                                  background: 'var(--ios-orange)',
                                   padding: '1px 6px',
                                   borderRadius: 4,
                                   display: 'inline-flex',
@@ -934,8 +934,8 @@ export default function PartiesList() {
                             style={{
                               fontSize: 10,
                               fontWeight: 600,
-                              color: 'var(--ios-orange)',
-                              background: 'rgba(255, 149, 0, 0.12)',
+                              color: 'white',
+                              background: 'var(--ios-orange)',
                               padding: '1px 5px',
                               borderRadius: 4,
                               display: 'inline-flex',

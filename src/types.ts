@@ -3,6 +3,7 @@ export interface CoalInput {
   sourceName: string;
   weight: number;
   purchaseRate: number;
+  lotId?: string;
 }
 
 export interface OverheadExpenses {
@@ -22,6 +23,8 @@ export interface PurchaseOrder {
   commissionPerTon: number;
   totalTons?: number;
   notes?: string;
+  gcvAdjustment?: 'manual' | 'prorata';
+  gcvAdjustmentRounding?: 'rupee' | 'paisa';
   createdAt: number;
   updatedAt?: number;
   isActive: boolean;
@@ -51,6 +54,8 @@ export interface Dispatch {
   manualDeduction?: number;
   manualPremium?: number;
   manualTax?: number;
+  gcvAdjustment?: 'manual' | 'prorata';
+  gcvAdjustmentRounding?: 'rupee' | 'paisa';
   taxMethod?: TaxMethod;
   taxSalesPercent?: number; // Snapshot of sales tax % (e.g. 18) when dispatch was saved
   taxIncomePercent?: number; // Snapshot of income tax % (e.g. 5) when dispatch was saved
@@ -118,6 +123,27 @@ export interface AppSettings {
   lockTimeout?: number;
 }
 
+export interface InventoryLot {
+  id: string;
+  supplier: string;
+  date: string; // YYYY-MM-DD
+  billedWeight: number; // Tons billed by supplier (e.g. 30)
+  receivedWeight: number; // Tons physically weighed & received at yard (e.g. 28.5)
+  purchaseRate: number; // Supplier rate per billed ton (e.g. 20000)
+  landedRate: number; // Landed cost per received ton: (billedWeight * purchaseRate) / receivedWeight
+  grade?: string;
+  gcv?: number;
+  targetGcv?: number;
+  truckNumber?: string;
+  mineSource?: string;
+  notes?: string;
+  createdAt: number;
+  updatedAt: number;
+  deleted?: boolean;
+  deletedAt?: number;
+  dirty?: boolean;
+}
+
 export interface BackupPayload {
   version?: string;
   exportDate: string;
@@ -128,10 +154,12 @@ export interface BackupPayload {
   dispatches: Dispatch[];
   payments: Payment[];
   pos: PurchaseOrder[];
+  lots?: InventoryLot[];
   settings: AppSettings;
   deviceInfo?: string;
   lastCloudSync?: string;
   images?: Record<string, string>;
   meta?: Record<string, unknown>;
 }
+
 

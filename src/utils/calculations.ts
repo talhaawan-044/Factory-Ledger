@@ -1,4 +1,4 @@
-import type { Dispatch, Payment, TaxMethod, AppSettings } from "../types";
+import type { Dispatch, Payment, TaxMethod, AppSettings, InventoryLot } from "../types";
 import { getCachedSettings } from "../lib/db";
 
 export interface SettlementResult {
@@ -12,6 +12,8 @@ export interface SettlementResult {
   totalCost: number;
   netProfit: number;
   taxMethod?: TaxMethod;
+  gcvPremium?: number;
+  isProrata?: boolean;
 }
 
 export interface PartyBalanceResult {
@@ -67,8 +69,34 @@ export function calculateSettlement(dispatch: Dispatch, settings?: AppSettings |
   const overheads = dispatch.overheads || ({} as any);
   const coalInputs = Array.isArray(dispatch.coalInputs) ? dispatch.coalInputs : [];
 
-  // 1. Calculate Adjusted Rate: Base Rate - Manual Deduction + Manual Premium
-  const adjustedRate = baseRate - manualDeduction + manualPremium;
+  // Pro-rata GCV pricing calculation (contract rule on PO / dispatch)
+  const isProrata = dispatch.gcvAdjustment === 'prorata';
+  let effectiveDeduction = manualDeduction;
+  let effectivePremium = manualPremium;
+
+  if (isProrata) {
+    const targetGcv = cleanNum(dispatch.targetGcv);
+    const labActualGcv = cleanNum(dispatch.labActualGcv);
+    const rounding = dispatch.gcvAdjustmentRounding || 'paisa';
+
+    if (targetGcv > 0 && baseRate > 0 && labActualGcv > 0) {
+      if (labActualGcv < targetGcv) {
+        const raw = baseRate * (1 - (labActualGcv / targetGcv));
+        effectiveDeduction = rounding === 'rupee' ? Math.round(raw) : Number(raw.toFixed(2));
+        effectivePremium = 0;
+      } else if (labActualGcv > targetGcv) {
+        const raw = baseRate * ((labActualGcv / targetGcv) - 1);
+        effectivePremium = rounding === 'rupee' ? Math.round(raw) : Number(raw.toFixed(2));
+        effectiveDeduction = 0;
+      } else {
+        effectiveDeduction = 0;
+        effectivePremium = 0;
+      }
+    }
+  }
+
+  // 1. Calculate Adjusted Rate: Base Rate - GCV Deduction + GCV Premium
+  const adjustedRate = baseRate - effectiveDeduction + effectivePremium;
 
   // 2. Determine Tax Deduction:
   //    - If taxMethod === 'manual', use manualTax.
@@ -115,7 +143,7 @@ export function calculateSettlement(dispatch: Dispatch, settings?: AppSettings |
   const netProfit = totalRevenue - totalCost;
 
   return {
-    gcvDeduction: manualDeduction, 
+    gcvDeduction: cleanNum(effectiveDeduction), 
     sulphurDeduction: 0,
     adjustedRate: cleanNum(adjustedRate),
     taxDeduction: cleanNum(taxDeduction),
@@ -125,6 +153,8 @@ export function calculateSettlement(dispatch: Dispatch, settings?: AppSettings |
     totalCost: cleanNum(totalCost),
     netProfit: cleanNum(netProfit),
     taxMethod: activeTaxMethod,
+    gcvPremium: cleanNum(effectivePremium),
+    isProrata,
   };
 }
 
@@ -226,7 +256,10 @@ export function calculatePartyBalance(dispatches: Dispatch[], payments: Payment[
   const netPaymentsReceived = totalPaymentsReceived - totalPaymentsPaid;
   const outstandingBalance = Math.round(totalBilled - netPaymentsReceived);
 
-  const isCleared = dispatches.length > 0 && Math.abs(outstandingBalance) < 50;
+  const nonDeletedDispatches = safeDispatches.filter((d) => !d?.deleted);
+  const nonDeletedPayments = safePayments.filter((p) => !p?.deleted);
+
+  const isCleared = nonDeletedDispatches.length > 0 && Math.abs(outstandingBalance) < 50;
   const isReceivable = outstandingBalance > 50;
   const isAdvance = outstandingBalance < -50;
 
@@ -241,8 +274,8 @@ export function calculatePartyBalance(dispatches: Dispatch[], payments: Payment[
     isCleared,
     totalTons,
     totalProfit,
-    dispatchesCount: dispatches.length,
-    paymentsCount: payments.length,
+    dispatchesCount: nonDeletedDispatches.length,
+    paymentsCount: nonDeletedPayments.length,
   };
 }
 
@@ -277,4 +310,116 @@ export function calculateTransitLoss(dispatch: Dispatch): {
     isPending,
   };
 }
+
+export interface LotStockInfo {
+  lot: InventoryLot;
+  usedWeight: number;
+  dispatchedWeight: number;
+  remainingWeight: number;
+  isOverdrawn: boolean;
+  capitalTiedUp: number;
+}
+
+/**
+ * Calculates purchase total cost and landed cost per received ton.
+ * Formula: totalCost = billedWeight * purchaseRate
+ * landedRate = receivedWeight > 0 ? totalCost / receivedWeight : purchaseRate
+ * (e.g. 30 tons billed @ 20,000, 28.5 tons received -> 600,000 / 28.5 = 21,052.63)
+ */
+export function calculateLandedCost(billedWeight: number, receivedWeight: number, purchaseRate: number) {
+  const bWeight = cleanNum(billedWeight);
+  const rWeight = cleanNum(receivedWeight);
+  const pRate = cleanNum(purchaseRate);
+  const totalCost = bWeight * pRate;
+  const landedRate = rWeight > 0 ? totalCost / rWeight : pRate;
+  return {
+    totalCost: Math.round(totalCost * 100) / 100,
+    landedRate: Math.round(landedRate * 100) / 100,
+  };
+}
+
+/**
+ * Derives dynamic inventory stock for a lot based on coal input usages across all non-deleted dispatches.
+ * Avoids storing mutable remaining stock in database to prevent multi-device race conditions and double-deductions.
+ */
+export function calculateLotStock(lot: InventoryLot, dispatches: Dispatch[]): LotStockInfo {
+  const safeDispatches = Array.isArray(dispatches) ? dispatches : [];
+  let usedWeight = 0;
+  for (const d of safeDispatches) {
+    if (d?.deleted) continue;
+    if (Array.isArray(d?.coalInputs)) {
+      for (const input of d.coalInputs) {
+        if (input?.lotId === lot.id) {
+          usedWeight += cleanNum(input.weight);
+        }
+      }
+    }
+  }
+  const remainingWeight = cleanNum(lot.receivedWeight) - usedWeight;
+  const isOverdrawn = remainingWeight < -0.001;
+  const capitalTiedUp = remainingWeight > 0 ? remainingWeight * cleanNum(lot.landedRate) : 0;
+  const roundedUsed = Math.round(usedWeight * 100) / 100;
+  return {
+    lot,
+    usedWeight: roundedUsed,
+    dispatchedWeight: roundedUsed,
+    remainingWeight: Math.round(remainingWeight * 100) / 100,
+    isOverdrawn,
+    capitalTiedUp: Math.round(capitalTiedUp),
+  };
+}
+
+/**
+ * Aggregates overall inventory metrics (stock, capital, supplier breakdown).
+ */
+export function calculateInventoryTotals(lots: InventoryLot[], dispatches: Dispatch[]) {
+  const activeLots = (lots || []).filter((l) => !l.deleted);
+  let totalBilledTons = 0;
+  let totalReceivedTons = 0;
+  let totalUsedTons = 0;
+  let totalRemainingTons = 0;
+  let totalCapitalTiedUp = 0;
+  let overdrawnLotsCount = 0;
+  const supplierMap = new Map<string, { tons: number; capital: number; lotsCount: number }>();
+
+  for (const lot of activeLots) {
+    totalBilledTons += cleanNum(lot.billedWeight);
+    totalReceivedTons += cleanNum(lot.receivedWeight);
+    const stock = calculateLotStock(lot, dispatches);
+    totalUsedTons += stock.usedWeight;
+    totalRemainingTons += stock.remainingWeight;
+    totalCapitalTiedUp += stock.capitalTiedUp;
+    if (stock.isOverdrawn) {
+      overdrawnLotsCount += 1;
+    }
+
+    const sName = lot.supplier?.trim() || 'Unknown Supplier';
+    const existing = supplierMap.get(sName) || { tons: 0, capital: 0, lotsCount: 0 };
+    existing.tons += stock.remainingWeight;
+    existing.capital += stock.capitalTiedUp;
+    existing.lotsCount += 1;
+    supplierMap.set(sName, existing);
+  }
+
+  const avgLandedCost = totalRemainingTons > 0 ? totalCapitalTiedUp / totalRemainingTons : 0;
+  const roundedRemaining = Math.round(totalRemainingTons * 100) / 100;
+
+  return {
+    totalBilledTons: Math.round(totalBilledTons * 100) / 100,
+    totalReceivedTons: Math.round(totalReceivedTons * 100) / 100,
+    totalUsedTons: Math.round(totalUsedTons * 100) / 100,
+    totalRemainingTons: roundedRemaining,
+    totalRemainingStock: roundedRemaining,
+    totalCapitalTiedUp: Math.round(totalCapitalTiedUp),
+    totalActiveLots: activeLots.length,
+    overdrawnLotsCount,
+    avgLandedCost: Math.round(avgLandedCost * 100) / 100,
+    suppliers: Array.from(supplierMap.entries()).map(([name, data]) => ({
+      name,
+      ...data,
+      avgCost: data.tons > 0 ? data.capital / data.tons : 0,
+    })),
+  };
+}
+
 

@@ -15,10 +15,10 @@ import {
   Calculator,
   Plus,
 } from 'lucide-react';
-import type { Dispatch, CoalInput, Party, PurchaseOrder, AppSettings } from '../types';
-import { getDispatch, saveDispatch, deleteDispatch, getParties, getPartyPurchaseOrders, getDispatches, saveParty, getSettings, cleanNumber } from '../lib/db';
+import type { Dispatch, CoalInput, Party, PurchaseOrder, AppSettings, InventoryLot } from '../types';
+import { getDispatch, saveDispatch, deleteDispatch, getParties, getPartyPurchaseOrders, getDispatches, getLots, saveParty, getSettings, cleanNumber } from '../lib/db';
 import { getTodayDateString } from '../utils/dateUtils';
-import { calculateSettlement } from '../utils/calculations';
+import { calculateSettlement, calculateLotStock } from '../utils/calculations';
 import { getCurrencySymbol, formatAmountNumber } from '../utils/currency';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import IOSDatePicker from '../components/IOSDatePicker';
@@ -58,6 +58,8 @@ const emptyDispatch: Omit<Dispatch, 'id' | 'createdAt' | 'updatedAt'> = {
   manualDeduction: 0,
   manualPremium: 0,
   manualTax: 0,
+  gcvAdjustment: 'manual',
+  gcvAdjustmentRounding: 'rupee',
   taxMethod: 'manual',
   taxSalesPercent: undefined,
   taxIncomePercent: undefined,
@@ -83,6 +85,7 @@ export default function DispatchForm() {
   const [parties, setParties] = useState<Party[]>([]);
   const [pos, setPos] = useState<PurchaseOrder[]>([]);
   const [allDispatches, setAllDispatches] = useState<Dispatch[]>([]);
+  const [lots, setLots] = useState<InventoryLot[]>([]);
   const [settings, setSettings] = useState<AppSettings | undefined>(undefined);
   const [isLoading, setIsLoading] = useState(() => dispatchId !== 'new');
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
@@ -118,11 +121,28 @@ export default function DispatchForm() {
     getDispatches().then((d) => {
       if (active) setAllDispatches(d);
     });
+    getLots().then((l) => {
+      if (active) setLots(l);
+    });
 
     const currentPartyId = partyId;
     if (currentPartyId) {
       getPartyPurchaseOrders(currentPartyId).then((orders) => {
-        if (active) setPos(orders);
+        if (active) {
+          setPos(orders);
+          if (dispatchId === 'new' && orders.length > 0) {
+            const activePo = orders.find(p => p.isActive) || orders[0];
+            setDispatch(prev => prev ? {
+              ...prev,
+              poId: activePo.id,
+              targetGcv: activePo.targetGcv || prev.targetGcv,
+              baseRate: activePo.baseRate || prev.baseRate,
+              commissionPerTon: activePo.commissionPerTon ?? prev.commissionPerTon,
+              gcvAdjustment: activePo.gcvAdjustment || prev.gcvAdjustment || 'manual',
+              gcvAdjustmentRounding: activePo.gcvAdjustmentRounding || prev.gcvAdjustmentRounding || 'rupee',
+            } : null);
+          }
+        }
       });
     }
 
@@ -133,6 +153,8 @@ export default function DispatchForm() {
           const cleanDispatch: Omit<Dispatch, 'createdAt' | 'updatedAt'> = {
             ...emptyDispatch,
             ...data,
+            gcvAdjustment: data.gcvAdjustment || 'manual',
+            gcvAdjustmentRounding: data.gcvAdjustmentRounding || 'rupee',
             taxSalesPercent: data.taxSalesPercent !== undefined
               ? data.taxSalesPercent
               : (data.taxMethod === 'formula_18_5' ? 18 : undefined),
@@ -310,6 +332,8 @@ export default function DispatchForm() {
         targetGcv: activePo.targetGcv || prev.targetGcv,
         baseRate: activePo.baseRate || prev.baseRate,
         commissionPerTon: activePo.commissionPerTon ?? prev.commissionPerTon,
+        gcvAdjustment: activePo.gcvAdjustment || prev.gcvAdjustment || 'manual',
+        gcvAdjustmentRounding: activePo.gcvAdjustmentRounding || prev.gcvAdjustmentRounding || 'rupee',
       } : prev);
     } else {
       setDispatch(prev => prev ? { ...prev, partyId: newPartyId, poId: '' } : prev);
@@ -325,6 +349,8 @@ export default function DispatchForm() {
         targetGcv: po.targetGcv || prev.targetGcv,
         baseRate: po.baseRate || prev.baseRate,
         commissionPerTon: po.commissionPerTon ?? prev.commissionPerTon,
+        gcvAdjustment: po.gcvAdjustment || prev.gcvAdjustment || 'manual',
+        gcvAdjustmentRounding: po.gcvAdjustmentRounding || prev.gcvAdjustmentRounding || 'rupee',
       } : prev);
     } else {
       setDispatch(prev => prev ? { ...prev, poId } : prev);
@@ -701,6 +727,116 @@ export default function DispatchForm() {
                   </div>
                 </div>
 
+                {/* Inventory Lot link selector if lots exist */}
+                {lots.length > 0 && (
+                  <div style={{ marginBottom: 10 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                      <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--label-secondary)', textTransform: 'uppercase', letterSpacing: 0.3 }}>
+                        Inventory Lot Link
+                      </span>
+                      {input.lotId && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            updateCoalInput(input.id, 'lotId', undefined);
+                          }}
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            color: 'var(--ios-blue)',
+                            fontSize: 11,
+                            fontWeight: 600,
+                            cursor: 'pointer',
+                          }}
+                        >
+                          Switch to Manual
+                        </button>
+                      )}
+                    </div>
+                    <select
+                      value={input.lotId || ''}
+                      onChange={(e) => {
+                        const selectedId = e.target.value;
+                        if (!selectedId) {
+                          updateCoalInput(input.id, 'lotId', undefined);
+                          return;
+                        }
+                        const selectedLot = lots.find((l) => l.id === selectedId);
+                        if (selectedLot) {
+                          setDispatch((prev) => {
+                            if (!prev) return prev;
+                            return {
+                              ...prev,
+                              coalInputs: prev.coalInputs.map((ci) =>
+                                ci.id === input.id
+                                  ? {
+                                      ...ci,
+                                      lotId: selectedLot.id,
+                                      sourceName: selectedLot.supplier + (selectedLot.grade ? ` (${selectedLot.grade})` : ''),
+                                      purchaseRate: selectedLot.landedRate,
+                                    }
+                                  : ci
+                              ),
+                            };
+                          });
+                        }
+                      }}
+                      style={{
+                        width: '100%',
+                        padding: '8px 10px',
+                        borderRadius: 8,
+                        background: 'var(--fill-tertiary)',
+                        border: '0.5px solid var(--separator)',
+                        color: 'var(--label-primary)',
+                        fontSize: 13,
+                        outline: 'none',
+                      }}
+                    >
+                      <option value="">-- Manual / Custom Source --</option>
+                      {lots.map((l) => {
+                        const lotStock = calculateLotStock(l, allDispatches);
+                        return (
+                          <option key={l.id} value={l.id}>
+                            {l.supplier} {l.grade ? `(${l.grade})` : ''} - Landed: {curSym} {l.landedRate.toFixed(2)}/t ({lotStock.remainingWeight.toFixed(1)}t available)
+                          </option>
+                        );
+                      })}
+                    </select>
+
+                    {/* Stock status indicator if lot is linked */}
+                    {input.lotId && (() => {
+                      const linkedLot = lots.find((l) => l.id === input.lotId);
+                      if (!linkedLot) return null;
+                      const lotStock = calculateLotStock(linkedLot, allDispatches);
+                      const isOverdraw = (input.weight || 0) > lotStock.remainingWeight;
+
+                      return (
+                        <div
+                          style={{
+                            marginTop: 6,
+                            padding: '6px 8px',
+                            borderRadius: 6,
+                            background: isOverdraw ? 'rgba(255, 59, 48, 0.1)' : 'var(--fill-quaternary)',
+                            border: `0.5px solid ${isOverdraw ? 'rgba(255, 59, 48, 0.3)' : 'var(--separator)'}`,
+                            fontSize: 11,
+                            color: isOverdraw ? '#ff3b30' : 'var(--label-secondary)',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                          }}
+                        >
+                          <span>
+                            📦 Yard Stock: <strong>{lotStock.remainingWeight.toFixed(1)}t available</strong> (Landed: {curSym} {linkedLot.landedRate.toFixed(2)}/t)
+                          </span>
+                          {isOverdraw && (
+                            <span style={{ fontWeight: 600 }}>⚠️ Exceeds yard stock</span>
+                          )}
+                        </div>
+                      );
+                    })()}
+                  </div>
+                )}
+
                 <FloatingField
                   label="Coal Source / Grade"
                   value={input.sourceName}
@@ -1031,64 +1167,191 @@ export default function DispatchForm() {
         </div>
       </div>
 
-      {/* ── Section 5.5: Manual Adjustments ── */}
+      {/* ── Section 5.5: Pricing Adjustments & Tax ── */}
       <div className="ios-group">
         <div className="ios-group-title" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <SlidersHorizontal size={16} /> Manual Adjustments
+          <SlidersHorizontal size={16} /> Pricing Adjustments & Tax
         </div>
         <div style={{ padding: '0 16px' }}>
-          {/* Pro-Rata Quick-Fill Helper Buttons */}
-          {(proRataDeduction > 0 || proRataPremium > 0) && (
-            <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
-              {proRataDeduction > 0 && (
-                <button
-                  type="button"
-                  onClick={() => handleChange('manualDeduction', proRataDeduction)}
-                  style={{
-                    flex: 1,
-                    padding: '10px 14px',
-                    borderRadius: 8,
-                    border: 'none',
-                    background: 'var(--ios-blue)',
-                    color: 'white',
-                    fontSize: 12,
-                    fontWeight: 600,
-                    cursor: 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 6
-                  }}
-                >
-                  Auto Pro-Rata GCV Deduction: {curSym} {proRataDeduction}/t
-                </button>
-              )}
-              {proRataPremium > 0 && (
-                <button
-                  type="button"
-                  onClick={() => handleChange('manualPremium', proRataPremium)}
-                  style={{
-                    padding: '6px 12px',
-                    borderRadius: 8,
-                    border: 'none',
-                    background: 'var(--ios-green)',
-                    color: 'white',
-                    fontSize: 12,
-                    fontWeight: 600,
-                    cursor: 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 8
-                  }}
-                >
-                  Auto Pro-Rata GCV Premium: {curSym} {proRataPremium}/t
-                </button>
-              )}
+          {/* GCV Adjustment Mode Switcher */}
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ display: 'flex', background: 'var(--fill-tertiary)', borderRadius: 10, padding: 3, marginBottom: 8 }}>
+              <button
+                type="button"
+                onClick={() => handleChange('gcvAdjustment', 'manual')}
+                style={{
+                  flex: 1,
+                  padding: '7px 10px',
+                  borderRadius: 8,
+                  border: 'none',
+                  fontSize: 12,
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  background: dispatch.gcvAdjustment !== 'prorata' ? 'var(--bg-card)' : 'transparent',
+                  color: dispatch.gcvAdjustment !== 'prorata' ? 'var(--label-primary)' : 'var(--label-secondary)',
+                  boxShadow: dispatch.gcvAdjustment !== 'prorata' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
+                }}
+              >
+                Manual Adjustments
+              </button>
+              <button
+                type="button"
+                onClick={() => handleChange('gcvAdjustment', 'prorata')}
+                style={{
+                  flex: 1,
+                  padding: '7px 10px',
+                  borderRadius: 8,
+                  border: 'none',
+                  fontSize: 12,
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  background: dispatch.gcvAdjustment === 'prorata' ? 'var(--ios-blue)' : 'transparent',
+                  color: dispatch.gcvAdjustment === 'prorata' ? 'white' : 'var(--label-secondary)',
+                  boxShadow: dispatch.gcvAdjustment === 'prorata' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
+                }}
+              >
+                Auto Pro-Rata Formula
+              </button>
             </div>
-          )}
+
+            {/* Dynamic Pro-Rata Formula active banner */}
+            {dispatch.gcvAdjustment === 'prorata' ? (
+              <div
+                style={{
+                  background: 'var(--fill-quaternary)',
+                  borderRadius: 10,
+                  padding: '10px 12px',
+                  marginBottom: 12,
+                  border: '0.5px solid var(--separator)',
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--ios-blue)', textTransform: 'uppercase', letterSpacing: 0.3 }}>
+                    Dynamic Contract Pro-Rata
+                  </span>
+                  <div style={{ display: 'flex', gap: 4 }}>
+                    <button
+                      type="button"
+                      onClick={() => handleChange('gcvAdjustmentRounding', 'rupee')}
+                      style={{
+                        padding: '2px 8px',
+                        borderRadius: 6,
+                        border: '0.5px solid var(--separator)',
+                        fontSize: 11,
+                        fontWeight: 600,
+                        cursor: 'pointer',
+                        background: dispatch.gcvAdjustmentRounding !== 'paisa' ? 'var(--fill-primary)' : 'transparent',
+                        color: dispatch.gcvAdjustmentRounding !== 'paisa' ? 'var(--label-primary)' : 'var(--label-secondary)',
+                      }}
+                    >
+                      Whole Rs
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleChange('gcvAdjustmentRounding', 'paisa')}
+                      style={{
+                        padding: '2px 8px',
+                        borderRadius: 6,
+                        border: '0.5px solid var(--separator)',
+                        fontSize: 11,
+                        fontWeight: 600,
+                        cursor: 'pointer',
+                        background: dispatch.gcvAdjustmentRounding === 'paisa' ? 'var(--fill-primary)' : 'transparent',
+                        color: dispatch.gcvAdjustmentRounding === 'paisa' ? 'var(--label-primary)' : 'var(--label-secondary)',
+                      }}
+                    >
+                      Paisa (0.01)
+                    </button>
+                  </div>
+                </div>
+
+                <div style={{ fontSize: 12, color: 'var(--label-secondary)', marginBottom: 6 }}>
+                  Formula: Base Rate × (1 − Lab GCV ÷ Target GCV)
+                </div>
+
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 13, paddingTop: 4, borderTop: '0.5px solid var(--separator)' }}>
+                  <span>
+                    {settlement.gcvDeduction > 0
+                      ? 'Live GCV Deduction:'
+                      : (settlement.gcvPremium || 0) > 0
+                      ? 'Live GCV Premium:'
+                      : 'GCV Adjustment:'}
+                  </span>
+                  <strong
+                    style={{
+                      color:
+                        settlement.gcvDeduction > 0
+                          ? '#ff3b30'
+                          : (settlement.gcvPremium || 0) > 0
+                          ? 'var(--ios-green)'
+                          : 'var(--label-secondary)',
+                      fontSize: 14,
+                    }}
+                    className="tabular-nums"
+                  >
+                    {settlement.gcvDeduction > 0
+                      ? `- ${curSym} ${settlement.gcvDeduction}/t`
+                      : (settlement.gcvPremium || 0) > 0
+                      ? `+ ${curSym} ${settlement.gcvPremium}/t`
+                      : 'Rs 0/t (At or near target)'}
+                  </strong>
+                </div>
+              </div>
+            ) : (
+              /* Pro-Rata Quick-Fill Helper Buttons for manual mode */
+              (proRataDeduction > 0 || proRataPremium > 0) && (
+                <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+                  {proRataDeduction > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => handleChange('manualDeduction', proRataDeduction)}
+                      style={{
+                        flex: 1,
+                        padding: '10px 14px',
+                        borderRadius: 8,
+                        border: 'none',
+                        background: 'var(--ios-blue)',
+                        color: 'white',
+                        fontSize: 12,
+                        fontWeight: 600,
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 6
+                      }}
+                    >
+                      Copy Pro-Rata GCV Deduction: {curSym} {proRataDeduction}/t
+                    </button>
+                  )}
+                  {proRataPremium > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => handleChange('manualPremium', proRataPremium)}
+                      style={{
+                        padding: '6px 12px',
+                        borderRadius: 8,
+                        border: 'none',
+                        background: 'var(--ios-green)',
+                        color: 'white',
+                        fontSize: 12,
+                        fontWeight: 600,
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 8
+                      }}
+                    >
+                      Copy Pro-Rata GCV Premium: {curSym} {proRataPremium}/t
+                    </button>
+                  )}
+                </div>
+              )
+            )}
+          </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
             <FloatingField
-              label="Deduction"
+              label={dispatch.gcvAdjustment === 'prorata' ? 'Other Deduction' : 'Deduction'}
               type="number"
               suffix={`${curSym}/t`}
               value={dispatch.manualDeduction || ''}
@@ -1096,7 +1359,7 @@ export default function DispatchForm() {
               placeholder="0"
             />
             <FloatingField
-              label="Premium"
+              label={dispatch.gcvAdjustment === 'prorata' ? 'Other Premium' : 'Premium'}
               type="number"
               suffix={`${curSym}/t`}
               value={dispatch.manualPremium || ''}

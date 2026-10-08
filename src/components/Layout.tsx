@@ -10,6 +10,7 @@ import { playPopSound, playSuccessSound } from '../utils/delight';
 import {
   LayoutDashboard,
   Building2,
+  Package,
   FileSpreadsheet,
   Settings as SettingsIcon,
   Wifi,
@@ -87,7 +88,7 @@ export default function Layout() {
         return;
       }
 
-      // 4. If on a secondary tab (/parties, /entries, /settings)
+      // 4. If on a secondary tab (/parties, /inventory, /entries, /settings)
       if (currentPath !== '/') {
         navigate('/');
         return;
@@ -262,9 +263,10 @@ export default function Layout() {
     setTimeout(() => setToastMessage(null), 2500);
   };
 
-  // Active 4-Tab detection
+  // Active 5-Tab detection
   const isSummary = location.pathname === '/';
   const isParties = location.pathname.startsWith('/parties') && !location.pathname.includes('/dispatch');
+  const isInventory = location.pathname.startsWith('/inventory');
   const isEntries = location.pathname === '/entries' || location.pathname.includes('/dispatch');
   const isSettings = location.pathname === '/settings';
 
@@ -445,7 +447,22 @@ export default function Layout() {
             <span className="ios-tab-label">Parties</span>
           </NavLink>
 
-          {/* Tab 3: All Entries */}
+          {/* Tab 3: Inventory */}
+          <NavLink
+            to="/inventory"
+            onClick={() => playPopSound()}
+            className={`ios-tab-item ${isInventory ? 'active' : ''}`}
+          >
+            <div className="ios-tab-pill">
+              <Package
+                className="ios-tab-icon"
+                strokeWidth={isInventory ? 2.4 : 1.7}
+              />
+            </div>
+            <span className="ios-tab-label">Inventory</span>
+          </NavLink>
+
+          {/* Tab 4: All Entries */}
           <NavLink
             to="/entries"
             onClick={() => playPopSound()}
