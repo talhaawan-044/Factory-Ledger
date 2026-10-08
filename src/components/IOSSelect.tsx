@@ -37,6 +37,12 @@ export interface IOSSelectProps<T extends string | number = string> {
     icon?: React.ReactNode;
     onClick: () => void;
   };
+  customTrigger?: (triggerProps: {
+    open: () => void;
+    selectedOption?: IOSSelectOption<T>;
+    isOpen: boolean;
+    displayLabel: string;
+  }) => React.ReactNode;
 }
 
 export default function IOSSelect<T extends string | number = string>({
@@ -59,6 +65,7 @@ export default function IOSSelect<T extends string | number = string>({
   className = '',
   emptyText = 'No options available',
   actionButton,
+  customTrigger,
   error,
 }: IOSSelectProps<T>) {
   const [isOpen, setIsOpen] = useState(false);
@@ -130,7 +137,14 @@ export default function IOSSelect<T extends string | number = string>({
   return (
     <>
       {/* ── Trigger Component ── */}
-      {floating ? (
+      {customTrigger ? (
+        customTrigger({
+          open: handleOpen,
+          selectedOption,
+          isOpen,
+          displayLabel: displayLabel || (placeholder || ''),
+        })
+      ) : floating ? (
         <div style={{ marginBottom: error ? 14 : 12, width: '100%' }}>
           <div
             className={`floating-field ios-select-trigger ${isOpen ? 'is-focused' : ''} ${isFloated ? 'is-floated' : ''} ${disabled ? 'opacity-50 pointer-events-none' : ''} ${className}`}

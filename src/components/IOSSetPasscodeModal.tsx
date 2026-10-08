@@ -213,8 +213,8 @@ export default function IOSSetPasscodeModal({
                 width: 52,
                 height: 52,
                 borderRadius: '50%',
-                background: 'rgba(52, 199, 89, 0.15)',
-                color: 'var(--ios-green, #34C759)',
+                background: 'var(--ios-green)',
+                color: 'white',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
@@ -224,19 +224,19 @@ export default function IOSSetPasscodeModal({
               <ShieldCheck size={28} />
             </div>
 
-            <h3 style={{ fontSize: 18, fontWeight: 700, color: '#FFFFFF', margin: '0 0 6px', textAlign: 'center' }}>
+            <h3 style={{ fontSize: 18, fontWeight: 700, color: 'var(--label-primary)', margin: '0 0 6px', textAlign: 'center' }}>
               App Lock Protected!
             </h3>
 
-            <p style={{ fontSize: 13, color: 'var(--label-secondary, #8E8E93)', textAlign: 'center', margin: '0 0 16px', lineHeight: 1.4 }}>
+            <p style={{ fontSize: 13, color: 'var(--label-secondary)', textAlign: 'center', margin: '0 0 16px', lineHeight: 1.4 }}>
               Save your secret <strong>Emergency Recovery Key</strong>. If you ever forget your PIN, this is the only way to reset it offline.
             </p>
 
             <div
               style={{
                 width: '100%',
-                background: 'var(--fill-quaternary, #262730)',
-                border: '1px solid var(--separator-opaque, #33343F)',
+                background: 'var(--fill-quaternary)',
+                border: '1px solid var(--separator)',
                 borderRadius: 16,
                 padding: '16px 14px',
                 display: 'flex',
@@ -246,7 +246,7 @@ export default function IOSSetPasscodeModal({
                 marginBottom: 20,
               }}
             >
-              <div style={{ fontFamily: 'monospace', fontSize: 22, fontWeight: 800, letterSpacing: 2.5, color: '#FFFFFF' }}>
+              <div style={{ fontFamily: 'monospace', fontSize: 22, fontWeight: 800, letterSpacing: 2.5, color: 'var(--label-primary)' }}>
                 {generatedKey}
               </div>
 
@@ -264,9 +264,9 @@ export default function IOSSetPasscodeModal({
                   display: 'flex',
                   alignItems: 'center',
                   gap: 6,
-                  background: keyCopied ? 'rgba(52, 199, 89, 0.16)' : 'var(--fill-tertiary, #2C2D35)',
-                  border: `1px solid ${keyCopied ? 'var(--ios-green, #34C759)' : 'var(--separator-opaque, #3A3B45)'}`,
-                  color: keyCopied ? 'var(--ios-green, #34C759)' : '#FFFFFF',
+                  background: keyCopied ? 'rgba(52, 199, 89, 0.16)' : 'var(--fill-secondary)',
+                  border: `1px solid ${keyCopied ? 'var(--ios-green)' : 'var(--separator)'}`,
+                  color: keyCopied ? 'var(--ios-green)' : 'var(--label-primary)',
                   borderRadius: 10,
                   padding: '7px 16px',
                   fontSize: 13,

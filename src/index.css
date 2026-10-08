@@ -1816,14 +1816,14 @@ body:has(textarea:focus) .ios-tabbar {
 .ios-toast-banner {
   position: fixed;
   top: max(16px, env(safe-area-inset-top, 16px));
-  left: 12px;
-  right: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: calc(100% - 24px);
   max-width: 440px;
-  margin: 0 auto;
   z-index: 999999;
   background: rgba(28, 28, 30, 0.95);
   color: #FFFFFF;
-  padding: 12px 16px;
+  padding: 12px 18px;
   border-radius: 16px;
   font-size: 14px;
   font-weight: 600;
@@ -1838,6 +1838,18 @@ body:has(textarea:focus) .ios-tabbar {
   gap: 8px;
   animation: fadeIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
   pointer-events: none;
+}
+
+.ios-toast-banner svg {
+  flex-shrink: 0;
+  display: inline-block;
+  vertical-align: middle;
+}
+
+.ios-toast-banner span {
+  text-align: center;
+  line-height: 1.35;
+  display: inline-block;
 }
 
 .dark .ios-toast-banner {

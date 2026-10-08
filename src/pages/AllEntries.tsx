@@ -11,11 +11,13 @@ import {
     ChevronRight,
     ArrowUpRight,
     ArrowDown,
-    ArrowUp
+    ArrowUp,
+    ChevronDown
 } from 'lucide-react';
 import { playPopSound, triggerConfetti } from '../utils/delight';
 import ExportLedgerDropdown from '../components/ExportLedgerDropdown';
 import DispatchPreviewModal from '../components/DispatchPreviewModal';
+import IOSSelect from '../components/IOSSelect';
 
 export default function AllEntries() {
     const [dispatches, setDispatches] = useState<Dispatch[]>([]);
@@ -288,29 +290,41 @@ export default function AllEntries() {
                         gap: 2
                     }}
                 >
-                    <select
+                    <IOSSelect
+                        label="Sort Dispatches"
+                        title="Sort Dispatches"
                         value={sortBy}
-                        onChange={(e) => {
-                            playPopSound();
-                            setSortBy(e.target.value as any);
-                        }}
-                        style={{
-                            border: 'none',
-                            background: 'transparent',
-                            color: 'var(--label-primary)',
-                            fontSize: 12,
-                            fontWeight: 600,
-                            padding: '4px 4px',
-                            outline: 'none',
-                            cursor: 'pointer'
-                        }}
-                        aria-label="Sort Dispatches"
-                    >
-                        <option value="date">Date</option>
-                        <option value="truck">Truck</option>
-                        <option value="weight">Weight</option>
-                        <option value="revenue">Revenue</option>
-                    </select>
+                        onChange={(val) => setSortBy(val as any)}
+                        options={[
+                            { value: 'date', label: 'Date' },
+                            { value: 'truck', label: 'Truck' },
+                            { value: 'weight', label: 'Weight' },
+                            { value: 'revenue', label: 'Revenue' },
+                        ]}
+                        customTrigger={({ open, displayLabel }) => (
+                            <button
+                                type="button"
+                                onClick={open}
+                                style={{
+                                    border: 'none',
+                                    background: 'transparent',
+                                    color: 'var(--label-primary)',
+                                    fontSize: 12,
+                                    fontWeight: 600,
+                                    padding: '4px 6px',
+                                    outline: 'none',
+                                    cursor: 'pointer',
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: 3,
+                                }}
+                                aria-label="Sort Dispatches"
+                            >
+                                <span>{displayLabel}</span>
+                                <ChevronDown size={13} style={{ color: 'var(--label-tertiary)' }} />
+                            </button>
+                        )}
+                    />
 
                     <button
                         type="button"

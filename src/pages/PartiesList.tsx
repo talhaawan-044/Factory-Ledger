@@ -20,12 +20,14 @@ import {
   ArchiveRestore,
   ArrowDown,
   ArrowUp,
-  Check
+  Check,
+  ChevronDown
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import PartyModalSheet from '../components/PartyModalSheet';
 import PartyGlyph from '../components/PartyGlyph';
 import IOSConfirmModal from '../components/IOSConfirmModal';
+import IOSSelect from '../components/IOSSelect';
 
 export default function PartiesList() {
   const [parties, setParties] = useState<Party[]>([]);
@@ -389,29 +391,41 @@ export default function PartiesList() {
               gap: 2
             }}
           >
-            <select
+            <IOSSelect
+              label="Sort Parties"
+              title="Sort Parties"
               value={sortBy}
-              onChange={(e) => {
-                playPopSound();
-                setSortBy(e.target.value as any);
-              }}
-              style={{
-                border: 'none',
-                background: 'transparent',
-                color: 'var(--label-primary)',
-                fontSize: 12,
-                fontWeight: 600,
-                padding: '4px 4px',
-                outline: 'none',
-                cursor: 'pointer'
-              }}
-              aria-label="Sort Parties"
-            >
-              <option value="latest_entry">Latest Entry</option>
-              <option value="name">Name</option>
-              <option value="highest_due">Highest Due</option>
-              <option value="highest_adv">Highest Advance</option>
-            </select>
+              onChange={(val) => setSortBy(val as any)}
+              options={[
+                { value: 'latest_entry', label: 'Latest Entry' },
+                { value: 'name', label: 'Name' },
+                { value: 'highest_due', label: 'Highest Due' },
+                { value: 'highest_adv', label: 'Highest Advance' },
+              ]}
+              customTrigger={({ open, displayLabel }) => (
+                <button
+                  type="button"
+                  onClick={open}
+                  style={{
+                    border: 'none',
+                    background: 'transparent',
+                    color: 'var(--label-primary)',
+                    fontSize: 12,
+                    fontWeight: 600,
+                    padding: '4px 6px',
+                    outline: 'none',
+                    cursor: 'pointer',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 3,
+                  }}
+                  aria-label="Sort Parties"
+                >
+                  <span>{displayLabel}</span>
+                  <ChevronDown size={13} style={{ color: 'var(--label-tertiary)' }} />
+                </button>
+              )}
+            />
 
             <button
               type="button"
