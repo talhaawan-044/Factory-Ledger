@@ -88,6 +88,12 @@ export default function Layout() {
         return;
       }
 
+      // If inside a mine ledger (/inventory/:mineId)
+      if (currentPath.startsWith('/inventory/') && currentPath !== '/inventory') {
+        navigate('/inventory');
+        return;
+      }
+
       // 4. If on a secondary tab (/parties, /inventory, /entries, /settings)
       if (currentPath !== '/') {
         navigate('/');

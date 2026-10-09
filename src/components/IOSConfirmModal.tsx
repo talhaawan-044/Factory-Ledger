@@ -10,11 +10,12 @@ export interface IOSConfirmModalProps {
   message?: string;
   confirmText?: string;
   cancelText?: string;
+  singleButton?: boolean;
   destructive?: boolean;
   countdownSeconds?: number;
   icon?: 'trash' | 'warning' | 'none';
   onConfirm: () => void | Promise<void>;
-  onCancel: () => void;
+  onCancel?: () => void;
 }
 
 export default function IOSConfirmModal({
@@ -23,13 +24,15 @@ export default function IOSConfirmModal({
   message,
   confirmText = 'Delete',
   cancelText = 'Cancel',
+  singleButton = false,
   destructive = true,
   countdownSeconds = 2,
   icon = 'trash',
   onConfirm,
   onCancel,
 }: IOSConfirmModalProps) {
-  const [countdown, setCountdown] = useState(countdownSeconds);
+  const initialCountdown = singleButton ? 0 : countdownSeconds;
+  const [countdown, setCountdown] = useState(initialCountdown);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const modalRef = useRef<HTMLDivElement>(null);
   const GLASS_RADIUS = 24;
@@ -73,7 +76,11 @@ export default function IOSConfirmModal({
 
   const handleCancel = () => {
     playPopSound();
-    onCancel();
+    if (onCancel) {
+      onCancel();
+    } else {
+      onConfirm();
+    }
   };
 
   const content = (
@@ -190,18 +197,20 @@ export default function IOSConfirmModal({
             )}
           </button>
 
-          <button
-            type="button"
-            onClick={handleCancel}
-            className="ios-confirm-action is-cancel"
-            style={{
-              borderTop: '0.5px solid var(--separator)',
-              color: 'var(--ios-blue)',
-              fontWeight: 500,
-            }}
-          >
-            {cancelText}
-          </button>
+          {!singleButton && cancelText && (
+            <button
+              type="button"
+              onClick={handleCancel}
+              className="ios-confirm-action is-cancel"
+              style={{
+                borderTop: '0.5px solid var(--separator)',
+                color: 'var(--ios-blue)',
+                fontWeight: 500,
+              }}
+            >
+              {cancelText}
+            </button>
+          )}
         </div>
       </div>
     </>

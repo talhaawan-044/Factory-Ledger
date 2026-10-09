@@ -1,4 +1,4 @@
-import type { Dispatch, Party, AppSettings, Payment, PurchaseOrder, BackupPayload, InventoryLot } from "../types";
+import type { Dispatch, Party, AppSettings, Payment, PurchaseOrder, BackupPayload, InventoryLot, Mine } from "../types";
 import { getTodayDateString } from "../utils/dateUtils";
 import { idb, requestPersistentStorage } from "./dexieDb";
 
@@ -21,6 +21,7 @@ export const INITIAL_POS: PurchaseOrder[] = [];
 export const INITIAL_DISPATCHES: Dispatch[] = [];
 export const INITIAL_PAYMENTS: Payment[] = [];
 export const INITIAL_LOTS: InventoryLot[] = [];
+export const INITIAL_MINES: Mine[] = [];
 
 export const INITIAL_SETTINGS: AppSettings = {
   userName: "",
@@ -43,7 +44,7 @@ export const INITIAL_SETTINGS: AppSettings = {
   lockTimeout: 0,
 };
 
-export type LedgerEntityType = 'dispatch' | 'party' | 'payment' | 'purchase_order' | 'lot' | 'settings' | 'all';
+export type LedgerEntityType = 'dispatch' | 'party' | 'payment' | 'purchase_order' | 'lot' | 'mine' | 'settings' | 'all';
 export type LedgerMutationAction = 'create' | 'update' | 'delete' | 'restore';
 
 export interface LedgerMutationDetail {
@@ -148,18 +149,20 @@ export async function getLocalRecordCounts(): Promise<{
   payments: number;
   pos: number;
   lots: number;
+  mines: number;
   total: number;
 }> {
   await ensureInitialized();
-  const [parties, dispatches, payments, pos, lots] = await Promise.all([
+  const [parties, dispatches, payments, pos, lots, mines] = await Promise.all([
     idb.parties.filter((p) => !p.deleted).count(),
     idb.dispatches.filter((d) => !d.deleted).count(),
     idb.payments.filter((p) => !p.deleted).count(),
     idb.pos.filter((po) => !po.deleted).count(),
     idb.lots.filter((l) => !l.deleted).count(),
+    idb.mines.filter((m) => !m.deleted).count(),
   ]);
-  const total = parties + dispatches + payments + pos + lots;
-  return { parties, dispatches, payments, pos, lots, total };
+  const total = parties + dispatches + payments + pos + lots + mines;
+  return { parties, dispatches, payments, pos, lots, mines, total };
 }
 
 /**
@@ -249,6 +252,7 @@ export function sanitizeDispatch(d: Partial<Dispatch>): Dispatch {
           weight: cleanNumber(ci.weight),
           purchaseRate: cleanNumber(ci.purchaseRate),
           lotId: ci.lotId || undefined,
+          mineId: ci.mineId || undefined,
         }))
       : [],
     gcvAdjustment: d.gcvAdjustment === 'prorata' ? 'prorata' : (d.gcvAdjustment === 'manual' ? 'manual' : undefined),
@@ -325,14 +329,36 @@ export function sanitizePurchaseOrder(po: Partial<PurchaseOrder>): PurchaseOrder
 export function sanitizeLot(l: Partial<InventoryLot>): InventoryLot {
   const now = Date.now();
   const isDeleted = Boolean(l.deleted);
-  const billedWeight = cleanNumber(l.billedWeight);
-  const receivedWeight = cleanNumber(l.receivedWeight);
-  const purchaseRate = cleanNumber(l.purchaseRate);
-  const landedRate = receivedWeight > 0 ? (billedWeight * purchaseRate) / receivedWeight : purchaseRate;
+  const tonnage = l.tonnage !== undefined ? cleanNumber(l.tonnage) : undefined;
+  const ratePerTon = l.ratePerTon !== undefined ? cleanNumber(l.ratePerTon) : undefined;
+  const billedWeight = tonnage !== undefined ? tonnage : cleanNumber(l.billedWeight);
+  const receivedWeight = l.receivedWeight !== undefined ? cleanNumber(l.receivedWeight) : billedWeight;
+  const purchaseRate = ratePerTon !== undefined ? ratePerTon : cleanNumber(l.purchaseRate);
+  const loadingCost = l.loadingCost !== undefined ? cleanNumber(l.loadingCost) : 0;
+  const freightCost = l.freightCost !== undefined ? cleanNumber(l.freightCost) : 0;
+  const totalCost = (billedWeight * purchaseRate) + loadingCost + freightCost;
+  const totalValue = l.totalValue !== undefined
+    ? cleanNumber(l.totalValue)
+    : Math.round(totalCost);
+  const effectiveWeight = receivedWeight > 0 ? receivedWeight : billedWeight;
+  const landedRate = effectiveWeight > 0 ? totalCost / effectiveWeight : purchaseRate;
 
   return {
     id: l.id || '',
-    supplier: (l.supplier || '').trim(),
+    mineId: l.mineId || undefined,
+    mineName: (l.mineName || '').trim() || undefined,
+    boughtFrom: (l.boughtFrom || '').trim() || undefined,
+    storedAt: (l.storedAt || '').trim() || undefined,
+    tonnage: tonnage !== undefined ? Math.round(tonnage * 100) / 100 : undefined,
+    ratePerTon: ratePerTon !== undefined ? Math.round(ratePerTon * 100) / 100 : undefined,
+    totalValue,
+    loadingCost: loadingCost > 0 ? Math.round(loadingCost) : undefined,
+    freightCost: freightCost > 0 ? Math.round(freightCost) : undefined,
+    usedInDispatchId: l.usedInDispatchId || undefined,
+    usedInDispatchTruck: (l.usedInDispatchTruck || '').trim() || undefined,
+    usedInPartyName: (l.usedInPartyName || '').trim() || undefined,
+    usedInDate: l.usedInDate || undefined,
+    supplier: (l.boughtFrom || l.supplier || '').trim(),
     date: l.date || getTodayDateString(),
     billedWeight: Math.round(billedWeight * 100) / 100,
     receivedWeight: Math.round(receivedWeight * 100) / 100,
@@ -340,13 +366,30 @@ export function sanitizeLot(l: Partial<InventoryLot>): InventoryLot {
     landedRate: Math.round(landedRate * 100) / 100,
     gcv: l.gcv !== undefined && l.gcv !== null ? cleanNumber(l.gcv) : undefined,
     truckNumber: (l.truckNumber || '').trim() || undefined,
-    mineSource: (l.mineSource || '').trim() || undefined,
+    mineSource: (l.mineSource || l.mineName || '').trim() || undefined,
     notes: (l.notes || '').trim() || undefined,
     createdAt: cleanNumber(l.createdAt, now),
     updatedAt: cleanNumber(l.updatedAt, now),
     deleted: isDeleted,
     deletedAt: isDeleted ? cleanNumber(l.deletedAt, now) : undefined,
     dirty: l.dirty !== undefined ? Boolean(l.dirty) : true,
+  };
+}
+
+export function sanitizeMine(m: Partial<Mine>): Mine {
+  const now = Date.now();
+  const isDeleted = Boolean(m.deleted);
+  return {
+    id: m.id || '',
+    name: (m.name || '').trim(),
+    ratePerTon: cleanNumber(m.ratePerTon),
+    location: (m.location || '').trim() || undefined,
+    notes: (m.notes || '').trim() || undefined,
+    createdAt: cleanNumber(m.createdAt, now),
+    updatedAt: cleanNumber(m.updatedAt, now),
+    deleted: isDeleted,
+    deletedAt: isDeleted ? cleanNumber(m.deletedAt, now) : undefined,
+    dirty: m.dirty !== undefined ? Boolean(m.dirty) : true,
   };
 }
 
@@ -449,6 +492,53 @@ export async function saveDispatch(dispatch: Dispatch): Promise<void> {
 
   await idb.dispatches.put(itemToSave);
   notifyLedgerMutation('dispatch', sanitized.id, existing ? 'update' : 'create');
+
+  // Synchronize lots linked to this dispatch
+  const selectedLotIds = new Set(
+    (sanitized.coalInputs || []).map((ci) => ci.lotId).filter(Boolean) as string[]
+  );
+
+  let targetPartyName = sanitized.factoryName;
+  if (sanitized.partyId) {
+    const party = await idb.parties.get(sanitized.partyId);
+    if (party?.name) targetPartyName = party.name;
+  }
+
+  const allLots = await idb.lots.toArray();
+  for (const lot of allLots) {
+    if (lot.deleted) continue;
+    if (selectedLotIds.has(lot.id)) {
+      if (
+        lot.usedInDispatchId !== sanitized.id ||
+        lot.usedInDispatchTruck !== sanitized.truckNumber ||
+        lot.usedInPartyName !== targetPartyName ||
+        lot.usedInDate !== sanitized.date
+      ) {
+        await idb.lots.put({
+          ...lot,
+          usedInDispatchId: sanitized.id,
+          usedInDispatchTruck: sanitized.truckNumber,
+          usedInPartyName: targetPartyName,
+          usedInDate: sanitized.date,
+          updatedAt: now,
+          dirty: true,
+        });
+        notifyLedgerMutation('lot', lot.id, 'update');
+      }
+    } else if (lot.usedInDispatchId === sanitized.id) {
+      // Lot was unlinked / removed from this dispatch's coal recipe
+      await idb.lots.put({
+        ...lot,
+        usedInDispatchId: undefined,
+        usedInDispatchTruck: undefined,
+        usedInPartyName: undefined,
+        usedInDate: undefined,
+        updatedAt: now,
+        dirty: true,
+      });
+      notifyLedgerMutation('lot', lot.id, 'update');
+    }
+  }
 }
 
 export async function deleteDispatch(id: string): Promise<void> {
@@ -484,6 +574,24 @@ export async function deleteDispatch(id: string): Promise<void> {
       dirty: true,
     });
   }
+
+  // Automatically unlink any lots that were linked to this deleted dispatch
+  const allLots = await idb.lots.toArray();
+  for (const lot of allLots) {
+    if (lot.usedInDispatchId === id) {
+      await idb.lots.put({
+        ...lot,
+        usedInDispatchId: undefined,
+        usedInDispatchTruck: undefined,
+        usedInPartyName: undefined,
+        usedInDate: undefined,
+        updatedAt: now,
+        dirty: true,
+      });
+      notifyLedgerMutation('lot', lot.id, 'update');
+    }
+  }
+
   recordTombstone(id);
   notifyLedgerMutation('dispatch', id, 'delete');
 }
@@ -796,10 +904,56 @@ export async function saveLot(lot: InventoryLot): Promise<void> {
 
   await idb.lots.put(itemToSave);
   notifyLedgerMutation('lot', sanitized.id, existing ? 'update' : 'create');
+
+  // Cascade updates to any dispatches consuming this lot so calculations stay in sync
+  if (existing) {
+    const allDispatches = await idb.dispatches.toArray();
+    const effectiveRate = sanitized.landedRate || sanitized.purchaseRate || sanitized.ratePerTon || 0;
+    const effectiveSourceName = sanitized.mineName && (sanitized.boughtFrom || sanitized.supplier)
+      ? `${sanitized.mineName} - ${sanitized.boughtFrom || sanitized.supplier}`
+      : (sanitized.boughtFrom || sanitized.supplier || sanitized.mineName || '');
+
+    for (const disp of allDispatches) {
+      if (disp.deleted) continue;
+      let hasChanges = false;
+      const updatedCoalInputs = (disp.coalInputs || []).map((ci) => {
+        if (ci.lotId === sanitized.id) {
+          hasChanges = true;
+          return {
+            ...ci,
+            purchaseRate: effectiveRate > 0 ? effectiveRate : ci.purchaseRate,
+            sourceName: effectiveSourceName || ci.sourceName,
+          };
+        }
+        return ci;
+      });
+
+      if (hasChanges) {
+        await idb.dispatches.put({
+          ...disp,
+          coalInputs: updatedCoalInputs,
+          updatedAt: now,
+          dirty: true,
+        });
+        notifyLedgerMutation('dispatch', disp.id, 'update');
+      }
+    }
+  }
 }
 
 export async function deleteLot(id: string): Promise<void> {
   await ensureInitialized();
+  const allDispatches = await idb.dispatches.toArray();
+  const linkedDispatches = allDispatches.filter(
+    (d) => !d.deleted && (d.coalInputs || []).some((ci) => ci.lotId === id)
+  );
+  if (linkedDispatches.length > 0) {
+    const truck = linkedDispatches[0].truckNumber || 'N/A';
+    throw new Error(
+      `Cannot delete this stock entry because it is actively used in Dispatch #${truck}. Please remove or replace it in the dispatch first.`
+    );
+  }
+
   const existing = await idb.lots.get(id);
   const now = Date.now();
   if (existing) {
@@ -828,6 +982,80 @@ export async function deleteLot(id: string): Promise<void> {
   }
   recordTombstone(id);
   notifyLedgerMutation('lot', id, 'delete');
+}
+
+// -- Mine Ledger Operations --
+export async function getMines(): Promise<Mine[]> {
+  await ensureInitialized();
+  const mines = await idb.mines.toArray();
+  const active = mines.filter((m) => !m.deleted);
+  active.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  return active;
+}
+
+export async function getMine(id: string): Promise<Mine | null> {
+  await ensureInitialized();
+  const mine = await idb.mines.get(id);
+  if (!mine || mine.deleted) return null;
+  return mine;
+}
+
+export async function saveMine(mine: Mine): Promise<void> {
+  await ensureInitialized();
+  const sanitized = sanitizeMine(mine);
+  const existing = await idb.mines.get(sanitized.id);
+  const now = Date.now();
+  const itemToSave: Mine = {
+    ...sanitized,
+    createdAt: sanitized.createdAt || now,
+    updatedAt: now,
+    dirty: true,
+  };
+
+  await idb.mines.put(itemToSave);
+  notifyLedgerMutation('mine', sanitized.id, existing ? 'update' : 'create');
+}
+
+export async function deleteMine(id: string): Promise<void> {
+  await ensureInitialized();
+  const lots = await getMineLots(id);
+  if (lots.length > 0) {
+    throw new Error(
+      `Cannot delete mine with existing stock entries (${lots.length} entries). Delete the stock entries first.`
+    );
+  }
+  const existing = await idb.mines.get(id);
+  const now = Date.now();
+  if (existing) {
+    await idb.mines.put({
+      ...existing,
+      deleted: true,
+      deletedAt: now,
+      updatedAt: now,
+      dirty: true,
+    });
+  } else {
+    await idb.mines.put({
+      id,
+      name: '',
+      ratePerTon: 0,
+      createdAt: now,
+      updatedAt: now,
+      deleted: true,
+      deletedAt: now,
+      dirty: true,
+    });
+  }
+  recordTombstone(id);
+  notifyLedgerMutation('mine', id, 'delete');
+}
+
+export async function getMineLots(mineId: string): Promise<InventoryLot[]> {
+  await ensureInitialized();
+  const lots = await idb.lots.where('mineId').equals(mineId).toArray();
+  const active = lots.filter((l) => !l.deleted);
+  active.sort((a, b) => new Date(b.date || 0).getTime() - new Date(a.date || 0).getTime() || (b.createdAt || 0) - (a.createdAt || 0));
+  return active;
 }
 
 // -- Settings (Cached Synchronously in localStorage) --
@@ -931,12 +1159,13 @@ export type { BackupPayload };
 
 export async function getAllBackupData(): Promise<BackupPayload> {
   await ensureInitialized();
-  const [parties, dispatches, payments, pos, lots, settings] = await Promise.all([
+  const [parties, dispatches, payments, pos, lots, mines, settings] = await Promise.all([
     getParties(),
     getDispatches(),
     getPayments(),
     getPurchaseOrders(),
     getLots(),
+    getMines(),
     getSettings(),
   ]);
 
@@ -951,6 +1180,7 @@ export async function getAllBackupData(): Promise<BackupPayload> {
     payments,
     pos,
     lots,
+    mines,
     settings,
   };
 }
@@ -987,15 +1217,17 @@ export async function getLedgerForSync(onlyDirty = false): Promise<{
   payments: Payment[];
   pos: PurchaseOrder[];
   lots: InventoryLot[];
+  mines: Mine[];
   settings: AppSettings;
 }> {
   await ensureInitialized();
-  const [parties, dispatches, payments, pos, lots, settings] = await Promise.all([
+  const [parties, dispatches, payments, pos, lots, mines, settings] = await Promise.all([
     idb.parties.toArray(),
     idb.dispatches.toArray(),
     idb.payments.toArray(),
     idb.pos.toArray(),
     idb.lots.toArray(),
+    idb.mines.toArray(),
     getSettings(),
   ]);
 
@@ -1006,11 +1238,12 @@ export async function getLedgerForSync(onlyDirty = false): Promise<{
       payments: payments.filter((p) => p.dirty),
       pos: pos.filter((po) => po.dirty),
       lots: lots.filter((l) => l.dirty),
+      mines: mines.filter((m) => m.dirty),
       settings,
     };
   }
 
-  return { parties, dispatches, payments, pos, lots, settings };
+  return { parties, dispatches, payments, pos, lots, mines, settings };
 }
 
 /**
@@ -1024,9 +1257,10 @@ export async function markRecordsClean(synced: {
   payments?: Array<{ id: string; updatedAt: number }>;
   pos?: Array<{ id: string; updatedAt: number }>;
   lots?: Array<{ id: string; updatedAt: number }>;
+  mines?: Array<{ id: string; updatedAt: number }>;
 }): Promise<void> {
   await ensureInitialized();
-  await idb.transaction('rw', [idb.parties, idb.dispatches, idb.payments, idb.pos, idb.lots], async () => {
+  await idb.transaction('rw', [idb.parties, idb.dispatches, idb.payments, idb.pos, idb.lots, idb.mines], async () => {
     const clean = async (table: any, list?: Array<{ id: string; updatedAt: number }>) => {
       for (const { id, updatedAt } of list ?? []) {
         const item = await table.get(id);
@@ -1041,6 +1275,7 @@ export async function markRecordsClean(synced: {
     await clean(idb.payments, synced.payments);
     await clean(idb.pos, synced.pos);
     await clean(idb.lots, synced.lots);
+    await clean(idb.mines, synced.mines);
   });
 }
 
@@ -1052,6 +1287,7 @@ export interface PreRestoreSnapshotMeta {
   paymentCount: number;
   poCount: number;
   lotCount: number;
+  mineCount?: number;
 }
 
 const PRE_RESTORE_SNAPSHOT_KEY = 'last_pre_restore_snapshot';
@@ -1153,7 +1389,7 @@ export async function restoreBackup(
 ): Promise<{
   success: boolean;
   message: string;
-  counts?: { parties: number; dispatches: number; payments: number; pos: number; lots: number };
+  counts?: { parties: number; dispatches: number; payments: number; pos: number; lots: number; mines: number };
 }> {
   await ensureInitialized();
 
@@ -1167,12 +1403,14 @@ export async function restoreBackup(
   const rawPayments = Array.isArray(backup.payments) ? backup.payments : [];
   const rawPos = Array.isArray(backup.pos) ? backup.pos : [];
   const rawLots = Array.isArray(backup.lots) ? backup.lots : [];
+  const rawMines = Array.isArray(backup.mines) ? backup.mines : [];
 
   const sanitizedParties = rawParties.map(sanitizeParty);
   const sanitizedDispatches = rawDispatches.map(sanitizeDispatch);
   const sanitizedPayments = rawPayments.map(sanitizePayment);
   const sanitizedPos = rawPos.map(sanitizePurchaseOrder);
   const sanitizedLots = rawLots.map(sanitizeLot);
+  const sanitizedMines = rawMines.map(sanitizeMine);
 
   // 2. Take automatic pre-restore snapshot and store in IndexedDB
   if (!options?.skipSnapshot) {
@@ -1190,18 +1428,20 @@ export async function restoreBackup(
 
   // 3. Atomically replace records in IndexedDB
   try {
-    await idb.transaction('rw', [idb.parties, idb.dispatches, idb.payments, idb.pos, idb.lots], async () => {
+    await idb.transaction('rw', [idb.parties, idb.dispatches, idb.payments, idb.pos, idb.lots, idb.mines], async () => {
       await idb.parties.clear();
       await idb.dispatches.clear();
       await idb.payments.clear();
       await idb.pos.clear();
       await idb.lots.clear();
+      await idb.mines.clear();
 
       if (sanitizedParties.length > 0) await idb.parties.bulkPut(sanitizedParties);
       if (sanitizedDispatches.length > 0) await idb.dispatches.bulkPut(sanitizedDispatches);
       if (sanitizedPayments.length > 0) await idb.payments.bulkPut(sanitizedPayments);
       if (sanitizedPos.length > 0) await idb.pos.bulkPut(sanitizedPos);
       if (sanitizedLots.length > 0) await idb.lots.bulkPut(sanitizedLots);
+      if (sanitizedMines.length > 0) await idb.mines.bulkPut(sanitizedMines);
     });
 
     // 4. Update settings safely (protecting local PIN / App lock credentials)
@@ -1234,6 +1474,7 @@ export async function restoreBackup(
         payments: sanitizedPayments.length,
         pos: sanitizedPos.length,
         lots: sanitizedLots.length,
+        mines: sanitizedMines.length,
       },
     };
   } catch (err: any) {
@@ -1244,12 +1485,13 @@ export async function restoreBackup(
 
 export async function clearAllData(options?: { resetSettings?: boolean; resetOwner?: boolean }): Promise<void> {
   await ensureInitialized();
-  await idb.transaction('rw', [idb.parties, idb.dispatches, idb.payments, idb.pos, idb.lots], async () => {
+  await idb.transaction('rw', [idb.parties, idb.dispatches, idb.payments, idb.pos, idb.lots, idb.mines], async () => {
     await idb.parties.clear();
     await idb.dispatches.clear();
     await idb.payments.clear();
     await idb.pos.clear();
     await idb.lots.clear();
+    await idb.mines.clear();
   });
 
   if (typeof localStorage !== 'undefined') {
@@ -1386,21 +1628,26 @@ export function mergeLedgerData(
   // 5. Lots
   const lotsRes = mergeCollection(local.lots || [], cloud.lots || [], tombstones);
 
+  // 6. Mines
+  const minesRes = mergeCollection(local.mines || [], cloud.mines || [], tombstones);
+
   let hasLocalChanges =
     partiesRes.localChanges ||
     dispatchesRes.localChanges ||
     paymentsRes.localChanges ||
     posRes.localChanges ||
-    lotsRes.localChanges;
+    lotsRes.localChanges ||
+    minesRes.localChanges;
 
   let hasCloudChanges =
     partiesRes.cloudChanges ||
     dispatchesRes.cloudChanges ||
     paymentsRes.cloudChanges ||
     posRes.cloudChanges ||
-    lotsRes.cloudChanges;
+    lotsRes.cloudChanges ||
+    minesRes.cloudChanges;
 
-  // 6. Settings
+  // 7. Settings
   let mergedSettings = { ...local.settings };
   const cloudSettings = cloud.settings;
   if (cloudSettings) {
@@ -1438,6 +1685,7 @@ export function mergeLedgerData(
     payments: paymentsRes.mergedList,
     pos: posRes.mergedList,
     lots: lotsRes.mergedList,
+    mines: minesRes.mergedList,
     settings: mergedSettings,
   };
 

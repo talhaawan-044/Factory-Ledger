@@ -14,16 +14,18 @@ import {
   AlignLeft,
   Calculator,
   Plus,
+  ChevronDown,
 } from 'lucide-react';
-import type { Dispatch, CoalInput, Party, PurchaseOrder, AppSettings, InventoryLot } from '../types';
-import { getDispatch, saveDispatch, deleteDispatch, getParties, getPartyPurchaseOrders, getDispatches, getLots, saveParty, getSettings, cleanNumber } from '../lib/db';
+import type { Dispatch, CoalInput, Party, PurchaseOrder, AppSettings, InventoryLot, Mine } from '../types';
+import { getDispatch, saveDispatch, deleteDispatch, getParties, getPartyPurchaseOrders, getDispatches, getLots, getMines, saveParty, getSettings, cleanNumber } from '../lib/db';
 import { getTodayDateString } from '../utils/dateUtils';
-import { calculateSettlement, calculateLotStock } from '../utils/calculations';
+import { calculateSettlement, calculateLotStock, calculateMineStock } from '../utils/calculations';
 import { getCurrencySymbol, formatAmountNumber } from '../utils/currency';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import IOSDatePicker from '../components/IOSDatePicker';
 import IOSConfirmModal from '../components/IOSConfirmModal';
 import IOSSelect from '../components/IOSSelect';
+import CoalSourceModal, { type CoalSourceSelection } from '../components/CoalSourceModal';
 import PartyGlyph from '../components/PartyGlyph';
 import PartyModalSheet from '../components/PartyModalSheet';
 import { triggerConfetti, playSuccessSound, playPopSound } from '../utils/delight';
@@ -86,6 +88,7 @@ export default function DispatchForm() {
   const [pos, setPos] = useState<PurchaseOrder[]>([]);
   const [allDispatches, setAllDispatches] = useState<Dispatch[]>([]);
   const [lots, setLots] = useState<InventoryLot[]>([]);
+  const [mines, setMines] = useState<Mine[]>([]);
   const [settings, setSettings] = useState<AppSettings | undefined>(undefined);
   const [isLoading, setIsLoading] = useState(() => dispatchId !== 'new');
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
@@ -95,6 +98,7 @@ export default function DispatchForm() {
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [isInTransit, setIsInTransit] = useState(false);
+  const [activePickingInputId, setActivePickingInputId] = useState<string | null>(null);
 
   const curSym = getCurrencySymbol(settings?.currency);
   const salesPct = settings?.taxFormulaSalesPercent ?? 18;
@@ -123,6 +127,9 @@ export default function DispatchForm() {
     });
     getLots().then((l) => {
       if (active) setLots(l);
+    });
+    getMines().then((m) => {
+      if (active) setMines(m);
     });
 
     const currentPartyId = partyId;
@@ -279,7 +286,9 @@ export default function DispatchForm() {
       setIsSaving(true);
       setSaveError(null);
       const statusToSave: 'pending' | 'settled' = isInTransit || cleanNumber(dispatch.labReceivedWeight) <= 0 ? 'pending' : 'settled';
-      await saveDispatch({ ...dispatch, status: statusToSave } as Dispatch);
+      const savedDispatchObj = { ...dispatch, status: statusToSave } as Dispatch;
+      await saveDispatch(savedDispatchObj);
+
       playSuccessSound();
       triggerConfetti();
       navigate(`/parties/${dispatch.partyId || partyId}`);
@@ -398,6 +407,47 @@ export default function DispatchForm() {
         coalInputs: prev.coalInputs.filter((input) => input.id !== id),
       };
     });
+  };
+
+  const handleCoalSourceSelection = (inputId: string, sel: CoalSourceSelection) => {
+    setDispatch((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        coalInputs: prev.coalInputs.map((ci) =>
+          ci.id === inputId
+            ? {
+              ...ci,
+              mineId: sel.mineId,
+              lotId: sel.lotId,
+              sourceName: sel.sourceName,
+              weight: sel.weight > 0 ? sel.weight : ci.weight,
+              purchaseRate: sel.rate > 0 ? sel.rate : ci.purchaseRate,
+            }
+            : ci
+        ),
+      };
+    });
+    setActivePickingInputId(null);
+  };
+
+  const handleSelectManual = (inputId: string) => {
+    setDispatch((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        coalInputs: prev.coalInputs.map((ci) =>
+          ci.id === inputId
+            ? {
+              ...ci,
+              mineId: undefined,
+              lotId: undefined,
+            }
+            : ci
+        ),
+      };
+    });
+    setActivePickingInputId(null);
   };
 
   return (
@@ -727,115 +777,124 @@ export default function DispatchForm() {
                   </div>
                 </div>
 
-                {/* Inventory Lot link selector if lots exist */}
-                {lots.length > 0 && (
-                  <div style={{ marginBottom: 10 }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-                      <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--label-secondary)', textTransform: 'uppercase', letterSpacing: 0.3 }}>
-                        Inventory Lot Link
-                      </span>
-                      {input.lotId && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            updateCoalInput(input.id, 'lotId', undefined);
-                          }}
-                          style={{
-                            background: 'none',
-                            border: 'none',
-                            color: 'var(--ios-blue)',
-                            fontSize: 11,
-                            fontWeight: 600,
-                            cursor: 'pointer',
-                          }}
-                        >
-                          Switch to Manual
-                        </button>
-                      )}
+                {/* Native iOS-styled Coal Mine & Stock Picker with grouped dropdown */}
+                <div style={{ marginBottom: 12 }}>
+                  <div
+                    onClick={() => setActivePickingInputId(input.id)}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      padding: '12px 14px',
+                      borderRadius: 14,
+                      background: 'var(--fill-tertiary)',
+                      border: '0.5px solid var(--separator)',
+                      cursor: 'pointer',
+                    }}
+                    className="hover-bg"
+                  >
+                    <div style={{ minWidth: 0, flex: 1, marginRight: 8 }}>
+                      <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--label-secondary)', textTransform: 'uppercase' }}>
+                        Coal Mine / Stock Source
+                      </div>
+                      <div
+                        style={{
+                          fontSize: 15,
+                          fontWeight: 600,
+                          color: 'var(--label-primary)',
+                          marginTop: 2,
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {input.sourceName || 'Select Mine or Stock Entry'}
+                      </div>
                     </div>
-                    <select
-                      value={input.lotId || ''}
-                      onChange={(e) => {
-                        const selectedId = e.target.value;
-                        if (!selectedId) {
-                          updateCoalInput(input.id, 'lotId', undefined);
-                          return;
-                        }
-                        const selectedLot = lots.find((l) => l.id === selectedId);
-                        if (selectedLot) {
-                          setDispatch((prev) => {
-                            if (!prev) return prev;
-                            return {
-                              ...prev,
-                              coalInputs: prev.coalInputs.map((ci) =>
-                                ci.id === input.id
-                                  ? {
-                                      ...ci,
-                                      lotId: selectedLot.id,
-                                      sourceName: selectedLot.supplier + (selectedLot.grade ? ` (${selectedLot.grade})` : ''),
-                                      purchaseRate: selectedLot.landedRate,
-                                    }
-                                  : ci
-                              ),
-                            };
-                          });
-                        }
-                      }}
-                      style={{
-                        width: '100%',
-                        padding: '8px 10px',
-                        borderRadius: 8,
-                        background: 'var(--fill-tertiary)',
-                        border: '0.5px solid var(--separator)',
-                        color: 'var(--label-primary)',
-                        fontSize: 13,
-                        outline: 'none',
-                      }}
-                    >
-                      <option value="">-- Manual / Custom Source --</option>
-                      {lots.map((l) => {
-                        const lotStock = calculateLotStock(l, allDispatches);
-                        return (
-                          <option key={l.id} value={l.id}>
-                            {l.supplier} {l.grade ? `(${l.grade})` : ''} - Landed: {curSym} {l.landedRate.toFixed(2)}/t ({lotStock.remainingWeight.toFixed(1)}t available)
-                          </option>
-                        );
-                      })}
-                    </select>
 
-                    {/* Stock status indicator if lot is linked */}
-                    {input.lotId && (() => {
-                      const linkedLot = lots.find((l) => l.id === input.lotId);
-                      if (!linkedLot) return null;
-                      const lotStock = calculateLotStock(linkedLot, allDispatches);
-                      const isOverdraw = (input.weight || 0) > lotStock.remainingWeight;
-
-                      return (
-                        <div
-                          style={{
-                            marginTop: 6,
-                            padding: '6px 8px',
-                            borderRadius: 6,
-                            background: isOverdraw ? 'rgba(255, 59, 48, 0.1)' : 'var(--fill-quaternary)',
-                            border: `0.5px solid ${isOverdraw ? 'rgba(255, 59, 48, 0.3)' : 'var(--separator)'}`,
-                            fontSize: 11,
-                            color: isOverdraw ? '#ff3b30' : 'var(--label-secondary)',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'space-between',
-                          }}
-                        >
-                          <span>
-                            📦 Yard Stock: <strong>{lotStock.remainingWeight.toFixed(1)}t available</strong> (Landed: {curSym} {linkedLot.landedRate.toFixed(2)}/t)
-                          </span>
-                          {isOverdraw && (
-                            <span style={{ fontWeight: 600 }}>⚠️ Exceeds yard stock</span>
-                          )}
-                        </div>
-                      );
-                    })()}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                      <span style={{ fontSize: 13, color: 'var(--ios-blue)', fontWeight: 600 }}>
+                        {input.mineId || input.lotId ? 'Change' : 'Select'}
+                      </span>
+                      <ChevronDown size={16} style={{ color: 'var(--label-tertiary)' }} />
+                    </div>
                   </div>
-                )}
+
+                  {/* Stock status indicator if specific Lot is linked */}
+                  {input.lotId && (() => {
+                    const linkedLot = lots.find((l) => l.id === input.lotId);
+                    if (!linkedLot) return null;
+                    const otherDispatches = allDispatches.filter((d) => !dispatchId || d.id !== dispatchId);
+                    const lotStock = calculateLotStock(linkedLot, otherDispatches);
+                    const isOverdraw = (input.weight || 0) > lotStock.remainingWeight;
+
+                    return (
+                      <div
+                        style={{
+                          marginTop: 8,
+                          marginBottom: 4,
+                          padding: '8px 12px',
+                          borderRadius: 10,
+                          background: isOverdraw ? 'rgba(255, 59, 48, 0.1)' : 'var(--fill-tertiary)',
+                          border: `0.5px solid ${isOverdraw ? 'rgba(255, 59, 48, 0.3)' : 'var(--separator)'}`,
+                          fontSize: 12,
+                          color: isOverdraw ? 'var(--ios-red)' : 'var(--label-primary)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          gap: 8,
+                        }}
+                      >
+                        <span style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                          <span style={{ flexShrink: 0 }}>📦</span>
+                          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            <strong>{linkedLot.boughtFrom || linkedLot.supplier}</strong>: {lotStock.remainingWeight.toFixed(1)}t available (Landed: {curSym} {formatAmountNumber(linkedLot.landedRate)}/t)
+                          </span>
+                        </span>
+                        {isOverdraw && (
+                          <span style={{ fontWeight: 600, color: 'var(--ios-red)', fontSize: 11, flexShrink: 0 }}>⚠️ Exceeds yard stock</span>
+                        )}
+                      </div>
+                    );
+                  })()}
+
+                  {/* Stock status indicator if Mine is linked without a specific lot */}
+                  {input.mineId && !input.lotId && (() => {
+                    const linkedMine = mines.find((m) => m.id === input.mineId);
+                    if (!linkedMine) return null;
+                    const mineStock = calculateMineStock(linkedMine, lots, allDispatches);
+                    const isOverdraw = (input.weight || 0) > mineStock.remainingTons;
+
+                    return (
+                      <div
+                        style={{
+                          marginTop: 8,
+                          marginBottom: 4,
+                          padding: '8px 12px',
+                          borderRadius: 10,
+                          background: isOverdraw ? 'rgba(255, 59, 48, 0.1)' : 'var(--fill-tertiary)',
+                          border: `0.5px solid ${isOverdraw ? 'rgba(255, 59, 48, 0.3)' : 'var(--separator)'}`,
+                          fontSize: 12,
+                          color: isOverdraw ? 'var(--ios-red)' : 'var(--label-primary)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          gap: 8,
+                        }}
+                      >
+                        <span style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                          <span style={{ flexShrink: 0 }}>⛏️</span>
+                          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            <strong>{linkedMine.name}</strong>: {mineStock.remainingTons.toFixed(1)}t available (Rate: {curSym} {formatAmountNumber(linkedMine.ratePerTon)}/t)
+                          </span>
+                        </span>
+                        {isOverdraw && (
+                          <span style={{ fontWeight: 600, color: 'var(--ios-red)', fontSize: 11, flexShrink: 0 }}>⚠️ Exceeds yard stock</span>
+                        )}
+                      </div>
+                    );
+                  })()}
+                </div>
 
                 <FloatingField
                   label="Coal Source / Grade"
@@ -1274,8 +1333,8 @@ export default function DispatchForm() {
                     {settlement.gcvDeduction > 0
                       ? 'Live GCV Deduction:'
                       : (settlement.gcvPremium || 0) > 0
-                      ? 'Live GCV Premium:'
-                      : 'GCV Adjustment:'}
+                        ? 'Live GCV Premium:'
+                        : 'GCV Adjustment:'}
                   </span>
                   <strong
                     style={{
@@ -1283,8 +1342,8 @@ export default function DispatchForm() {
                         settlement.gcvDeduction > 0
                           ? '#ff3b30'
                           : (settlement.gcvPremium || 0) > 0
-                          ? 'var(--ios-green)'
-                          : 'var(--label-secondary)',
+                            ? 'var(--ios-green)'
+                            : 'var(--label-secondary)',
                       fontSize: 14,
                     }}
                     className="tabular-nums"
@@ -1292,8 +1351,8 @@ export default function DispatchForm() {
                     {settlement.gcvDeduction > 0
                       ? `- ${curSym} ${settlement.gcvDeduction}/t`
                       : (settlement.gcvPremium || 0) > 0
-                      ? `+ ${curSym} ${settlement.gcvPremium}/t`
-                      : 'Rs 0/t (At or near target)'}
+                        ? `+ ${curSym} ${settlement.gcvPremium}/t`
+                        : 'Rs 0/t (At or near target)'}
                   </strong>
                 </div>
               </div>
@@ -1636,6 +1695,33 @@ export default function DispatchForm() {
           setIsPartyModalOpen(false);
           await handlePartyChange(newParty.id);
         }}
+      />
+
+      {/* Coal Mine & Stock Entry Selection Modal */}
+      <CoalSourceModal
+        isOpen={Boolean(activePickingInputId)}
+        onClose={() => setActivePickingInputId(null)}
+        mines={mines}
+        lots={lots}
+        dispatches={allDispatches}
+        settings={settings}
+        currentMineId={dispatch.coalInputs.find((ci) => ci.id === activePickingInputId)?.mineId}
+        currentLotId={dispatch.coalInputs.find((ci) => ci.id === activePickingInputId)?.lotId}
+        currentDispatchId={dispatchId}
+        excludeLotIds={(dispatch.coalInputs || [])
+          .filter((ci) => ci.id !== activePickingInputId && Boolean(ci.lotId))
+          .map((ci) => ci.lotId as string)}
+        onSelect={(sel) => {
+          if (activePickingInputId) {
+            handleCoalSourceSelection(activePickingInputId, sel);
+          }
+        }}
+        onSelectManual={() => {
+          if (activePickingInputId) {
+            handleSelectManual(activePickingInputId);
+          }
+        }}
+        onManageMines={() => navigate('/inventory')}
       />
     </div>
   );

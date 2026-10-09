@@ -3,6 +3,7 @@ export interface CoalInput {
   sourceName: string;
   weight: number;
   purchaseRate: number;
+  mineId?: string;
   lotId?: string;
 }
 
@@ -123,14 +124,40 @@ export interface AppSettings {
   lockTimeout?: number;
 }
 
+export interface Mine {
+  id: string;
+  name: string;
+  ratePerTon: number;
+  location?: string;
+  notes?: string;
+  createdAt: number;
+  updatedAt: number;
+  deleted?: boolean;
+  deletedAt?: number;
+  dirty?: boolean;
+}
+
 export interface InventoryLot {
   id: string;
-  supplier: string;
+  mineId?: string; // Optional reference to Mine
+  mineName?: string;
+  supplier: string; // "Bought from" vendor/supplier
+  boughtFrom?: string; // Alias for bought from
+  storedAt?: string; // Yard or depot location
   date: string; // YYYY-MM-DD
-  billedWeight: number; // Tons billed by supplier (e.g. 30)
-  receivedWeight: number; // Tons physically weighed & received at yard (e.g. 28.5)
-  purchaseRate: number; // Supplier rate per billed ton (e.g. 20000)
-  landedRate: number; // Landed cost per received ton: (billedWeight * purchaseRate) / receivedWeight
+  billedWeight: number; // Tons billed (e.g. 30 or 10)
+  receivedWeight: number; // Tons received (e.g. 28.5 or 10)
+  tonnage?: number; // Total tonnage
+  purchaseRate: number; // Supplier rate or per-ton rate
+  landedRate: number; // Landed cost or per-ton rate
+  ratePerTon?: number; // Per-ton amount
+  totalValue?: number; // Total cost (coal + loading + fare)
+  loadingCost?: number; // Loading amount (PKR)
+  freightCost?: number; // Fare / Freight amount (PKR)
+  usedInDispatchId?: string; // Linked dispatch ID
+  usedInDispatchTruck?: string; // Linked dispatch truck number
+  usedInPartyName?: string; // Linked dispatch party / factory name
+  usedInDate?: string; // Linked dispatch date
   grade?: string;
   gcv?: number;
   targetGcv?: number;
@@ -144,6 +171,8 @@ export interface InventoryLot {
   dirty?: boolean;
 }
 
+export type MineStockEntry = InventoryLot;
+
 export interface BackupPayload {
   version?: string;
   exportDate: string;
@@ -154,6 +183,7 @@ export interface BackupPayload {
   dispatches: Dispatch[];
   payments: Payment[];
   pos: PurchaseOrder[];
+  mines?: Mine[];
   lots?: InventoryLot[];
   settings: AppSettings;
   deviceInfo?: string;

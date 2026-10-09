@@ -1,70 +1,74 @@
-import { useState, useEffect, useMemo } from 'react';
-import { getLots, saveLot, deleteLot, getDispatches, getSettings, getParties } from '../lib/db';
-import type { InventoryLot, Dispatch, Party, AppSettings } from '../types';
-import { calculateLotStock, calculateInventoryTotals, calculateLandedCost } from '../utils/calculations';
+import { useEffect, useState, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { getMines, saveMine, getLots, getDispatches, getSettings } from '../lib/db';
+import type { Mine, InventoryLot, Dispatch, AppSettings } from '../types';
+import { calculateMineStock, calculateOverallMinesSummary } from '../utils/calculations';
 import { getCurrencySymbol, formatAmountNumber } from '../utils/currency';
 import { playPopSound, playSuccessSound, triggerConfetti } from '../utils/delight';
 import { useLedgerListener } from '../hooks/useLedgerListener';
 import { v4 as uuidv4 } from 'uuid';
 import {
-  Package,
-  Plus,
-  Search,
-  Trash2,
-  Edit3,
-  AlertTriangle,
-  Scale,
-  X,
-  Calendar,
   Layers,
-  Truck
+  Search,
+  X,
+  List,
+  LayoutGrid,
+  ChevronDown,
+  ChevronRight,
+  ArrowDown,
+  ArrowUp,
+  Check,
+  Plus,
+  MapPin,
+  TrendingUp,
+  Package,
 } from 'lucide-react';
 import FloatingField from '../components/FloatingField';
-import IOSConfirmModal from '../components/IOSConfirmModal';
+import IOSSelect from '../components/IOSSelect';
 
 export default function Inventory() {
+  const navigate = useNavigate();
+
+  const [mines, setMines] = useState<Mine[]>([]);
   const [lots, setLots] = useState<InventoryLot[]>([]);
   const [dispatches, setDispatches] = useState<Dispatch[]>([]);
-  const [parties, setParties] = useState<Party[]>([]);
   const [settings, setSettings] = useState<AppSettings | undefined>(undefined);
   const [loading, setLoading] = useState(true);
 
-  // Filters & Search
+  // Search & Filter
   const [searchQuery, setSearchQuery] = useState('');
-  const [supplierFilter, setSupplierFilter] = useState('all');
-  const [statusFilter, setStatusFilter] = useState<'all' | 'in_stock' | 'low' | 'exhausted' | 'overdrawn'>('all');
+  const [sortBy, setSortBy] = useState<'latest' | 'name' | 'highest_stock' | 'highest_value'>('latest');
+  const [sortOrder, setSortOrder] = useState<'desc' | 'asc'>('desc');
 
-  // Modal Sheet State
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [lotToDelete, setLotToDelete] = useState<InventoryLot | null>(null);
-  const [selectedLotDetails, setSelectedLotDetails] = useState<InventoryLot | null>(null);
-  const [toastMsg, setToastMsg] = useState<string | null>(null);
+  // Persistent List / Grid view mode
+  const [viewMode, setViewMode] = useState<'list' | 'grid'>(() => {
+    return (localStorage.getItem('inventory_view_mode') as 'list' | 'grid') || 'list';
+  });
 
-  const initialForm = {
-    id: '',
-    supplier: '',
-    date: new Date().toISOString().split('T')[0],
-    billedWeight: '',
-    receivedWeight: '',
-    purchaseRate: '',
-    grade: '',
-    targetGcv: '',
+  // Modal Sheet State: Add / Edit Mine
+  const [isAddMineOpen, setIsAddMineOpen] = useState(false);
+  const [editingMine, setEditingMine] = useState<Mine | null>(null);
+  const [mineForm, setMineForm] = useState({
+    name: '',
+    ratePerTon: '',
+    location: '',
     notes: '',
-  };
-  const [form, setForm] = useState(initialForm);
+  });
+
+  const [toastMsg, setToastMsg] = useState<string | null>(null);
 
   const curSym = getCurrencySymbol(settings?.currency);
 
   const loadData = async () => {
-    const [l, d, p, s] = await Promise.all([
+    const [m, l, d, s] = await Promise.all([
+      getMines(),
       getLots(),
       getDispatches(),
-      getParties(),
       getSettings(),
     ]);
+    setMines(m);
     setLots(l);
     setDispatches(d);
-    setParties(p);
     setSettings(s);
     setLoading(false);
   };
@@ -82,1103 +86,947 @@ export default function Inventory() {
     setTimeout(() => setToastMsg(null), 2500);
   };
 
-  // Derive global inventory metrics
-  const totals = useMemo(() => {
-    return calculateInventoryTotals(lots, dispatches);
-  }, [lots, dispatches]);
+  const handleViewModeChange = (mode: 'list' | 'grid') => {
+    playPopSound();
+    setViewMode(mode);
+    localStorage.setItem('inventory_view_mode', mode);
+  };
 
-  // Derive per-lot stock and metadata
-  const lotCards = useMemo(() => {
-    return lots.map((lot) => {
-      const stock = calculateLotStock(lot, dispatches);
-      const isOverdrawn = stock.isOverdrawn;
-      const isExhausted = stock.remainingWeight <= 0 && !isOverdrawn;
-      const isLow = stock.remainingWeight > 0 && stock.remainingWeight <= lot.receivedWeight * 0.15;
+  // Overall Yard Summary
+  const overallSummary = useMemo(() => {
+    return calculateOverallMinesSummary(mines, lots, dispatches);
+  }, [mines, lots, dispatches]);
 
-      let status: 'in_stock' | 'low' | 'exhausted' | 'overdrawn' = 'in_stock';
-      if (isOverdrawn) status = 'overdrawn';
-      else if (isExhausted) status = 'exhausted';
-      else if (isLow) status = 'low';
-
-      // Associated dispatches
-      const linkedDispatches = dispatches.filter(
-        (d) => !d.deleted && (d.coalInputs || []).some((ci) => ci.lotId === lot.id)
-      );
-
+  // Per-mine detailed stocks
+  const mineCardData = useMemo(() => {
+    return mines.map((mine) => {
+      const stock = calculateMineStock(mine, lots, dispatches);
       return {
-        lot,
+        mine,
         stock,
-        status,
-        linkedDispatches,
       };
     });
-  }, [lots, dispatches]);
+  }, [mines, lots, dispatches]);
 
-  // Unique suppliers list for filter pill
-  const uniqueSuppliers = useMemo(() => {
-    const set = new Set<string>();
-    lots.forEach((l) => {
-      if (l.supplier?.trim()) set.add(l.supplier.trim());
+  // Filter & Sort
+  const filteredMines = useMemo(() => {
+    let result = mineCardData.filter(({ mine }) => {
+      if (!searchQuery.trim()) return true;
+      const q = searchQuery.toLowerCase();
+      const matchName = mine.name.toLowerCase().includes(q);
+      const matchLoc = (mine.location || '').toLowerCase().includes(q);
+      const matchNotes = (mine.notes || '').toLowerCase().includes(q);
+      return matchName || matchLoc || matchNotes;
     });
-    return Array.from(set).sort();
-  }, [lots]);
 
-  // Filtered Cards
-  const filteredLots = useMemo(() => {
-    return lotCards.filter(({ lot, status }) => {
-      if (supplierFilter !== 'all' && lot.supplier !== supplierFilter) {
-        return false;
+    result.sort((a, b) => {
+      let comparison = 0;
+      switch (sortBy) {
+        case 'latest':
+          comparison = (b.mine.createdAt || 0) - (a.mine.createdAt || 0);
+          break;
+        case 'name':
+          comparison = a.mine.name.localeCompare(b.mine.name);
+          break;
+        case 'highest_stock':
+          comparison = b.stock.remainingTons - a.stock.remainingTons;
+          break;
+        case 'highest_value':
+          comparison = b.stock.remainingValue - a.stock.remainingValue;
+          break;
       }
-      if (statusFilter !== 'all' && status !== statusFilter) {
-        return false;
-      }
-      if (searchQuery.trim()) {
-        const q = searchQuery.toLowerCase();
-        const matchSupplier = (lot.supplier || '').toLowerCase().includes(q);
-        const matchGrade = (lot.grade || '').toLowerCase().includes(q);
-        const matchNotes = (lot.notes || '').toLowerCase().includes(q);
-        if (!matchSupplier && !matchGrade && !matchNotes) return false;
-      }
-      return true;
+      return sortOrder === 'desc' ? comparison : -comparison;
     });
-  }, [lotCards, supplierFilter, statusFilter, searchQuery]);
 
-  // Form Live Landed Cost Calculations
-  const formBilledWeight = parseFloat(form.billedWeight) || 0;
-  const formReceivedWeight = parseFloat(form.receivedWeight) || 0;
-  const formPurchaseRate = parseFloat(form.purchaseRate) || 0;
-  const formTotalCost = formBilledWeight * formPurchaseRate;
-  const formLandedCalc = calculateLandedCost(formBilledWeight, formReceivedWeight, formPurchaseRate);
-  const formLandedRate = formLandedCalc.landedRate;
-  const formTransitDiff = formReceivedWeight > 0 && formBilledWeight > 0 ? formReceivedWeight - formBilledWeight : 0;
+    return result;
+  }, [mineCardData, searchQuery, sortBy, sortOrder]);
 
-  const handleOpenAdd = () => {
-    setForm({
-      ...initialForm,
-      date: new Date().toISOString().split('T')[0],
-    });
-    setIsModalOpen(true);
+  // Open Add Mine Sheet
+  const handleOpenAddMine = () => {
     playPopSound();
+    setEditingMine(null);
+    setMineForm({
+      name: '',
+      ratePerTon: '',
+      location: '',
+      notes: '',
+    });
+    setIsAddMineOpen(true);
   };
 
-  const handleOpenEdit = (lot: InventoryLot) => {
-    setForm({
-      id: lot.id,
-      supplier: lot.supplier,
-      date: lot.date || new Date().toISOString().split('T')[0],
-      billedWeight: (lot.billedWeight || '').toString(),
-      receivedWeight: (lot.receivedWeight || '').toString(),
-      purchaseRate: (lot.purchaseRate || '').toString(),
-      grade: lot.grade || '',
-      targetGcv: lot.targetGcv ? lot.targetGcv.toString() : '',
-      notes: lot.notes || '',
-    });
-    setIsModalOpen(true);
-    playPopSound();
-  };
-
-  const handleSaveLot = async (e: React.FormEvent) => {
+  // Save Mine
+  const handleSaveMine = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!form.supplier.trim()) {
-      alert('Please enter supplier name.');
+    const name = mineForm.name.trim();
+    const rate = parseFloat(mineForm.ratePerTon);
+
+    if (!name) {
+      alert('Please enter the mine name.');
       return;
     }
-    if (formBilledWeight <= 0) {
-      alert('Please enter valid billed weight (tons).');
-      return;
-    }
-    if (formReceivedWeight <= 0) {
-      alert('Please enter valid received weight (tons).');
-      return;
-    }
-    if (formPurchaseRate <= 0) {
-      alert('Please enter valid purchase rate per ton.');
+    if (isNaN(rate) || rate <= 0) {
+      alert('Please enter a valid rate per ton.');
       return;
     }
 
-    const lot: InventoryLot = {
-      id: form.id || uuidv4(),
-      supplier: form.supplier.trim(),
-      date: form.date || new Date().toISOString().split('T')[0],
-      billedWeight: formBilledWeight,
-      receivedWeight: formReceivedWeight,
-      purchaseRate: formPurchaseRate,
-      landedRate: formLandedRate,
-      grade: form.grade.trim() || undefined,
-      targetGcv: parseFloat(form.targetGcv) || undefined,
-      notes: form.notes.trim() || undefined,
-      createdAt: form.id
-        ? lots.find((l) => l.id === form.id)?.createdAt || Date.now()
-        : Date.now(),
-      updatedAt: Date.now(),
-    };
+    try {
+      const now = Date.now();
+      const mineToSave: Mine = {
+        id: editingMine ? editingMine.id : uuidv4(),
+        name,
+        ratePerTon: rate,
+        location: mineForm.location.trim() || undefined,
+        notes: mineForm.notes.trim() || undefined,
+        createdAt: editingMine?.createdAt || now,
+        updatedAt: now,
+      };
 
-    await saveLot(lot);
-    playSuccessSound();
-    triggerConfetti();
-    setIsModalOpen(false);
-    showToast(form.id ? 'Lot updated successfully' : 'Purchase lot added to inventory');
-    await loadData();
+      await saveMine(mineToSave);
+      playSuccessSound();
+      triggerConfetti();
+      setIsAddMineOpen(false);
+      showToast(editingMine ? 'Mine updated successfully' : 'Mine added successfully');
+      loadData();
+    } catch (err: any) {
+      alert(err?.message || 'Failed to save mine');
+    }
   };
 
-  const handleDeleteLot = async () => {
-    if (!lotToDelete) return;
-    await deleteLot(lotToDelete.id);
-    playPopSound();
-    showToast(`Deleted lot for ${lotToDelete.supplier}`);
-    setLotToDelete(null);
-    setSelectedLotDetails(null);
-    await loadData();
-  };
+  if (loading) {
+    return (
+      <div className="ios-page" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '60vh' }}>
+        <div style={{ color: 'var(--label-secondary)', fontSize: 15 }}>Loading Inventory…</div>
+      </div>
+    );
+  }
 
   return (
-    <div className="ios-page-container">
-      {/* ── Page Header ── */}
-      <div className="ios-large-nav">
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <div>
-            <h1 className="ios-large-nav-title">Coal Inventory</h1>
-            <p className="ios-large-nav-subtitle">
-              Landed cost tracking & lot-level balance
-            </p>
-          </div>
-          <button
-            onClick={handleOpenAdd}
-            className="ios-btn-primary"
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 6,
-              padding: '8px 14px',
-              borderRadius: 10,
-              fontSize: 14,
-              fontWeight: 600,
-            }}
-          >
-            <Plus size={16} strokeWidth={2.5} />
-            <span>Add Lot</span>
-          </button>
+    <div className="ios-page" style={{ paddingBottom: 100 }}>
+      {/* Toast Notification */}
+      {toastMsg && (
+        <div className="ios-toast-banner">
+          <Check style={{ width: 16, height: 16, color: 'var(--ios-green)' }} strokeWidth={3} />
+          <span>{toastMsg}</span>
+        </div>
+      )}
+
+      {/* ── iOS Navigation Header with Large Title ── */}
+      <div className="ios-large-header">
+        <div className="ios-large-subtitle">
+          {mines.length} {mines.length === 1 ? 'MINE' : 'MINES'} · {overallSummary.totalYardTons.toFixed(1)}t TOTAL STOCK
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <h1 className="ios-large-title">Inventory</h1>
         </div>
       </div>
 
-      {/* ── Top Key Metric Cards ── */}
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
-          gap: 12,
-          padding: '0 16px 16px',
-        }}
-      >
-        {/* Card 1: In Stock */}
+      {/* ── Top Summary Metrics Cards ── */}
+      <div style={{ padding: '0 16px 14px' }}>
+        {/* Full-width Pill Card: Total Stock Value */}
         <div
           style={{
             background: 'var(--bg-card)',
-            borderRadius: 14,
-            padding: '14px',
+            borderRadius: 16,
+            padding: '12px 16px',
             border: '0.5px solid var(--separator)',
-            boxShadow: 'var(--shadow-card)',
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--label-secondary)', fontSize: 12, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.3 }}>
-            <Package size={14} style={{ color: 'var(--ios-blue)' }} /> Stock Left
-          </div>
-          <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--label-primary)', marginTop: 6 }} className="tabular-nums">
-            {totals.totalRemainingStock.toFixed(1)} <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--label-secondary)' }}>tons</span>
-          </div>
-          <div style={{ fontSize: 11, color: 'var(--label-secondary)', marginTop: 4 }}>
-            Active in yard
-          </div>
-        </div>
-
-        {/* Card 2: Capital Tied Up */}
-        <div
-          style={{
-            background: 'var(--bg-card)',
-            borderRadius: 14,
-            padding: '14px',
-            border: '0.5px solid var(--separator)',
-            boxShadow: 'var(--shadow-card)',
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--label-secondary)', fontSize: 12, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.3 }}>
-            <Scale size={14} style={{ color: 'var(--ios-green)' }} /> Capital Tied Up
-          </div>
-          <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--ios-green)', marginTop: 6 }} className="tabular-nums">
-            {curSym} {formatAmountNumber(totals.totalCapitalTiedUp, settings)}
-          </div>
-          <div style={{ fontSize: 11, color: 'var(--label-secondary)', marginTop: 4 }}>
-            At derived landed cost
-          </div>
-        </div>
-
-        {/* Card 3: Active Lots & Overdrawn warning */}
-        <div
-          style={{
-            background: 'var(--bg-card)',
-            borderRadius: 14,
-            padding: '14px',
-            border: '0.5px solid var(--separator)',
-            boxShadow: 'var(--shadow-card)',
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--label-secondary)', fontSize: 12, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.3 }}>
-            <Layers size={14} style={{ color: totals.overdrawnLotsCount > 0 ? '#ff9500' : 'var(--label-secondary)' }} /> Active Lots
-          </div>
-          <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--label-primary)', marginTop: 6 }} className="tabular-nums">
-            {totals.totalActiveLots} <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--label-secondary)' }}>lots</span>
-          </div>
-          <div style={{ fontSize: 11, color: totals.overdrawnLotsCount > 0 ? '#ff9500' : 'var(--label-secondary)', marginTop: 4, fontWeight: totals.overdrawnLotsCount > 0 ? 600 : 400 }}>
-            {totals.overdrawnLotsCount > 0 ? `⚠️ ${totals.overdrawnLotsCount} overdrawn` : 'Stock balanced'}
-          </div>
-        </div>
-      </div>
-
-      {/* ── Search Bar & Filter Strip ── */}
-      <div style={{ padding: '0 16px 12px' }}>
-        <div
-          style={{
-            position: 'relative',
+            boxShadow: 'var(--shadow-sm)',
             display: 'flex',
             alignItems: 'center',
-            marginBottom: 10,
+            justifyContent: 'space-between',
+            gap: 12,
           }}
         >
-          <Search
-            size={16}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+            <div
+              style={{
+                width: 32,
+                height: 32,
+                borderRadius: 10,
+                background: 'rgba(52, 199, 89, 0.12)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                flexShrink: 0,
+              }}
+            >
+              <TrendingUp size={16} style={{ color: 'var(--ios-green)' }} />
+            </div>
+            <span
+              style={{
+                fontSize: 12,
+                fontWeight: 600,
+                color: 'var(--label-secondary)',
+                textTransform: 'uppercase',
+                letterSpacing: '0.3px',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              Total Stock Value
+            </span>
+          </div>
+          <div
             style={{
-              position: 'absolute',
-              left: 12,
-              color: 'var(--label-secondary)',
-              pointerEvents: 'none',
+              fontSize: 19,
+              fontWeight: 700,
+              color: 'var(--ios-green)',
+              flexShrink: 0,
             }}
-          />
+            className="tabular-nums"
+          >
+            {curSym} {formatAmountNumber(overallSummary.totalYardValue, settings)}
+          </div>
+        </div>
+
+        {/* 2-Column Grid: Yard Stock & Active Mines */}
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: '1fr 1fr',
+            gap: 10,
+            marginTop: 10,
+          }}
+        >
+          {/* Card: Yard Stock */}
+          <div
+            style={{
+              background: 'var(--bg-card)',
+              borderRadius: 14,
+              padding: '12px 14px',
+              border: '0.5px solid var(--separator)',
+              boxShadow: 'var(--shadow-sm)',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+              <Package size={14} style={{ color: 'var(--ios-blue)' }} />
+              <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--label-secondary)', textTransform: 'uppercase' }}>
+                Yard Stock
+              </span>
+            </div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--label-primary)' }} className="tabular-nums">
+              {overallSummary.totalYardTons.toFixed(1)} <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--label-secondary)' }}>t</span>
+            </div>
+          </div>
+
+          {/* Card: Active Mines */}
+          <div
+            style={{
+              background: 'var(--bg-card)',
+              borderRadius: 14,
+              padding: '12px 14px',
+              border: '0.5px solid var(--separator)',
+              boxShadow: 'var(--shadow-sm)',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+              <Layers size={14} style={{ color: 'var(--ios-purple, #af52de)' }} />
+              <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--label-secondary)', textTransform: 'uppercase' }}>
+                Active Mines
+              </span>
+            </div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--label-primary)' }} className="tabular-nums">
+              {overallSummary.totalMines}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Big Luxury Add New Mine Button (Mirroring PartiesList) ── */}
+      <div style={{ padding: '0 16px 14px' }}>
+        <button
+          onClick={handleOpenAddMine}
+          style={{
+            width: '100%',
+            height: 52,
+            borderRadius: 16,
+            background: 'var(--ios-blue)',
+            color: '#FFFFFF',
+            border: 'none',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 10,
+            fontSize: 16,
+            fontWeight: 700,
+            cursor: 'pointer',
+            boxShadow: 'none',
+            transition: 'all 0.2s cubic-bezier(0.16, 1, 0.3, 1)',
+          }}
+          className="ios-btn-primary"
+        >
+          <Plus style={{ width: 20, height: 20 }} strokeWidth={2.6} />
+          <span>Add New Mine</span>
+        </button>
+      </div>
+
+      {/* ── iOS Search Bar ── */}
+      <div className="ios-search-container" style={{ padding: '0 16px 12px' }}>
+        <div
+          className="ios-search-bar"
+          style={{
+            boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.06)',
+            border: '1px solid var(--border-glass)',
+            background: 'var(--fill-tertiary)',
+          }}
+        >
+          <Search style={{ width: 17, height: 17, color: 'var(--label-tertiary)' }} strokeWidth={2.4} />
           <input
             type="text"
+            placeholder="Search mines, locations, notes…"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search by supplier, grade, remarks..."
-            style={{
-              width: '100%',
-              padding: '9px 36px 9px 36px',
-              borderRadius: 10,
-              background: 'var(--fill-tertiary)',
-              border: '0.5px solid var(--separator)',
-              color: 'var(--label-primary)',
-              fontSize: 14,
-              outline: 'none',
-            }}
+            className="ios-search-input"
           />
           {searchQuery && (
             <button
-              onClick={() => setSearchQuery('')}
+              onClick={() => {
+                setSearchQuery('');
+                playPopSound();
+              }}
               style={{
-                position: 'absolute',
-                right: 10,
-                background: 'none',
+                background: 'var(--fill-primary)',
                 border: 'none',
+                borderRadius: '50%',
+                width: 20,
+                height: 20,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
                 color: 'var(--label-secondary)',
                 cursor: 'pointer',
-                padding: 4,
+                padding: 0,
               }}
             >
-              <X size={15} />
+              <X style={{ width: 12, height: 12 }} strokeWidth={2.5} />
             </button>
           )}
         </div>
+      </div>
 
-        {/* Filter Pills */}
-        <div style={{ display: 'flex', gap: 6, overflowX: 'auto', paddingBottom: 4 }}>
-          <button
-            onClick={() => setStatusFilter('all')}
-            style={{
-              padding: '5px 12px',
-              borderRadius: 20,
-              border: 'none',
-              fontSize: 12,
-              fontWeight: 600,
-              cursor: 'pointer',
-              background: statusFilter === 'all' ? 'var(--ios-blue)' : 'var(--fill-primary)',
-              color: statusFilter === 'all' ? 'white' : 'var(--label-secondary)',
-              whiteSpace: 'nowrap',
-            }}
-          >
-            All Lots ({lotCards.length})
-          </button>
-          <button
-            onClick={() => setStatusFilter('in_stock')}
-            style={{
-              padding: '5px 12px',
-              borderRadius: 20,
-              border: 'none',
-              fontSize: 12,
-              fontWeight: 600,
-              cursor: 'pointer',
-              background: statusFilter === 'in_stock' ? 'var(--ios-green)' : 'var(--fill-primary)',
-              color: statusFilter === 'in_stock' ? 'white' : 'var(--label-secondary)',
-              whiteSpace: 'nowrap',
-            }}
-          >
-            In Stock
-          </button>
-          <button
-            onClick={() => setStatusFilter('low')}
-            style={{
-              padding: '5px 12px',
-              borderRadius: 20,
-              border: 'none',
-              fontSize: 12,
-              fontWeight: 600,
-              cursor: 'pointer',
-              background: statusFilter === 'low' ? '#ff9500' : 'var(--fill-primary)',
-              color: statusFilter === 'low' ? 'white' : 'var(--label-secondary)',
-              whiteSpace: 'nowrap',
-            }}
-          >
-            Low Stock
-          </button>
-          <button
-            onClick={() => setStatusFilter('overdrawn')}
-            style={{
-              padding: '5px 12px',
-              borderRadius: 20,
-              border: 'none',
-              fontSize: 12,
-              fontWeight: 600,
-              cursor: 'pointer',
-              background: statusFilter === 'overdrawn' ? '#ff3b30' : 'var(--fill-primary)',
-              color: statusFilter === 'overdrawn' ? 'white' : 'var(--label-secondary)',
-              whiteSpace: 'nowrap',
-            }}
-          >
-            Overdrawn ({totals.overdrawnLotsCount})
-          </button>
-          <button
-            onClick={() => setStatusFilter('exhausted')}
-            style={{
-              padding: '5px 12px',
-              borderRadius: 20,
-              border: 'none',
-              fontSize: 12,
-              fontWeight: 600,
-              cursor: 'pointer',
-              background: statusFilter === 'exhausted' ? 'var(--label-secondary)' : 'var(--fill-primary)',
-              color: statusFilter === 'exhausted' ? 'white' : 'var(--label-secondary)',
-              whiteSpace: 'nowrap',
-            }}
-          >
-            Exhausted
-          </button>
-        </div>
+      {/* ── Sorting & View Switcher Bar ── */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          padding: '0 16px 14px',
+          gap: 8,
+        }}
+      >
+        <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--label-secondary)' }}>
+          {filteredMines.length} {filteredMines.length === 1 ? 'Mine Ledger' : 'Mine Ledgers'}
+        </span>
 
-        {/* Supplier Selector Pill if more than 1 supplier */}
-        {uniqueSuppliers.length > 1 && (
-          <div style={{ display: 'flex', gap: 6, overflowX: 'auto', paddingTop: 6, paddingBottom: 2 }}>
-            <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--label-secondary)', alignSelf: 'center', marginRight: 4 }}>
-              Supplier:
-            </span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          {/* Sorting controls */}
+          <div
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              background: 'var(--fill-primary)',
+              borderRadius: 9,
+              padding: '2px 4px',
+              gap: 2,
+            }}
+          >
+            <IOSSelect
+              label="Sort Mines"
+              title="Sort Mines"
+              value={sortBy}
+              onChange={(val) => setSortBy(val as any)}
+              options={[
+                { value: 'latest', label: 'Latest Created' },
+                { value: 'name', label: 'Name (A-Z)' },
+                { value: 'highest_stock', label: 'Highest Stock' },
+                { value: 'highest_value', label: 'Highest Value' },
+              ]}
+              customTrigger={({ open, displayLabel }) => (
+                <button
+                  type="button"
+                  onClick={open}
+                  style={{
+                    border: 'none',
+                    background: 'transparent',
+                    color: 'var(--label-primary)',
+                    fontSize: 12,
+                    fontWeight: 600,
+                    padding: '4px 6px',
+                    outline: 'none',
+                    cursor: 'pointer',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 3,
+                  }}
+                  aria-label="Sort Mines"
+                >
+                  <span>{displayLabel}</span>
+                  <ChevronDown size={13} style={{ color: 'var(--label-tertiary)' }} />
+                </button>
+              )}
+            />
+
             <button
-              onClick={() => setSupplierFilter('all')}
+              type="button"
+              onClick={() => {
+                playPopSound();
+                setSortOrder((prev) => (prev === 'desc' ? 'asc' : 'desc'));
+              }}
+              title={sortOrder === 'desc' ? 'Descending order' : 'Ascending order'}
               style={{
-                padding: '3px 10px',
-                borderRadius: 14,
-                border: '0.5px solid var(--separator)',
-                fontSize: 11,
+                border: 'none',
+                background: 'transparent',
+                color: 'var(--label-primary)',
+                padding: '4px 6px',
+                borderRadius: 6,
                 cursor: 'pointer',
-                background: supplierFilter === 'all' ? 'var(--label-primary)' : 'transparent',
-                color: supplierFilter === 'all' ? 'var(--bg-primary)' : 'var(--label-secondary)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
               }}
             >
-              All
+              {sortOrder === 'desc' ? <ArrowDown size={14} /> : <ArrowUp size={14} />}
             </button>
-            {uniqueSuppliers.map((supp) => (
-              <button
-                key={supp}
-                onClick={() => setSupplierFilter(supp)}
-                style={{
-                  padding: '3px 10px',
-                  borderRadius: 14,
-                  border: '0.5px solid var(--separator)',
-                  fontSize: 11,
-                  cursor: 'pointer',
-                  background: supplierFilter === supp ? 'var(--label-primary)' : 'transparent',
-                  color: supplierFilter === supp ? 'var(--bg-primary)' : 'var(--label-secondary)',
-                  whiteSpace: 'nowrap',
-                }}
-              >
-                {supp}
-              </button>
-            ))}
           </div>
-        )}
-      </div>
 
-      {/* ── Inventory Lots List ── */}
-      <div style={{ padding: '0 16px 80px', display: 'flex', flexDirection: 'column', gap: 12 }}>
-        {loading ? (
-          <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--label-secondary)' }}>
-            Loading inventory lots…
-          </div>
-        ) : filteredLots.length === 0 ? (
+          {/* Persistent List vs Grid Switcher */}
           <div
             style={{
-              textAlign: 'center',
-              padding: '48px 20px',
-              background: 'var(--bg-card)',
-              borderRadius: 16,
-              border: '0.5px solid var(--separator)',
+              display: 'flex',
+              background: 'var(--fill-primary)',
+              padding: 3,
+              borderRadius: 10,
+              gap: 2,
+              flexShrink: 0,
             }}
           >
-            <Package size={44} style={{ color: 'var(--label-secondary)', margin: '0 auto 12px', opacity: 0.5 }} />
-            <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--label-primary)' }}>
-              No inventory lots found
-            </div>
-            <p style={{ fontSize: 13, color: 'var(--label-secondary)', marginTop: 4, maxWidth: 300, margin: '4px auto 16px' }}>
-              Add a coal purchase lot with billed weight, received weight, and purchase rate to track landed cost and live auto-deductions.
-            </p>
             <button
-              onClick={handleOpenAdd}
-              className="ios-btn-primary"
-              style={{ padding: '8px 18px', borderRadius: 10, fontSize: 14, fontWeight: 600 }}
+              onClick={() => handleViewModeChange('list')}
+              title="List View"
+              style={{
+                border: 'none',
+                background: viewMode === 'list' ? 'var(--bg-card)' : 'transparent',
+                color: viewMode === 'list' ? 'var(--label-primary)' : 'var(--label-tertiary)',
+                padding: '5px 8px',
+                borderRadius: 7,
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                boxShadow: viewMode === 'list' ? '0 1px 4px rgba(0,0,0,0.12)' : 'none',
+                transition: 'all 0.15s ease',
+              }}
             >
-              + Add First Lot
+              <List style={{ width: 17, height: 17 }} strokeWidth={2.4} />
+            </button>
+
+            <button
+              onClick={() => handleViewModeChange('grid')}
+              title="Grid View"
+              style={{
+                border: 'none',
+                background: viewMode === 'grid' ? 'var(--bg-card)' : 'transparent',
+                color: viewMode === 'grid' ? 'var(--label-primary)' : 'var(--label-tertiary)',
+                padding: '5px 8px',
+                borderRadius: 7,
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                boxShadow: viewMode === 'grid' ? '0 1px 4px rgba(0,0,0,0.12)' : 'none',
+                transition: 'all 0.15s ease',
+              }}
+            >
+              <LayoutGrid style={{ width: 17, height: 17 }} strokeWidth={2.4} />
             </button>
           </div>
-        ) : (
-          filteredLots.map(({ lot, stock, status, linkedDispatches }) => {
-            const pctLeft = lot.receivedWeight > 0
-              ? Math.max(0, Math.min(100, (stock.remainingWeight / lot.receivedWeight) * 100))
-              : 0;
-
-            const progressColor =
-              status === 'overdrawn'
-                ? '#ff3b30'
-                : status === 'low'
-                ? '#ff9500'
-                : status === 'exhausted'
-                ? 'var(--label-secondary)'
-                : 'var(--ios-green)';
-
-            return (
-              <div
-                key={lot.id}
-                onClick={() => setSelectedLotDetails(lot)}
-                style={{
-                  background: 'var(--bg-card)',
-                  borderRadius: 16,
-                  padding: '16px',
-                  boxShadow: 'var(--shadow-card)',
-                  border: '0.5px solid var(--separator)',
-                  cursor: 'pointer',
-                  position: 'relative',
-                }}
-              >
-                {/* Header row: Supplier & Status Badge */}
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10 }}>
-                  <div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <span style={{ fontSize: 16, fontWeight: 700, color: 'var(--label-primary)' }}>
-                        {lot.supplier}
-                      </span>
-                      {lot.grade && (
-                        <span
-                          style={{
-                            fontSize: 11,
-                            fontWeight: 600,
-                            background: 'var(--fill-secondary)',
-                            color: 'var(--label-primary)',
-                            padding: '2px 8px',
-                            borderRadius: 6,
-                          }}
-                        >
-                          {lot.grade}
-                        </span>
-                      )}
-                    </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--label-secondary)', marginTop: 2 }}>
-                      <Calendar size={12} /> {lot.date}
-                      {lot.targetGcv && <span>· GCV: {lot.targetGcv}</span>}
-                    </div>
-                  </div>
-
-                  {/* Status Badge */}
-                  <div>
-                    {status === 'overdrawn' ? (
-                      <span style={{ fontSize: 11, fontWeight: 700, color: 'white', background: '#ff3b30', padding: '3px 8px', borderRadius: 6 }}>
-                        Overdrawn ({stock.remainingWeight.toFixed(1)}t)
-                      </span>
-                    ) : status === 'exhausted' ? (
-                      <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--label-secondary)', background: 'var(--fill-tertiary)', padding: '3px 8px', borderRadius: 6 }}>
-                        Exhausted
-                      </span>
-                    ) : status === 'low' ? (
-                      <span style={{ fontSize: 11, fontWeight: 600, color: '#ff9500', background: 'rgba(255, 149, 0, 0.15)', padding: '3px 8px', borderRadius: 6 }}>
-                        Low Stock
-                      </span>
-                    ) : (
-                      <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--ios-green)', background: 'rgba(48, 209, 88, 0.15)', padding: '3px 8px', borderRadius: 6 }}>
-                        In Stock
-                      </span>
-                    )}
-                  </div>
-                </div>
-
-                {/* Main Stock Gauge */}
-                <div style={{ margin: '12px 0 10px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 6 }}>
-                    <div>
-                      <span style={{ fontSize: 24, fontWeight: 800, color: 'var(--label-primary)' }} className="tabular-nums">
-                        {stock.remainingWeight.toFixed(1)}
-                      </span>
-                      <span style={{ fontSize: 13, color: 'var(--label-secondary)', marginLeft: 4 }}>
-                        / {lot.receivedWeight} tons remaining
-                      </span>
-                    </div>
-                    <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--label-secondary)' }} className="tabular-nums">
-                      {stock.dispatchedWeight.toFixed(1)}t dispatched
-                    </div>
-                  </div>
-
-                  {/* Bar */}
-                  <div
-                    style={{
-                      height: 8,
-                      borderRadius: 4,
-                      background: 'var(--fill-tertiary)',
-                      overflow: 'hidden',
-                      border: '0.5px solid var(--separator)',
-                    }}
-                  >
-                    <div
-                      style={{
-                        width: `${pctLeft}%`,
-                        height: '100%',
-                        background: progressColor,
-                        borderRadius: 4,
-                        transition: 'width 0.3s ease',
-                      }}
-                    />
-                  </div>
-                </div>
-
-                {/* Overdrawn warning banner if applicable */}
-                {stock.isOverdrawn && (
-                  <div
-                    style={{
-                      background: 'rgba(255, 59, 48, 0.1)',
-                      border: '0.5px solid rgba(255, 59, 48, 0.3)',
-                      borderRadius: 8,
-                      padding: '8px 10px',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 8,
-                      fontSize: 12,
-                      color: '#ff3b30',
-                      marginBottom: 10,
-                      fontWeight: 500,
-                    }}
-                  >
-                    <AlertTriangle size={15} />
-                    <span>Dispatches exceed received stock by {Math.abs(stock.remainingWeight).toFixed(1)} tons.</span>
-                  </div>
-                )}
-
-                {/* Cost & Weights Grid */}
-                <div
-                  style={{
-                    display: 'grid',
-                    gridTemplateColumns: 'repeat(2, 1fr)',
-                    gap: 8,
-                    background: 'var(--fill-quaternary)',
-                    borderRadius: 10,
-                    padding: '10px',
-                    fontSize: 12,
-                  }}
-                >
-                  <div>
-                    <span style={{ color: 'var(--label-secondary)' }}>Billed Weight:</span>{' '}
-                    <strong style={{ color: 'var(--label-primary)' }} className="tabular-nums">{lot.billedWeight}t</strong>
-                  </div>
-                  <div>
-                    <span style={{ color: 'var(--label-secondary)' }}>Purchase Rate:</span>{' '}
-                    <strong style={{ color: 'var(--label-primary)' }} className="tabular-nums">{curSym} {lot.purchaseRate.toLocaleString()}/t</strong>
-                  </div>
-                  <div>
-                    <span style={{ color: 'var(--label-secondary)' }}>Transit Variance:</span>{' '}
-                    <strong
-                      style={{
-                        color:
-                          lot.receivedWeight < lot.billedWeight
-                            ? '#ff3b30'
-                            : lot.receivedWeight > lot.billedWeight
-                            ? 'var(--ios-green)'
-                            : 'var(--label-primary)',
-                      }}
-                      className="tabular-nums"
-                    >
-                      {(lot.receivedWeight - lot.billedWeight).toFixed(1)}t
-                    </strong>
-                  </div>
-                  <div>
-                    <span style={{ color: 'var(--label-secondary)' }}>Landed Cost Rate:</span>{' '}
-                    <strong style={{ color: 'var(--ios-blue)', fontWeight: 700 }} className="tabular-nums">
-                      {curSym} {lot.landedRate.toFixed(2)}/t
-                    </strong>
-                  </div>
-                </div>
-
-                {/* Footer with Linked Dispatches link & Quick Edit */}
-                <div
-                  style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                    marginTop: 10,
-                    paddingTop: 8,
-                    borderTop: '0.5px solid var(--separator)',
-                  }}
-                >
-                  <div style={{ fontSize: 11, color: 'var(--label-secondary)', display: 'flex', alignItems: 'center', gap: 4 }}>
-                    <Truck size={12} />
-                    <span>{linkedDispatches.length} dispatches blended</span>
-                  </div>
-
-                  <div style={{ display: 'flex', gap: 10 }}>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleOpenEdit(lot);
-                      }}
-                      style={{
-                        background: 'none',
-                        border: 'none',
-                        color: 'var(--ios-blue)',
-                        fontSize: 12,
-                        fontWeight: 600,
-                        cursor: 'pointer',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 4,
-                      }}
-                    >
-                      <Edit3 size={13} /> Edit
-                    </button>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setLotToDelete(lot);
-                      }}
-                      style={{
-                        background: 'none',
-                        border: 'none',
-                        color: '#ff3b30',
-                        fontSize: 12,
-                        fontWeight: 600,
-                        cursor: 'pointer',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 4,
-                      }}
-                    >
-                      <Trash2 size={13} /> Delete
-                    </button>
-                  </div>
-                </div>
-              </div>
-            );
-          })
-        )}
+        </div>
       </div>
 
-      {/* ── Add / Edit Lot Modal Sheet ── */}
-      {isModalOpen && (
-        <div className="ios-modal-backdrop" onClick={() => setIsModalOpen(false)}>
-          <div
-            className="ios-modal-sheet"
-            onClick={(e) => e.stopPropagation()}
-            style={{ maxHeight: '90vh', overflowY: 'auto' }}
-          >
-            {/* Sheet Handle */}
-            <div style={{ width: 36, height: 4, background: 'var(--fill-secondary)', borderRadius: 2, margin: '8px auto 16px' }} />
-
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 16px 12px' }}>
-              <h2 style={{ fontSize: 18, fontWeight: 700, color: 'var(--label-primary)' }}>
-                {form.id ? 'Edit Purchase Lot' : 'New Purchase Lot'}
-              </h2>
-              <button
-                type="button"
-                onClick={() => setIsModalOpen(false)}
-                style={{
-                  background: 'var(--fill-tertiary)',
-                  border: 'none',
-                  borderRadius: '50%',
-                  width: 30,
-                  height: 30,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  color: 'var(--label-secondary)',
-                  cursor: 'pointer',
-                }}
-              >
-                <X size={16} />
-              </button>
-            </div>
-
-            <form onSubmit={handleSaveLot} style={{ padding: '0 16px 20px', display: 'flex', flexDirection: 'column', gap: 12 }}>
-              <FloatingField
-                label="Supplier Name"
-                value={form.supplier}
-                onChange={(val) => setForm({ ...form, supplier: val })}
-                placeholder="e.g. Hashim Coal, Duki Traders"
-              />
-
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                <FloatingField
-                  label="Date"
-                  type="date"
-                  value={form.date}
-                  onChange={(val) => setForm({ ...form, date: val })}
-                />
-                <FloatingField
-                  label="Grade / Mine"
-                  value={form.grade}
-                  onChange={(val) => setForm({ ...form, grade: val })}
-                  placeholder="e.g. Afghan 6000"
-                />
+      {/* ── View 1: List View (Full Detailed Cards) ── */}
+      {viewMode === 'list' && (
+        <div style={{ padding: '0 16px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {filteredMines.length === 0 ? (
+            <div
+              style={{
+                padding: '40px 16px',
+                textAlign: 'center',
+                color: 'var(--label-secondary)',
+                background: 'var(--bg-card)',
+                borderRadius: 16,
+                border: '0.5px solid var(--separator)',
+              }}
+            >
+              <Layers style={{ width: 44, height: 44, margin: '0 auto 10px', opacity: 0.35 }} strokeWidth={1.5} />
+              <div style={{ fontSize: 16, fontWeight: 600 }}>No Mines Found</div>
+              <div style={{ fontSize: 13, marginTop: 4, color: 'var(--label-tertiary)' }}>
+                {searchQuery ? `No results for "${searchQuery}"` : 'Add your first coal mine to manage stocks and ledgers.'}
               </div>
-
-              <div className="ios-group">
-                <div className="ios-group-title">Weights & Purchase Terms</div>
-                <div style={{ padding: '0 16px' }}>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                    <FloatingField
-                      label="Billed Weight"
-                      type="number"
-                      step="0.01"
-                      suffix="tons"
-                      value={form.billedWeight}
-                      onChange={(val) => setForm({ ...form, billedWeight: val })}
-                      placeholder="e.g. 30"
-                    />
-                    <FloatingField
-                      label="Received Weight"
-                      type="number"
-                      step="0.01"
-                      suffix="tons"
-                      value={form.receivedWeight}
-                      onChange={(val) => setForm({ ...form, receivedWeight: val })}
-                      placeholder="e.g. 28.5"
-                    />
-                  </div>
-
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                    <FloatingField
-                      label="Purchase Rate"
-                      type="number"
-                      suffix={`${curSym}/t`}
-                      value={form.purchaseRate}
-                      onChange={(val) => setForm({ ...form, purchaseRate: val })}
-                      placeholder="e.g. 20000"
-                    />
-                    <FloatingField
-                      label="Inbound GCV"
-                      type="number"
-                      suffix="kcal/kg"
-                      value={form.targetGcv}
-                      onChange={(val) => setForm({ ...form, targetGcv: val })}
-                      placeholder="Optional"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              {/* ── Live Derived Landed Cost Card ── */}
-              {formBilledWeight > 0 && formReceivedWeight > 0 && formPurchaseRate > 0 && (
-                <div
+              {!searchQuery && (
+                <button
+                  onClick={handleOpenAddMine}
                   style={{
-                    background: 'var(--fill-quaternary)',
-                    borderRadius: 14,
-                    padding: '14px',
-                    border: '0.5px solid var(--separator)',
+                    marginTop: 16,
+                    padding: '8px 16px',
+                    borderRadius: 10,
+                    background: 'var(--ios-blue)',
+                    color: '#FFFFFF',
+                    border: 'none',
+                    fontSize: 14,
+                    fontWeight: 600,
+                    cursor: 'pointer',
                   }}
                 >
-                  <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--ios-blue)', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 8 }}>
-                    Derived Landed Cost Preview
-                  </div>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, fontSize: 13 }}>
-                    <div>
-                      <span style={{ color: 'var(--label-secondary)' }}>Total Cost:</span>
-                      <div style={{ fontWeight: 700, color: 'var(--label-primary)' }} className="tabular-nums">
-                        {curSym} {formTotalCost.toLocaleString()}
-                      </div>
-                    </div>
-                    <div>
-                      <span style={{ color: 'var(--label-secondary)' }}>Transit Variance:</span>
+                  Add Mine
+                </button>
+              )}
+            </div>
+          ) : (
+            filteredMines.map(({ mine, stock }) => {
+              const initials = mine.name.slice(0, 2).toUpperCase();
+
+              return (
+                <div
+                  key={mine.id}
+                  onClick={() => {
+                    playPopSound();
+                    navigate(`/inventory/${mine.id}`);
+                  }}
+                  style={{
+                    background: 'var(--bg-card)',
+                    borderRadius: 18,
+                    padding: 16,
+                    border: '0.5px solid var(--separator)',
+                    boxShadow: 'var(--shadow-card)',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 12,
+                    transition: 'transform 0.15s ease, box-shadow 0.15s ease',
+                  }}
+                  className="hover-card"
+                >
+                  {/* Top Bar: Icon, Name & Rate */}
+                  <div>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
                       <div
                         style={{
+                          width: 40,
+                          height: 40,
+                          borderRadius: 12,
+                          background: 'rgba(0, 122, 255, 0.12)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
                           fontWeight: 700,
-                          color: formTransitDiff < 0 ? '#ff3b30' : formTransitDiff > 0 ? 'var(--ios-green)' : 'var(--label-primary)',
+                          fontSize: 15,
+                          color: 'var(--ios-blue)',
                         }}
-                        className="tabular-nums"
                       >
-                        {formTransitDiff > 0 ? `+${formTransitDiff.toFixed(2)}` : formTransitDiff.toFixed(2)} tons
+                        {initials}
                       </div>
+
+                      <span
+                        style={{
+                          fontSize: 12,
+                          fontWeight: 700,
+                          padding: '3px 10px',
+                          borderRadius: 8,
+                          background: 'rgba(0, 122, 255, 0.1)',
+                          color: 'var(--ios-blue)',
+                        }}
+                      >
+                        {curSym} {formatAmountNumber(mine.ratePerTon)}/t
+                      </span>
                     </div>
+
+                    <div style={{ fontSize: 17, fontWeight: 700, color: 'var(--label-primary)', marginBottom: 2 }}>
+                      {mine.name}
+                    </div>
+
+                    {mine.location && (
+                      <div style={{ fontSize: 13, color: 'var(--label-secondary)', display: 'flex', alignItems: 'center', gap: 4 }}>
+                        <MapPin size={12} /> {mine.location}
+                      </div>
+                    )}
                   </div>
 
+                  {/* Stock & Value Metrics */}
                   <div
                     style={{
-                      marginTop: 10,
-                      paddingTop: 8,
-                      borderTop: '0.5px solid var(--separator)',
+                      background: 'var(--fill-tertiary)',
+                      borderRadius: 14,
+                      padding: '12px 14px',
                       display: 'flex',
                       justifyContent: 'space-between',
                       alignItems: 'center',
                     }}
                   >
                     <div>
-                      <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--label-primary)' }}>Effective Landed Rate</span>
-                      <div style={{ fontSize: 11, color: 'var(--label-secondary)' }}>
-                        ({curSym} {formTotalCost.toLocaleString()} ÷ {formReceivedWeight}t)
+                      <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--label-secondary)', textTransform: 'uppercase' }}>
+                        Remaining Stock
+                      </div>
+                      <div
+                        style={{
+                          fontSize: 18,
+                          fontWeight: 800,
+                          color: stock.isOverdrawn ? 'var(--ios-red)' : 'var(--label-primary)',
+                        }}
+                        className="tabular-nums"
+                      >
+                        {stock.remainingTons.toFixed(2)} <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--label-secondary)' }}>tons</span>
                       </div>
                     </div>
-                    <div style={{ fontSize: 18, fontWeight: 800, color: 'var(--ios-blue)' }} className="tabular-nums">
-                      {curSym} {formLandedRate.toFixed(2)}/t
+
+                    <div style={{ textAlign: 'right' }}>
+                      <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--label-secondary)', textTransform: 'uppercase' }}>
+                        Est. Value
+                      </div>
+                      <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--ios-green)' }} className="tabular-nums">
+                        {curSym} {formatAmountNumber(stock.remainingValue, settings)}
+                      </div>
                     </div>
                   </div>
+
+                  {/* Footer Stats & Actions */}
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingTop: 2 }}>
+                    <span style={{ fontSize: 12, color: 'var(--label-tertiary)' }}>
+                      In: {stock.totalInflowTons.toFixed(1)}t · Out: {stock.totalOutflowTons.toFixed(1)}t
+                    </span>
+
+                    <ChevronRight className="ios-chevron" style={{ width: 16, height: 16, color: 'var(--label-tertiary)' }} strokeWidth={2.5} />
+                  </div>
                 </div>
-              )}
-
-              <FloatingField
-                label="Challan / Truck / Remarks"
-                value={form.notes}
-                onChange={(val) => setForm({ ...form, notes: val })}
-                placeholder="e.g. Truck TLK-492, Chamalang coal"
-              />
-
-              <div style={{ display: 'flex', gap: 10, marginTop: 8 }}>
-                <button
-                  type="button"
-                  onClick={() => setIsModalOpen(false)}
-                  style={{
-                    flex: 1,
-                    padding: '12px',
-                    borderRadius: 12,
-                    background: 'var(--fill-primary)',
-                    color: 'var(--label-primary)',
-                    border: 'none',
-                    fontSize: 15,
-                    fontWeight: 600,
-                    cursor: 'pointer',
-                  }}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="ios-btn-primary"
-                  style={{
-                    flex: 2,
-                    padding: '12px',
-                    borderRadius: 12,
-                    fontSize: 15,
-                    fontWeight: 600,
-                    cursor: 'pointer',
-                  }}
-                >
-                  {form.id ? 'Save Changes' : 'Add Purchase Lot'}
-                </button>
-              </div>
-            </form>
-          </div>
+              );
+            })
+          )}
         </div>
       )}
 
-      {/* ── Lot Detail View Modal (Linked Dispatches breakdown) ── */}
-      {selectedLotDetails && (
-        <div className="ios-modal-backdrop" onClick={() => setSelectedLotDetails(null)}>
-          <div
-            className="ios-modal-sheet"
-            onClick={(e) => e.stopPropagation()}
-            style={{ maxHeight: '85vh', overflowY: 'auto' }}
-          >
-            <div style={{ width: 36, height: 4, background: 'var(--fill-secondary)', borderRadius: 2, margin: '8px auto 16px' }} />
-
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 16px 12px' }}>
-              <div>
-                <h2 style={{ fontSize: 18, fontWeight: 700, color: 'var(--label-primary)' }}>
-                  {selectedLotDetails.supplier}
-                </h2>
-                <div style={{ fontSize: 12, color: 'var(--label-secondary)' }}>
-                  Lot details & blend usage
-                </div>
+      {/* ── View 2: Grid View (High-Density Modern Apple Tiles) ── */}
+      {viewMode === 'grid' && (
+        <div
+          style={{
+            padding: '0 16px',
+            display: 'grid',
+            gridTemplateColumns: 'repeat(2, 1fr)',
+            gap: 12,
+          }}
+        >
+          {filteredMines.length === 0 ? (
+            <div
+              style={{
+                gridColumn: '1 / -1',
+                padding: '40px 16px',
+                textAlign: 'center',
+                color: 'var(--label-secondary)',
+                background: 'var(--bg-card)',
+                borderRadius: 16,
+                border: '0.5px solid var(--separator)',
+              }}
+            >
+              <Layers style={{ width: 44, height: 44, margin: '0 auto 10px', opacity: 0.35 }} strokeWidth={1.5} />
+              <div style={{ fontSize: 16, fontWeight: 600 }}>No Mines Found</div>
+              <div style={{ fontSize: 13, marginTop: 4, color: 'var(--label-tertiary)' }}>
+                {searchQuery ? `No results for "${searchQuery}"` : 'Add your first coal mine to manage stocks and ledgers.'}
               </div>
+            </div>
+          ) : (
+            filteredMines.map(({ mine, stock }) => {
+              const initials = mine.name.slice(0, 2).toUpperCase();
+              const isOverdrawn = stock.isOverdrawn;
+              const isLow = stock.remainingTons > 0 && stock.remainingTons < 10;
+              const isExhausted = stock.remainingTons === 0;
+
+              return (
+                <div
+                  key={mine.id}
+                  onClick={() => {
+                    playPopSound();
+                    navigate(`/inventory/${mine.id}`);
+                  }}
+                  style={{
+                    background: 'var(--bg-card)',
+                    borderRadius: 16,
+                    padding: '14px 12px',
+                    border: '0.5px solid var(--separator)',
+                    boxShadow: 'var(--shadow-card)',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    justifyContent: 'space-between',
+                    minHeight: 154,
+                    gap: 10,
+                    transition: 'transform 0.15s ease, box-shadow 0.15s ease',
+                  }}
+                  className="hover-card hover-press"
+                >
+                  {/* Top Line: Compact glyph circle & Rate pill */}
+                  <div>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                      <div
+                        style={{
+                          width: 32,
+                          height: 32,
+                          borderRadius: 9,
+                          background: 'rgba(0, 122, 255, 0.12)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          fontWeight: 700,
+                          fontSize: 12,
+                          color: 'var(--ios-blue)',
+                        }}
+                      >
+                        {initials}
+                      </div>
+
+                      <span
+                        style={{
+                          fontSize: 10,
+                          fontWeight: 700,
+                          padding: '2px 6px',
+                          borderRadius: 6,
+                          background: 'rgba(0, 122, 255, 0.1)',
+                          color: 'var(--ios-blue)',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {curSym} {formatAmountNumber(mine.ratePerTon)}/t
+                      </span>
+                    </div>
+
+                    <div
+                      style={{
+                        fontSize: 15,
+                        fontWeight: 700,
+                        color: 'var(--label-primary)',
+                        lineHeight: 1.2,
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                      title={mine.name}
+                    >
+                      {mine.name}
+                    </div>
+
+                    <div
+                      style={{
+                        fontSize: 11,
+                        color: 'var(--label-tertiary)',
+                        marginTop: 2,
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 3,
+                      }}
+                    >
+                      <MapPin size={10} style={{ flexShrink: 0 }} />
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {mine.location || 'Mine Yard'}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* High-density Stock Box */}
+                  <div
+                    style={{
+                      background: 'var(--fill-tertiary)',
+                      borderRadius: 10,
+                      padding: '8px 10px',
+                    }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ fontSize: 9, fontWeight: 700, color: 'var(--label-secondary)', textTransform: 'uppercase' }}>
+                        Yard Stock
+                      </span>
+                      <span
+                        style={{
+                          fontSize: 9,
+                          fontWeight: 700,
+                          padding: '1px 5px',
+                          borderRadius: 4,
+                          background: isOverdrawn
+                            ? 'rgba(255, 59, 48, 0.12)'
+                            : isExhausted
+                              ? 'var(--fill-secondary)'
+                              : isLow
+                                ? 'rgba(255, 149, 0, 0.12)'
+                                : 'rgba(52, 199, 89, 0.12)',
+                          color: isOverdrawn
+                            ? 'var(--ios-red)'
+                            : isExhausted
+                              ? 'var(--label-tertiary)'
+                              : isLow
+                                ? 'var(--ios-orange)'
+                                : 'var(--ios-green)',
+                        }}
+                      >
+                        {isOverdrawn ? 'Over' : isExhausted ? 'Empty' : isLow ? 'Low' : 'In Stock'}
+                      </span>
+                    </div>
+
+                    <div
+                      style={{
+                        fontSize: 16,
+                        fontWeight: 800,
+                        color: isOverdrawn ? 'var(--ios-red)' : 'var(--label-primary)',
+                        marginTop: 2,
+                      }}
+                      className="tabular-nums"
+                    >
+                      {stock.remainingTons.toFixed(1)} <span style={{ fontSize: 10, fontWeight: 500, color: 'var(--label-secondary)' }}>tons</span>
+                    </div>
+                  </div>
+
+                  {/* Bottom Line: Est. Value */}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: 1 }}>
+                    <span style={{ fontSize: 10, color: 'var(--label-tertiary)' }}>
+                      Est. Val:
+                    </span>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--ios-green)' }} className="tabular-nums">
+                      {curSym} {formatAmountNumber(stock.remainingValue, settings)}
+                    </span>
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+      )}
+
+      {/* ── Add / Edit Mine Modal Sheet ── */}
+      {isAddMineOpen && (
+        <>
+          <div
+            className="ios-modal-backdrop"
+            onClick={() => {
+              playPopSound();
+              setIsAddMineOpen(false);
+            }}
+          />
+          <div
+            className="ios-bottom-sheet"
+            style={{
+              maxHeight: '85vh',
+              zIndex: 99999,
+            }}
+          >
+            <div className="ios-sheet-handle" />
+
+            {/* Header */}
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                padding: '12px 16px',
+                borderBottom: '0.5px solid var(--separator)',
+              }}
+            >
               <button
                 type="button"
-                onClick={() => setSelectedLotDetails(null)}
+                onClick={() => {
+                  playPopSound();
+                  setIsAddMineOpen(false);
+                }}
                 style={{
-                  background: 'var(--fill-tertiary)',
+                  background: 'none',
                   border: 'none',
-                  borderRadius: '50%',
-                  width: 30,
-                  height: 30,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  color: 'var(--label-secondary)',
+                  color: 'var(--ios-blue)',
+                  fontSize: 16,
                   cursor: 'pointer',
+                  padding: 0,
                 }}
               >
-                <X size={16} />
+                Cancel
+              </button>
+
+              <span style={{ fontSize: 17, fontWeight: 600, color: 'var(--label-primary)' }}>
+                {editingMine ? 'Edit Mine' : 'New Mine Ledger'}
+              </span>
+
+              <button
+                type="button"
+                onClick={handleSaveMine}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: 'var(--ios-blue)',
+                  fontSize: 16,
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  padding: 0,
+                }}
+              >
+                Save
               </button>
             </div>
 
-            <div style={{ padding: '0 16px 20px' }}>
-              {(() => {
-                const stock = calculateLotStock(selectedLotDetails, dispatches);
-                const linked = dispatches.filter(
-                  (d) => !d.deleted && (d.coalInputs || []).some((ci) => ci.lotId === selectedLotDetails.id)
-                );
+            {/* Form Body */}
+            <form onSubmit={handleSaveMine} style={{ padding: '16px 16px 32px' }}>
+              <div style={{ marginBottom: 12 }}>
+                <FloatingField
+                  label="Mine Name *"
+                  value={mineForm.name}
+                  onChange={(val) => setMineForm((prev) => ({ ...prev, name: val }))}
+                  placeholder="e.g. Duki Coal Mine, Khost Pit 3"
+                  autoFocus
+                />
+              </div>
 
-                return (
-                  <div>
-                    {/* Summary row */}
-                    <div
-                      style={{
-                        background: 'var(--fill-quaternary)',
-                        borderRadius: 12,
-                        padding: '12px',
-                        marginBottom: 16,
-                        display: 'grid',
-                        gridTemplateColumns: 'repeat(3, 1fr)',
-                        gap: 8,
-                        textAlign: 'center',
-                      }}
-                    >
-                      <div>
-                        <div style={{ fontSize: 11, color: 'var(--label-secondary)' }}>Received</div>
-                        <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--label-primary)' }}>
-                          {selectedLotDetails.receivedWeight}t
-                        </div>
-                      </div>
-                      <div>
-                        <div style={{ fontSize: 11, color: 'var(--label-secondary)' }}>Dispatched</div>
-                        <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--ios-blue)' }}>
-                          {stock.dispatchedWeight.toFixed(1)}t
-                        </div>
-                      </div>
-                      <div>
-                        <div style={{ fontSize: 11, color: 'var(--label-secondary)' }}>Remaining</div>
-                        <div
-                          style={{
-                            fontSize: 16,
-                            fontWeight: 700,
-                            color: stock.isOverdrawn ? '#ff3b30' : 'var(--ios-green)',
-                          }}
-                        >
-                          {stock.remainingWeight.toFixed(1)}t
-                        </div>
-                      </div>
-                    </div>
+              <div style={{ marginBottom: 12 }}>
+                <FloatingField
+                  label={`Default Rate Per Ton (${curSym}/t) *`}
+                  type="number"
+                  suffix={`${curSym}/t`}
+                  value={mineForm.ratePerTon}
+                  onChange={(val) => setMineForm((prev) => ({ ...prev, ratePerTon: val }))}
+                  placeholder="e.g. 21000"
+                />
+              </div>
 
-                    <h3 style={{ fontSize: 14, fontWeight: 700, color: 'var(--label-primary)', marginBottom: 8 }}>
-                      Dispatches Consuming This Lot ({linked.length})
-                    </h3>
+              <div style={{ marginBottom: 12 }}>
+                <FloatingField
+                  label="Yard / Dump Location (Optional)"
+                  value={mineForm.location}
+                  onChange={(val) => setMineForm((prev) => ({ ...prev, location: val }))}
+                  placeholder="e.g. Yard 1 - Sector B"
+                />
+              </div>
 
-                    {linked.length === 0 ? (
-                      <div style={{ fontSize: 13, color: 'var(--label-secondary)', padding: '12px 0' }}>
-                        No dispatches have blended from this lot yet.
-                      </div>
-                    ) : (
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                        {linked.map((d) => {
-                          const input = (d.coalInputs || []).find((ci) => ci.lotId === selectedLotDetails.id);
-                          const inputWeight = input?.weight || 0;
-                          const party = parties.find((p) => p.id === d.partyId);
+              <div style={{ marginBottom: 20 }}>
+                <FloatingField
+                  label="Notes / Remarks (Optional)"
+                  value={mineForm.notes}
+                  onChange={(val) => setMineForm((prev) => ({ ...prev, notes: val }))}
+                  placeholder="e.g. Grade, contractor contact, seam details"
+                />
+              </div>
 
-                          return (
-                            <div
-                              key={d.id}
-                              style={{
-                                background: 'var(--bg-card)',
-                                borderRadius: 10,
-                                padding: '10px 12px',
-                                border: '0.5px solid var(--separator)',
-                                display: 'flex',
-                                justifyContent: 'space-between',
-                                alignItems: 'center',
-                              }}
-                            >
-                              <div>
-                                <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--label-primary)' }}>
-                                  {party?.name || d.factoryName || 'Factory'}
-                                </div>
-                                <div style={{ fontSize: 11, color: 'var(--label-secondary)' }}>
-                                  {d.date} · Truck: {d.truckNumber || 'N/A'}
-                                </div>
-                              </div>
-                              <div style={{ textAlign: 'right' }}>
-                                <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--label-primary)' }} className="tabular-nums">
-                                  {inputWeight.toFixed(1)} tons
-                                </div>
-                                <div style={{ fontSize: 11, color: 'var(--label-secondary)' }}>
-                                  blended
-                                </div>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-
-                    <div style={{ display: 'flex', gap: 10, marginTop: 16 }}>
-                      <button
-                        onClick={() => {
-                          setSelectedLotDetails(null);
-                          handleOpenEdit(selectedLotDetails);
-                        }}
-                        style={{
-                          flex: 1,
-                          padding: '10px',
-                          borderRadius: 10,
-                          background: 'var(--fill-primary)',
-                          border: 'none',
-                          color: 'var(--label-primary)',
-                          fontSize: 14,
-                          fontWeight: 600,
-                          cursor: 'pointer',
-                        }}
-                      >
-                        Edit Lot
-                      </button>
-                    </div>
-                  </div>
-                );
-              })()}
-            </div>
+              <button
+                type="submit"
+                style={{
+                  width: '100%',
+                  height: 50,
+                  borderRadius: 14,
+                  background: 'var(--ios-blue)',
+                  color: '#FFFFFF',
+                  border: 'none',
+                  fontSize: 16,
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                }}
+                className="ios-btn-primary"
+              >
+                {editingMine ? 'Update Mine' : 'Create Mine Ledger'}
+              </button>
+            </form>
           </div>
-        </div>
+        </>
       )}
 
-      {/* ── Delete Confirmation Modal ── */}
-      <IOSConfirmModal
-        isOpen={Boolean(lotToDelete)}
-        title="Delete Purchase Lot?"
-        message={`Are you sure you want to delete the lot from ${lotToDelete?.supplier}? Any dispatches linked to this lot will retain their frozen purchase rate, but lot stock tracking will be removed.`}
-        confirmText="Delete Lot"
-        destructive
-        countdownSeconds={0}
-        onConfirm={handleDeleteLot}
-        onCancel={() => setLotToDelete(null)}
-      />
-
-      {/* ── Toast ── */}
-      {toastMsg && (
-        <div className="ios-toast-banner">
-          <span>{toastMsg}</span>
-        </div>
-      )}
     </div>
   );
 }

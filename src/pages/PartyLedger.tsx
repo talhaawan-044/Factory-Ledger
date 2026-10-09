@@ -12,6 +12,7 @@ import {
   savePurchaseOrder,
   deletePurchaseOrder,
   saveParty,
+  deleteParty,
   archiveParty,
   getSettings,
   cleanNumber
@@ -129,6 +130,7 @@ export default function PartyLedger() {
 
   // Edit Party Modal state
   const [isEditingParty, setIsEditingParty] = useState(false);
+  const [partyToDelete, setPartyToDelete] = useState<Party | null>(null);
 
   const refreshLedger = useCallback(async () => {
     if (!partyId) return;
@@ -567,9 +569,50 @@ Current Ledger Balance: ${curSym} ${formatAmountNumber(Math.abs(outstandingBalan
             {party.contactPerson || 'Factory Account'} {party.phone ? `· ${party.phone}` : ''}
           </div>
         </div>
-        <button onClick={openEditParty} style={{ background: 'var(--fill-secondary)', border: 'none', borderRadius: '50%', width: 36, height: 36, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--label-primary)', cursor: 'pointer' }}>
-          <Edit2 style={{ width: 18, height: 18 }} strokeWidth={2} />
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <button
+            onClick={openEditParty}
+            style={{
+              background: 'var(--fill-secondary)',
+              border: 'none',
+              borderRadius: '50%',
+              width: 36,
+              height: 36,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              color: 'var(--label-primary)',
+              cursor: 'pointer',
+            }}
+            title="Edit Party"
+            aria-label="Edit Party"
+          >
+            <Edit2 style={{ width: 18, height: 18 }} strokeWidth={2} />
+          </button>
+
+          <button
+            onClick={() => {
+              playPopSound();
+              setPartyToDelete(party);
+            }}
+            style={{
+              background: 'rgba(255, 59, 48, 0.12)',
+              border: 'none',
+              borderRadius: '50%',
+              width: 36,
+              height: 36,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              color: 'var(--ios-red)',
+              cursor: 'pointer',
+            }}
+            title="Delete Party"
+            aria-label="Delete Party"
+          >
+            <Trash2 style={{ width: 17, height: 17 }} strokeWidth={2} />
+          </button>
+        </div>
       </div>
 
       {/* ── Archived Warning & Unarchive Action Banner ── */}
@@ -844,41 +887,23 @@ Current Ledger Balance: ${curSym} ${formatAmountNumber(Math.abs(outstandingBalan
                           <span style={{ fontSize: 16, fontWeight: 700, color: 'var(--label-primary)' }} className="tabular-nums">{curSym} {formatAmountNumber(settlement.totalRevenue, settings)}</span>
                         )}
                       </div>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 2 }}>
-                        <span style={{ fontSize: 13, color: 'var(--label-secondary)' }}>{isPending ? `${d.coalInputs?.[0]?.weight || 0} t loaded` : `${d.labReceivedWeight || 0} t`}</span>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 2, gap: 8 }}>
+                        <span style={{ fontSize: 13, color: 'var(--label-secondary)', display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          <span>{isPending ? `${d.coalInputs?.[0]?.weight || 0} t loaded` : `${d.labReceivedWeight || 0} t`}</span>
+                          {d.coalInputs?.[0]?.sourceName && (
+                            <span style={{ color: 'var(--label-secondary)', fontSize: 11, background: 'var(--fill-tertiary)', padding: '1px 5px', borderRadius: 4, flexShrink: 0 }}>
+                              {d.coalInputs[0].sourceName.split(' - ')[0]}
+                            </span>
+                          )}
+                        </span>
                         {isPending ? (
-                          <span style={{ fontSize: 12, fontWeight: 600, color: '#ff9500' }}>Pending Weighbridge</span>
+                          <span style={{ fontSize: 12, fontWeight: 600, color: '#ff9500', flexShrink: 0 }}>Pending Weighbridge</span>
                         ) : (
-                          <span style={{ fontSize: 12, fontWeight: 600, color: isProfit ? 'var(--ios-green)' : 'var(--ios-red)' }} className="tabular-nums">{isProfit ? `+${curSym} ` : `-${curSym} `}{formatAmountNumber(Math.abs(settlement.netProfit), settings)} {isProfit ? 'profit' : 'loss'}</span>
+                          <span style={{ fontSize: 12, fontWeight: 600, color: isProfit ? 'var(--ios-green)' : 'var(--ios-red)', flexShrink: 0 }} className="tabular-nums">{isProfit ? `+${curSym} ` : `-${curSym} `}{formatAmountNumber(Math.abs(settlement.netProfit), settings)} {isProfit ? 'profit' : 'loss'}</span>
                         )}
                       </div>
                     </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 2, flexShrink: 0 }}>
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          playPopSound();
-                          setDeleteTarget({ type: 'dispatch', id: d.id, label: d.truckNumber });
-                        }}
-                        style={{
-                          background: 'none',
-                          border: 'none',
-                          padding: '6px 8px',
-                          color: 'var(--label-tertiary)',
-                          cursor: 'pointer',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          borderRadius: 8,
-                        }}
-                        title="Delete Dispatch"
-                        aria-label="Delete Dispatch"
-                      >
-                        <Trash2 style={{ width: 16, height: 16 }} />
-                      </button>
-                      <ChevronRight className="ios-chevron" strokeWidth={2.5} />
-                    </div>
+                    <ChevronRight className="ios-chevron" strokeWidth={2.5} style={{ flexShrink: 0 }} />
                     <div className="ios-separator with-glyph" />
                   </div>
                 );
@@ -917,32 +942,7 @@ Current Ledger Balance: ${curSym} ${formatAmountNumber(Math.abs(outstandingBalan
                         <span style={{ fontSize: 11, fontWeight: 600, color: isReceived ? 'white' : 'white', background: isReceived ? 'var(--ios-green)' : 'var(--ios-orange)', padding: '1px 6px', borderRadius: 4 }}>{isReceived ? 'RECEIVED' : 'PAID'}</span>
                       </div>
                     </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 2, flexShrink: 0 }}>
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          playPopSound();
-                          setDeleteTarget({ type: 'payment', id: pay.id, label: `${curSym} ${formatAmountNumber(pay.amount, settings)}` });
-                        }}
-                        style={{
-                          background: 'none',
-                          border: 'none',
-                          padding: '6px 8px',
-                          color: 'var(--label-tertiary)',
-                          cursor: 'pointer',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          borderRadius: 8,
-                        }}
-                        title="Delete Payment"
-                        aria-label="Delete Payment"
-                      >
-                        <Trash2 style={{ width: 16, height: 16 }} />
-                      </button>
-                      <ChevronRight className="ios-chevron" strokeWidth={2.5} />
-                    </div>
+                    <ChevronRight className="ios-chevron" strokeWidth={2.5} style={{ flexShrink: 0 }} />
                     <div className="ios-separator with-glyph" />
                   </div>
                 );
@@ -989,32 +989,7 @@ Current Ledger Balance: ${curSym} ${formatAmountNumber(Math.abs(outstandingBalan
                         </div>
                       )}
                     </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 2, flexShrink: 0 }}>
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          playPopSound();
-                          setDeleteTarget({ type: 'po', id: po.id, label: po.poNumber });
-                        }}
-                        style={{
-                          background: 'none',
-                          border: 'none',
-                          padding: '6px 8px',
-                          color: 'var(--label-tertiary)',
-                          cursor: 'pointer',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          borderRadius: 8,
-                        }}
-                        title="Delete Purchase Order"
-                        aria-label="Delete Purchase Order"
-                      >
-                        <Trash2 style={{ width: 16, height: 16 }} />
-                      </button>
-                      <ChevronRight className="ios-chevron" strokeWidth={2.5} />
-                    </div>
+                    <ChevronRight className="ios-chevron" strokeWidth={2.5} style={{ flexShrink: 0 }} />
                     <div className="ios-separator with-glyph" />
                   </div>
                 );
@@ -1784,6 +1759,59 @@ Current Ledger Balance: ${curSym} ${formatAmountNumber(Math.abs(outstandingBalan
         onCancel={() => setDeleteTarget(null)}
       />
 
+      {/* ── Delete Party Confirmation Modal ── */}
+      {partyToDelete && (() => {
+        const cDisp = dispatches.length;
+        const cPay = payments.length;
+        const cPo = pos.length;
+        const hasRecords = cDisp > 0 || cPay > 0 || cPo > 0;
+
+        if (hasRecords) {
+          return (
+            <IOSConfirmModal
+              isOpen={Boolean(partyToDelete)}
+              title="Party Has Existing Records"
+              message={`"${partyToDelete.name}" has ${cDisp} dispatch(es), ${cPay} payment(s), and ${cPo} PO(s). You can't delete this party because it has existing transactions. To delete the party you have to delete all the records first. Right now you can archive the party only.`}
+              confirmText="Archive Party"
+              cancelText="Cancel"
+              destructive={false}
+              icon="warning"
+              countdownSeconds={0}
+              onConfirm={async () => {
+                await archiveParty(partyToDelete.id, true);
+                setParty({ ...partyToDelete, isArchived: true });
+                setPartyToDelete(null);
+                showToast('Party archived successfully');
+              }}
+              onCancel={() => setPartyToDelete(null)}
+            />
+          );
+        }
+
+        return (
+          <IOSConfirmModal
+            isOpen={Boolean(partyToDelete)}
+            title="Delete Party?"
+            message={`Are you sure you want to delete "${partyToDelete.name}"? This party has no transactions.`}
+            confirmText="Delete Party"
+            cancelText="Cancel"
+            destructive
+            countdownSeconds={2}
+            onConfirm={async () => {
+              try {
+                await deleteParty(partyToDelete.id);
+                playPopSound();
+                setPartyToDelete(null);
+                navigate('/parties');
+              } catch (err: any) {
+                setPartyToDelete(null);
+                showToast(err?.message || 'Could not delete party.');
+              }
+            }}
+            onCancel={() => setPartyToDelete(null)}
+          />
+        );
+      })()}
     </div>
   );
 }

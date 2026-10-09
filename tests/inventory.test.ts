@@ -4,12 +4,23 @@ import {
   calculateLandedCost,
   calculateLotStock,
   calculateInventoryTotals,
+  calculateMineStock,
+  calculateOverallMinesSummary,
 } from '../src/utils/calculations';
 import {
   saveLot,
   getLots,
   getLot,
   deleteLot,
+  saveMine,
+  getMines,
+  getMine,
+  deleteMine,
+  getMineLots,
+  saveDispatch,
+  deleteDispatch,
+  getDispatch,
+  getDispatches,
   clearAllData,
   getAllBackupData,
   restoreBackup,
@@ -17,7 +28,7 @@ import {
   markRecordsClean,
   mergeLedgerData,
 } from '../src/lib/db';
-import type { InventoryLot, Dispatch, PurchaseOrder } from '../src/types';
+import type { InventoryLot, Dispatch, PurchaseOrder, Mine } from '../src/types';
 
 describe('New Features: Pro-Rata GCV & Inventory with Landed Cost', () => {
   beforeEach(async () => {
@@ -440,6 +451,608 @@ describe('New Features: Pro-Rata GCV & Inventory with Landed Cost', () => {
       expect(merged.lots).toHaveLength(2);
       const mergedL1 = merged.lots?.find((l) => l.id === 'lot-merge-1');
       expect(mergedL1?.supplier).toBe('Supplier Remote (Newer)');
+    });
+  });
+
+  describe('Feature 3: Mine Ledgers, Stock Entries & Blending Integration', () => {
+    it('creates and retrieves a mine ledger with per-ton rate', async () => {
+      const mine: Mine = {
+        id: 'mine-1',
+        name: 'Duki Coal Mine',
+        ratePerTon: 21000,
+        location: 'Yard 2 - Plot B',
+      };
+      await saveMine(mine);
+
+      const retrieved = await getMine('mine-1');
+      expect(retrieved).not.toBeNull();
+      expect(retrieved?.name).toBe('Duki Coal Mine');
+      expect(retrieved?.ratePerTon).toBe(21000);
+      expect(retrieved?.location).toBe('Yard 2 - Plot B');
+
+      const allMines = await getMines();
+      expect(allMines).toHaveLength(1);
+    });
+
+    it('adds stock entries to mine with auto-calculated total value (tons * rate)', async () => {
+      const mine: Mine = {
+        id: 'mine-duki',
+        name: 'Duki Mine',
+        ratePerTon: 22000,
+      };
+      await saveMine(mine);
+
+      // Entry 1: 10 tons -> 10 * 22,000 = 220,000
+      const stockEntry1: InventoryLot = {
+        id: 'stock-1',
+        mineId: 'mine-duki',
+        mineName: 'Duki Mine',
+        boughtFrom: 'Chakwal Traders',
+        storedAt: 'Yard A',
+        tonnage: 10,
+        ratePerTon: 22000,
+        totalValue: 10 * 22000,
+        billedWeight: 10,
+        receivedWeight: 10,
+        purchaseRate: 22000,
+        landedRate: 22000,
+        supplier: 'Chakwal Traders',
+        date: '2026-10-09',
+      };
+      await saveLot(stockEntry1);
+
+      // Entry 2: 25 tons -> 25 * 22,000 = 550,000
+      const stockEntry2: InventoryLot = {
+        id: 'stock-2',
+        mineId: 'mine-duki',
+        mineName: 'Duki Mine',
+        boughtFrom: 'Pit Contractor',
+        storedAt: 'Yard B',
+        tonnage: 25,
+        ratePerTon: 22000,
+        totalValue: 25 * 22000,
+        billedWeight: 25,
+        receivedWeight: 25,
+        purchaseRate: 22000,
+        landedRate: 22000,
+        supplier: 'Pit Contractor',
+        date: '2026-10-09',
+      };
+      await saveLot(stockEntry2);
+
+      const mineLots = await getMineLots('mine-duki');
+      expect(mineLots).toHaveLength(2);
+
+      // Verify stock calculation without dispatches
+      const stock = calculateMineStock(mine, mineLots, []);
+      expect(stock.totalInflowTons).toBe(35);
+      expect(stock.totalInflowValue).toBe(770000);
+      expect(stock.totalOutflowTons).toBe(0);
+      expect(stock.remainingTons).toBe(35);
+      expect(stock.remainingValue).toBe(35 * 22000);
+      expect(stock.status).toBe('in_stock');
+    });
+
+    it('calculates yard stock remaining and value when blended into dispatches', async () => {
+      const mine: Mine = {
+        id: 'mine-khost',
+        name: 'Khost Pit 4',
+        ratePerTon: 20000,
+      };
+      await saveMine(mine);
+
+      const lot: InventoryLot = {
+        id: 'lot-khost-1',
+        mineId: 'mine-khost',
+        tonnage: 50,
+        ratePerTon: 20000,
+        totalValue: 1000000,
+        billedWeight: 50,
+        receivedWeight: 50,
+        purchaseRate: 20000,
+        landedRate: 20000,
+        supplier: 'Khost Pit 4',
+        date: '2026-10-09',
+      };
+      await saveLot(lot);
+
+      // Dispatch consuming 18.5 tons from this mine
+      const dispatch: Dispatch = {
+        id: 'disp-blend-1',
+        partyId: 'party-1',
+        date: '2026-10-09',
+        truckNumber: 'TK-889',
+        targetGcv: 6000,
+        baseRate: 30000,
+        coalInputs: [
+          {
+            id: 'ci-1',
+            mineId: 'mine-khost',
+            sourceName: 'Khost Pit 4',
+            weight: 18.5,
+            purchaseRate: 20000,
+          },
+        ],
+        overheads: { loading: 0, freight: 0, crush: 0, royalty: 0, other: 0 },
+      };
+
+      const stock = calculateMineStock(mine, [lot], [dispatch]);
+      expect(stock.totalInflowTons).toBe(50);
+      expect(stock.totalOutflowTons).toBe(18.5);
+      expect(stock.remainingTons).toBe(31.5);
+      expect(stock.remainingValue).toBe(31.5 * 20000);
+      expect(stock.dispatchesCount).toBe(1);
+    });
+
+    it('calculates total value and landed rate with loading charges and freight fare', async () => {
+      // User Example: 10 tons @ 25,000/ton, loading 5,000, fare 20,000
+      // Coal cost = 250,000. Total = 250,000 + 5,000 + 20,000 = 275,000.
+      // Landed rate for 10 tons = 27,500/ton.
+      const lot: InventoryLot = {
+        id: 'lot-loading-fare',
+        mineId: 'mine-1',
+        mineName: 'Islam C',
+        boughtFrom: 'Talha',
+        supplier: 'Talha',
+        tonnage: 10,
+        billedWeight: 10,
+        receivedWeight: 10,
+        purchaseRate: 25000,
+        loadingCost: 5000,
+        freightCost: 20000,
+        date: '2026-10-09',
+      };
+      await saveLot(lot);
+
+      const saved = await getLot('lot-loading-fare');
+      expect(saved).toBeDefined();
+      expect(saved?.totalValue).toBe(275000);
+      expect(saved?.landedRate).toBe(27500);
+      expect(saved?.boughtFrom).toBe('Talha');
+
+      // Test with received quantity shortage (e.g. 9.8 tons received)
+      const lotShortage: InventoryLot = {
+        ...lot,
+        id: 'lot-shortage',
+        receivedWeight: 9.8,
+      };
+      await saveLot(lotShortage);
+      const savedShortage = await getLot('lot-shortage');
+      expect(savedShortage?.totalValue).toBe(275000);
+      // 275000 / 9.8 = 28061.22
+      expect(savedShortage?.landedRate).toBeCloseTo(28061.22, 1);
+    });
+
+    it('tracks linked dispatch and preserves usedInDispatch metadata', async () => {
+      const lot: InventoryLot = {
+        id: 'lot-dispatch-linked',
+        mineId: 'mine-1',
+        boughtFrom: 'Inam Shb',
+        supplier: 'Inam Shb',
+        tonnage: 15,
+        billedWeight: 15,
+        receivedWeight: 15,
+        purchaseRate: 20000,
+        usedInDispatchId: 'disp-tkx-418',
+        usedInDispatchTruck: 'TKX-418',
+        usedInPartyName: 'Maple Leaf Cement',
+        usedInDate: '2026-10-09',
+        date: '2026-10-09',
+      };
+      await saveLot(lot);
+
+      const saved = await getLot('lot-dispatch-linked');
+      expect(saved?.usedInDispatchId).toBe('disp-tkx-418');
+      expect(saved?.usedInDispatchTruck).toBe('TKX-418');
+      expect(saved?.usedInPartyName).toBe('Maple Leaf Cement');
+    });
+
+    it('preserves mines during backup and restore', async () => {
+      const mine: Mine = {
+        id: 'mine-backup',
+        name: 'Chamalang Mine',
+        ratePerTon: 25000,
+        location: 'Plot 7',
+      };
+      await saveMine(mine);
+
+      const backup = await getAllBackupData();
+      expect(backup.mines).toBeDefined();
+      expect(backup.mines?.some((m) => m.id === 'mine-backup')).toBe(true);
+
+      await clearAllData();
+      const emptyMines = await getMines();
+      expect(emptyMines).toHaveLength(0);
+
+      await restoreBackup(backup);
+      const restoredMines = await getMines();
+      expect(restoredMines).toHaveLength(1);
+      expect(restoredMines[0].name).toBe('Chamalang Mine');
+      expect(restoredMines[0].ratePerTon).toBe(25000);
+    });
+
+    it('cascades rate edits from stock entry to linked dispatch and updates calculations', async () => {
+      const lot: InventoryLot = {
+        id: 'lot-cascade-test',
+        mineId: 'mine-1',
+        mineName: 'Islam C',
+        boughtFrom: 'Hamza',
+        supplier: 'Hamza',
+        tonnage: 40,
+        billedWeight: 40,
+        receivedWeight: 40,
+        purchaseRate: 30000,
+        landedRate: 30000,
+        totalValue: 1200000,
+        date: '2026-10-09',
+      };
+      await saveLot(lot);
+
+      const dispatch: Dispatch = {
+        id: 'disp-cascade-test',
+        partyId: 'party-1',
+        date: '2026-10-09',
+        truckNumber: 'TKX-999',
+        factoryName: 'Maple Leaf Cement',
+        targetGcv: 4500,
+        baseRate: 40000,
+        labActualGcv: 4500,
+        labReceivedWeight: 10,
+        labSulphur: 1,
+        coalInputs: [
+          {
+            id: 'ci-1',
+            lotId: 'lot-cascade-test',
+            mineId: 'mine-1',
+            sourceName: 'Islam C - Hamza',
+            weight: 10,
+            purchaseRate: 30000,
+          },
+        ],
+        overheads: { loading: 0, freight: 0, crush: 0, royalty: 0, other: 0 },
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+      await saveDispatch(dispatch);
+
+      const initialSettlement = calculateSettlement(dispatch);
+      expect(initialSettlement.totalCost).toBe(300000); // 10t * 30000
+      expect(initialSettlement.netProfit).toBe(100000); // 400000 revenue - 300000 cost
+
+      // User realizes mistake: updates stock entry from 30,000 to 31,000
+      const updatedLot: InventoryLot = {
+        ...lot,
+        purchaseRate: 31000,
+        landedRate: 31000,
+        totalValue: 1240000,
+      };
+      await saveLot(updatedLot);
+
+      // Verify the linked dispatch automatically updated in the database
+      const syncedDispatch = await getDispatch('disp-cascade-test');
+      expect(syncedDispatch).not.toBeNull();
+      expect(syncedDispatch?.coalInputs[0].purchaseRate).toBe(31000);
+
+      // Check recalculated settlement reflects the new rate of 31,000
+      const syncedSettlement = calculateSettlement(syncedDispatch!);
+      expect(syncedSettlement.totalCost).toBe(310000); // 10t * 31000
+      expect(syncedSettlement.netProfit).toBe(90000); // 400000 revenue - 310000 cost
+    });
+
+    it('prevents deleting lot if it is actively used in a dispatch', async () => {
+      const lot: InventoryLot = {
+        id: 'lot-delete-protect',
+        mineId: 'mine-1',
+        supplier: 'Vendor A',
+        tonnage: 20,
+        billedWeight: 20,
+        receivedWeight: 20,
+        purchaseRate: 25000,
+        landedRate: 25000,
+        date: '2026-10-09',
+      };
+      await saveLot(lot);
+
+      const dispatch: Dispatch = {
+        id: 'disp-delete-protect',
+        partyId: 'party-1',
+        date: '2026-10-09',
+        truckNumber: 'LES-777',
+        factoryName: 'Bestway',
+        targetGcv: 4500,
+        baseRate: 35000,
+        labActualGcv: 4500,
+        labReceivedWeight: 20,
+        labSulphur: 1,
+        coalInputs: [
+          {
+            id: 'ci-protect',
+            lotId: 'lot-delete-protect',
+            sourceName: 'Mine - Vendor A',
+            weight: 20,
+            purchaseRate: 25000,
+          },
+        ],
+        overheads: { loading: 0, freight: 0, crush: 0, royalty: 0, other: 0 },
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+      await saveDispatch(dispatch);
+
+      await expect(deleteLot('lot-delete-protect')).rejects.toThrow(
+        /Cannot delete this stock entry because it is actively used in Dispatch #LES-777/
+      );
+    });
+
+    it('automatically links lot on saveDispatch and updates metadata when dispatch truck changes', async () => {
+      const lot: InventoryLot = {
+        id: 'lot-auto-link',
+        mineId: 'mine-1',
+        supplier: 'Kamran',
+        tonnage: 30,
+        billedWeight: 30,
+        receivedWeight: 30,
+        purchaseRate: 21000,
+        landedRate: 21000,
+        date: '2026-10-09',
+      };
+      await saveLot(lot);
+
+      // Save dispatch using lot-auto-link
+      const dispatch: Dispatch = {
+        id: 'disp-auto-link',
+        partyId: 'party-1',
+        date: '2026-10-09',
+        truckNumber: 'TK-100',
+        factoryName: 'Maple Leaf Cement',
+        targetGcv: 5000,
+        baseRate: 30000,
+        labActualGcv: 5000,
+        labReceivedWeight: 30,
+        labSulphur: 1,
+        coalInputs: [
+          {
+            id: 'ci-auto',
+            lotId: 'lot-auto-link',
+            sourceName: 'Mine - Kamran',
+            weight: 30,
+            purchaseRate: 21000,
+          },
+        ],
+        overheads: { loading: 0, freight: 0, crush: 0, royalty: 0, other: 0 },
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+      await saveDispatch(dispatch);
+
+      let savedLot = await getLot('lot-auto-link');
+      expect(savedLot?.usedInDispatchId).toBe('disp-auto-link');
+      expect(savedLot?.usedInDispatchTruck).toBe('TK-100');
+      expect(savedLot?.usedInPartyName).toBe('Maple Leaf Cement');
+
+      // Edit dispatch: user changes truck from TK-100 to TK-999
+      await saveDispatch({
+        ...dispatch,
+        truckNumber: 'TK-999',
+      });
+
+      savedLot = await getLot('lot-auto-link');
+      expect(savedLot?.usedInDispatchTruck).toBe('TK-999');
+    });
+
+    it('unlinks lot when dispatch is deleted via deleteDispatch', async () => {
+      const lot: InventoryLot = {
+        id: 'lot-unlink-delete',
+        mineId: 'mine-1',
+        supplier: 'Subhan',
+        tonnage: 25,
+        billedWeight: 25,
+        receivedWeight: 25,
+        purchaseRate: 22000,
+        landedRate: 22000,
+        date: '2026-10-09',
+      };
+      await saveLot(lot);
+
+      const dispatch: Dispatch = {
+        id: 'disp-to-be-deleted',
+        partyId: 'party-1',
+        date: '2026-10-09',
+        truckNumber: 'FD-555',
+        factoryName: 'Pioneer Cement',
+        targetGcv: 5000,
+        baseRate: 32000,
+        labActualGcv: 5000,
+        labReceivedWeight: 25,
+        labSulphur: 1,
+        coalInputs: [
+          {
+            id: 'ci-del',
+            lotId: 'lot-unlink-delete',
+            sourceName: 'Mine - Subhan',
+            weight: 25,
+            purchaseRate: 22000,
+          },
+        ],
+        overheads: { loading: 0, freight: 0, crush: 0, royalty: 0, other: 0 },
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+      await saveDispatch(dispatch);
+
+      let linkedLot = await getLot('lot-unlink-delete');
+      expect(linkedLot?.usedInDispatchId).toBe('disp-to-be-deleted');
+
+      // Delete the dispatch
+      await deleteDispatch('disp-to-be-deleted');
+
+      // Lot must be cleanly unlinked!
+      linkedLot = await getLot('lot-unlink-delete');
+      expect(linkedLot?.usedInDispatchId).toBeUndefined();
+      expect(linkedLot?.usedInDispatchTruck).toBeUndefined();
+
+      // Now deleting lot should succeed without errors
+      await expect(deleteLot('lot-unlink-delete')).resolves.not.toThrow();
+    });
+
+    it('unlinks old lot and links new lot when dispatch recipe switches lots', async () => {
+      const lotA: InventoryLot = {
+        id: 'lot-switch-a',
+        mineId: 'mine-1',
+        supplier: 'Source A',
+        tonnage: 20,
+        billedWeight: 20,
+        receivedWeight: 20,
+        purchaseRate: 20000,
+        landedRate: 20000,
+        date: '2026-10-09',
+      };
+      const lotB: InventoryLot = {
+        id: 'lot-switch-b',
+        mineId: 'mine-2',
+        supplier: 'Source B',
+        tonnage: 20,
+        billedWeight: 20,
+        receivedWeight: 20,
+        purchaseRate: 24000,
+        landedRate: 24000,
+        date: '2026-10-09',
+      };
+      await saveLot(lotA);
+      await saveLot(lotB);
+
+      // Create dispatch with lotA
+      const dispatch: Dispatch = {
+        id: 'disp-switch-test',
+        partyId: 'party-1',
+        date: '2026-10-09',
+        truckNumber: 'LHR-888',
+        factoryName: 'Fauji Cement',
+        targetGcv: 4500,
+        baseRate: 35000,
+        labActualGcv: 4500,
+        labReceivedWeight: 20,
+        labSulphur: 1,
+        coalInputs: [
+          {
+            id: 'ci-a',
+            lotId: 'lot-switch-a',
+            sourceName: 'Mine - Source A',
+            weight: 20,
+            purchaseRate: 20000,
+          },
+        ],
+        overheads: { loading: 0, freight: 0, crush: 0, royalty: 0, other: 0 },
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+      await saveDispatch(dispatch);
+
+      expect((await getLot('lot-switch-a'))?.usedInDispatchId).toBe('disp-switch-test');
+      expect((await getLot('lot-switch-b'))?.usedInDispatchId).toBeUndefined();
+
+      // User edits dispatch, removes lotA and uses lotB instead
+      await saveDispatch({
+        ...dispatch,
+        coalInputs: [
+          {
+            id: 'ci-b',
+            lotId: 'lot-switch-b',
+            sourceName: 'Mine - Source B',
+            weight: 20,
+            purchaseRate: 24000,
+          },
+        ],
+      });
+
+      // lotA is now unlinked, lotB is linked
+      expect((await getLot('lot-switch-a'))?.usedInDispatchId).toBeUndefined();
+      expect((await getLot('lot-switch-b'))?.usedInDispatchId).toBe('disp-switch-test');
+      expect((await getLot('lot-switch-b'))?.usedInDispatchTruck).toBe('LHR-888');
+    });
+
+    it('handles multi-source blending with multiple linked lots cleanly', async () => {
+      const lot1: InventoryLot = {
+        id: 'lot-multi-1',
+        mineId: 'mine-1',
+        supplier: 'Pit 1',
+        tonnage: 15,
+        billedWeight: 15,
+        receivedWeight: 15,
+        purchaseRate: 20000,
+        landedRate: 20000,
+        date: '2026-10-09',
+      };
+      const lot2: InventoryLot = {
+        id: 'lot-multi-2',
+        mineId: 'mine-2',
+        supplier: 'Pit 2',
+        tonnage: 10,
+        billedWeight: 10,
+        receivedWeight: 10,
+        purchaseRate: 25000,
+        landedRate: 25000,
+        date: '2026-10-09',
+      };
+      await saveLot(lot1);
+      await saveLot(lot2);
+
+      const blendedDispatch: Dispatch = {
+        id: 'disp-multi-blend',
+        partyId: 'party-1',
+        date: '2026-10-09',
+        truckNumber: 'ML-700',
+        factoryName: 'Attock Cement',
+        targetGcv: 5500,
+        baseRate: 40000,
+        labActualGcv: 5500,
+        labReceivedWeight: 25,
+        labSulphur: 1,
+        coalInputs: [
+          {
+            id: 'ci-m1',
+            lotId: 'lot-multi-1',
+            sourceName: 'Mine 1 - Pit 1',
+            weight: 15,
+            purchaseRate: 20000,
+          },
+          {
+            id: 'ci-m2',
+            lotId: 'lot-multi-2',
+            sourceName: 'Mine 2 - Pit 2',
+            weight: 10,
+            purchaseRate: 25000,
+          },
+        ],
+        overheads: { loading: 0, freight: 0, crush: 0, royalty: 0, other: 0 },
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+      await saveDispatch(blendedDispatch);
+
+      // Both lots must be linked
+      expect((await getLot('lot-multi-1'))?.usedInDispatchId).toBe('disp-multi-blend');
+      expect((await getLot('lot-multi-2'))?.usedInDispatchId).toBe('disp-multi-blend');
+
+      // Update rate of lot1 only (20,000 -> 22,000)
+      await saveLot({
+        ...lot1,
+        purchaseRate: 22000,
+        landedRate: 22000,
+      });
+
+      const updatedDispatch = await getDispatch('disp-multi-blend');
+      expect(updatedDispatch?.coalInputs[0].purchaseRate).toBe(22000);
+      expect(updatedDispatch?.coalInputs[1].purchaseRate).toBe(25000); // lot2 remains 25000
+
+      // Total cost = (15 * 22000) + (10 * 25000) = 330,000 + 250,000 = 580,000
+      const settlement = calculateSettlement(updatedDispatch!);
+      expect(settlement.totalCost).toBe(580000);
+
+      // Delete dispatch -> both lots unlinked
+      await deleteDispatch('disp-multi-blend');
+      expect((await getLot('lot-multi-1'))?.usedInDispatchId).toBeUndefined();
+      expect((await getLot('lot-multi-2'))?.usedInDispatchId).toBeUndefined();
     });
   });
 });

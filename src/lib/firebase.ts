@@ -31,7 +31,7 @@ import { Capacitor } from '@capacitor/core';
 import { FirebaseAuthentication } from '@capacitor-firebase/authentication';
 import { markRecordsClean, getSettings, saveSettings } from './db';
 import { idb } from './dexieDb';
-import type { Party, Dispatch, Payment, PurchaseOrder, InventoryLot, AppSettings } from '../types';
+import type { Party, Dispatch, Payment, PurchaseOrder, InventoryLot, Mine, AppSettings } from '../types';
 
 // Web app's Firebase configuration read from environment variables (.env)
 const firebaseConfig = {
@@ -288,7 +288,7 @@ export interface FirestoreBatchOp {
   type: 'set' | 'delete';
   ref: DocumentReference;
   data?: any;
-  collectionName?: 'parties' | 'dispatches' | 'payments' | 'pos' | 'settings' | 'meta' | 'lots';
+  collectionName?: 'parties' | 'dispatches' | 'payments' | 'pos' | 'settings' | 'meta' | 'lots' | 'mines';
   id?: string;
   uploadedUpdatedAt?: number;
   merge?: boolean;
@@ -427,19 +427,22 @@ export async function syncLedgerToCloud(
   const rawPayments: any[] = backupData.payments || [];
   const rawPos: any[] = backupData.pos || [];
   const rawLots: any[] = backupData.lots || [];
+  const rawMines: any[] = backupData.mines || [];
 
   const partiesList: any[] = options?.deltaOnly ? rawParties.filter((p) => p.dirty) : rawParties;
   const dispatchesList: any[] = options?.deltaOnly ? rawDispatches.filter((d) => d.dirty) : rawDispatches;
   const paymentsList: any[] = options?.deltaOnly ? rawPayments.filter((p) => p.dirty) : rawPayments;
   const posList: any[] = options?.deltaOnly ? rawPos.filter((po) => po.dirty) : rawPos;
   const lotsList: any[] = options?.deltaOnly ? rawLots.filter((l) => l.dirty) : rawLots;
+  const minesList: any[] = options?.deltaOnly ? rawMines.filter((m) => m.dirty) : rawMines;
 
   const isLocalEmpty =
     rawParties.length === 0 &&
     rawDispatches.length === 0 &&
     rawPayments.length === 0 &&
     rawPos.length === 0 &&
-    rawLots.length === 0;
+    rawLots.length === 0 &&
+    rawMines.length === 0;
 
   // Safeguard: Prevent accidental wipe of cloud records if local storage is cleared / empty
   if (isLocalEmpty && !options?.forceEmptyOverwrite) {
@@ -451,7 +454,8 @@ export async function syncLedgerToCloud(
           (existingCloud.dispatches?.length || 0) +
           (existingCloud.payments?.length || 0) +
           (existingCloud.pos?.length || 0) +
-          (existingCloud.lots?.length || 0);
+          (existingCloud.lots?.length || 0) +
+          (existingCloud.mines?.length || 0);
 
         if (cloudCount > 0) {
           console.warn('[CloudSync] Protected: Prevented accidental wipe of remote cloud database with 0 local records.');
@@ -545,6 +549,21 @@ export async function syncLedgerToCloud(
     }
   }
 
+  // 6. Mines subcollection
+  for (const mine of minesList) {
+    if (mine.id) {
+      const mineUpdatedAt = Number(mine.updatedAt || Date.now());
+      operations.push({
+        type: 'set',
+        ref: doc(db, 'users', uid, 'mines', mine.id),
+        collectionName: 'mines',
+        id: mine.id,
+        uploadedUpdatedAt: mineUpdatedAt,
+        data: sanitizeForFirestore({ ...mine, updatedAt: mineUpdatedAt }),
+      });
+    }
+  }
+
   // 6. Settings document (strips PIN credentials and theme preference per Issue 14 & 22)
   // Only push settings if they actually changed locally (Issue 21)
   const lastSyncedSettingsKey = `fl_last_synced_settings_${uid}`;
@@ -593,7 +612,8 @@ export async function syncLedgerToCloud(
       paymentsCount: rawPayments.length,
       posCount: rawPos.length,
       lotsCount: rawLots.length,
-      totalCount: rawParties.length + rawDispatches.length + rawPayments.length + rawPos.length + rawLots.length,
+      minesCount: rawMines.length,
+      totalCount: rawParties.length + rawDispatches.length + rawPayments.length + rawPos.length + rawLots.length + rawMines.length,
       updatedAt: serverTimestamp(),
     }),
   });
@@ -624,6 +644,9 @@ export async function syncLedgerToCloud(
   const successLots = succeeded
     .filter((o) => o.collectionName === 'lots' && o.id && o.uploadedUpdatedAt !== undefined)
     .map((o) => ({ id: o.id!, updatedAt: o.uploadedUpdatedAt! }));
+  const successMines = succeeded
+    .filter((o) => o.collectionName === 'mines' && o.id && o.uploadedUpdatedAt !== undefined)
+    .map((o) => ({ id: o.id!, updatedAt: o.uploadedUpdatedAt! }));
 
   try {
     await markRecordsClean({
@@ -632,6 +655,7 @@ export async function syncLedgerToCloud(
       payments: successPayments,
       pos: successPos,
       lots: successLots,
+      mines: successMines,
     });
   } catch (cleanErr) {
     console.warn('[CloudSync] Warning marking records clean:', cleanErr);
@@ -671,6 +695,10 @@ export async function syncLedgerToCloud(
               resolved = true;
             } else if (op.collectionName === 'lots' && op.id) {
               await idb.lots.put({ ...cloudData, dirty: false } as InventoryLot);
+              mergedConflictCount++;
+              resolved = true;
+            } else if (op.collectionName === 'mines' && op.id) {
+              await idb.mines.put({ ...cloudData, dirty: false } as Mine);
               mergedConflictCount++;
               resolved = true;
             } else if (op.collectionName === 'settings') {
@@ -750,12 +778,13 @@ export async function fetchLedgerFromCloud(
 ): Promise<any | null> {
   if (!isFirebaseConfigured || !db) return null;
   try {
-    const [partiesSnap, dispatchesSnap, paymentsSnap, posSnap, lotsSnap, settingsSnap, metaSnap] = await Promise.all([
+    const [partiesSnap, dispatchesSnap, paymentsSnap, posSnap, lotsSnap, minesSnap, settingsSnap, metaSnap] = await Promise.all([
       getDocs(collection(db, 'users', uid, 'parties')),
       getDocs(collection(db, 'users', uid, 'dispatches')),
       getDocs(collection(db, 'users', uid, 'payments')),
       getDocs(collection(db, 'users', uid, 'pos')),
       getDocs(collection(db, 'users', uid, 'lots')),
+      getDocs(collection(db, 'users', uid, 'mines')),
       getDoc(doc(db, 'users', uid, 'settings', 'config')),
       getDoc(doc(db, 'users', uid, 'meta', 'sync')),
     ]);
@@ -766,10 +795,11 @@ export async function fetchLedgerFromCloud(
     const payments = paymentsSnap.docs.map((d) => ({ ...d.data(), dirty: false }));
     const pos = posSnap.docs.map((d) => ({ ...d.data(), dirty: false }));
     const lots = lotsSnap.docs.map((d) => ({ ...d.data(), dirty: false }));
+    const mines = minesSnap.docs.map((d) => ({ ...d.data(), dirty: false }));
     const settings = settingsSnap.exists() ? settingsSnap.data() : null;
     const meta = metaSnap.exists() ? metaSnap.data() : null;
 
-    const totalSubrecords = parties.length + dispatches.length + payments.length + pos.length + lots.length;
+    const totalSubrecords = parties.length + dispatches.length + payments.length + pos.length + lots.length + mines.length;
 
     // Backward-compatibility: Check if legacy single-document backup exists
     if (totalSubrecords === 0 && !settings) {
@@ -800,6 +830,7 @@ export async function fetchLedgerFromCloud(
       payments,
       pos,
       lots,
+      mines,
       settings: settings || {},
     };
   } catch (err: any) {
@@ -813,7 +844,7 @@ export async function fetchLedgerFromCloud(
  */
 export async function syncSingleEntityToCloud(
   uid: string,
-  entityType: 'party' | 'dispatch' | 'payment' | 'purchase_order' | 'lot' | 'settings',
+  entityType: 'party' | 'dispatch' | 'payment' | 'purchase_order' | 'lot' | 'mine' | 'settings',
   item: any
 ): Promise<void> {
   if (!isFirebaseConfigured || !db || !uid || !item) return;
@@ -828,7 +859,8 @@ export async function syncSingleEntityToCloud(
       entityType === 'dispatch' ? 'dispatches' :
       entityType === 'payment' ? 'payments' :
       entityType === 'purchase_order' ? 'pos' :
-      entityType === 'lot' ? 'lots' : null;
+      entityType === 'lot' ? 'lots' :
+      entityType === 'mine' ? 'mines' : null;
 
     if (collectionName && item.id) {
       const ref = doc(db, 'users', uid, collectionName, item.id);
@@ -845,7 +877,7 @@ export async function syncSingleEntityToCloud(
  */
 export async function deleteSingleEntityFromCloud(
   uid: string,
-  entityType: 'party' | 'dispatch' | 'payment' | 'purchase_order' | 'lot',
+  entityType: 'party' | 'dispatch' | 'payment' | 'purchase_order' | 'lot' | 'mine',
   id: string,
   deletedAt = Date.now()
 ): Promise<void> {
@@ -856,7 +888,8 @@ export async function deleteSingleEntityFromCloud(
       entityType === 'dispatch' ? 'dispatches' :
       entityType === 'payment' ? 'payments' :
       entityType === 'purchase_order' ? 'pos' :
-      entityType === 'lot' ? 'lots' : null;
+      entityType === 'lot' ? 'lots' :
+      entityType === 'mine' ? 'mines' : null;
 
     if (collectionName) {
       const ref = doc(db, 'users', uid, collectionName, id);
@@ -884,7 +917,7 @@ export async function wipeCloudUserData(uid: string): Promise<{ success: boolean
   if (!isFirebaseConfigured || !db) return { success: true, message: 'Offline mode: no cloud database to wipe.' };
 
   try {
-    const subcollections = ['parties', 'dispatches', 'payments', 'pos', 'lots'];
+    const subcollections = ['parties', 'dispatches', 'payments', 'pos', 'lots', 'mines'];
     const operations: Array<{ type: 'set' | 'delete'; ref: DocumentReference }> = [];
 
     for (const sub of subcollections) {

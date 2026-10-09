@@ -1,4 +1,4 @@
-import type { Dispatch, Payment, TaxMethod, AppSettings, InventoryLot } from "../types";
+import type { Dispatch, Payment, TaxMethod, AppSettings, InventoryLot, Mine } from "../types";
 import { getCachedSettings } from "../lib/db";
 
 export interface SettlementResult {
@@ -419,6 +419,135 @@ export function calculateInventoryTotals(lots: InventoryLot[], dispatches: Dispa
       ...data,
       avgCost: data.tons > 0 ? data.capital / data.tons : 0,
     })),
+  };
+}
+
+export interface MineStockSummary {
+  mine: Mine;
+  totalInflowTons: number;
+  totalInflowValue: number;
+  totalOutflowTons: number;
+  totalOutflowValue: number;
+  remainingTons: number;
+  remainingValue: number;
+  isOverdrawn: boolean;
+  entriesCount: number;
+  dispatchesCount: number;
+  status: 'in_stock' | 'low' | 'exhausted' | 'overdrawn';
+}
+
+/**
+ * Calculates stock balance and financials for an individual Mine:
+ * Inflow = Sum of all stock entries (lots) linked to this mine.
+ * Outflow = Sum of all coal blending recipes consuming coal from this mine.
+ * Remaining Stock = Inflow Tons - Outflow Tons.
+ * Stock Value = Remaining Tons * Mine Rate Per Ton.
+ */
+export function calculateMineStock(
+  mine: Mine,
+  lots: InventoryLot[],
+  dispatches: Dispatch[]
+): MineStockSummary {
+  const activeLots = (lots || []).filter(
+    (l) =>
+      !l.deleted &&
+      (l.mineId === mine.id || (!l.mineId && (l.mineSource || l.mineName || '').trim().toLowerCase() === mine.name.trim().toLowerCase()))
+  );
+
+  let totalInflowTons = 0;
+  let totalInflowValue = 0;
+
+  for (const lot of activeLots) {
+    const tons = cleanNum(lot.tonnage ?? (lot.receivedWeight || lot.billedWeight || 0));
+    const rate = cleanNum(lot.ratePerTon ?? (lot.landedRate || lot.purchaseRate || mine.ratePerTon || 0));
+    const val = lot.totalValue !== undefined ? cleanNum(lot.totalValue) : tons * rate;
+    totalInflowTons += tons;
+    totalInflowValue += val;
+  }
+
+  // Find all dispatches blending coal from this mine
+  const activeDispatches = (dispatches || []).filter((d) => !d.deleted);
+  let totalOutflowTons = 0;
+  let linkedDispatchesCount = 0;
+
+  for (const d of activeDispatches) {
+    let dispatchUsedMine = false;
+    if (Array.isArray(d.coalInputs)) {
+      for (const ci of d.coalInputs) {
+        const matchesMine =
+          ci.mineId === mine.id ||
+          (Boolean(ci.sourceName) && ci.sourceName.trim().toLowerCase() === mine.name.trim().toLowerCase());
+        if (matchesMine) {
+          totalOutflowTons += cleanNum(ci.weight);
+          dispatchUsedMine = true;
+        }
+      }
+    }
+    if (dispatchUsedMine) {
+      linkedDispatchesCount++;
+    }
+  }
+
+  const remainingTons = Math.round((totalInflowTons - totalOutflowTons) * 100) / 100;
+  const isOverdrawn = remainingTons < -0.001;
+  const remainingValue = Math.round(Math.max(0, remainingTons) * cleanNum(mine.ratePerTon));
+  const totalOutflowValue = Math.round(totalOutflowTons * cleanNum(mine.ratePerTon));
+
+  let status: 'in_stock' | 'low' | 'exhausted' | 'overdrawn' = 'in_stock';
+  if (isOverdrawn) {
+    status = 'overdrawn';
+  } else if (remainingTons <= 0) {
+    status = 'exhausted';
+  } else if (remainingTons < 20) {
+    status = 'low';
+  }
+
+  return {
+    mine,
+    totalInflowTons: Math.round(totalInflowTons * 100) / 100,
+    totalInflowValue: Math.round(totalInflowValue),
+    totalOutflowTons: Math.round(totalOutflowTons * 100) / 100,
+    totalOutflowValue,
+    remainingTons,
+    remainingValue,
+    isOverdrawn,
+    entriesCount: activeLots.length,
+    dispatchesCount: linkedDispatchesCount,
+    status,
+  };
+}
+
+/**
+ * Aggregates overall stock metrics across all active mines
+ */
+export function calculateOverallMinesSummary(
+  mines: Mine[],
+  lots: InventoryLot[],
+  dispatches: Dispatch[]
+) {
+  const activeMines = (mines || []).filter((m) => !m.deleted);
+  let totalYardTons = 0;
+  let totalYardValue = 0;
+  let totalInflowTons = 0;
+  let totalOutflowTons = 0;
+  let overdrawnCount = 0;
+
+  for (const mine of activeMines) {
+    const summary = calculateMineStock(mine, lots, dispatches);
+    totalYardTons += summary.remainingTons;
+    totalYardValue += summary.remainingValue;
+    totalInflowTons += summary.totalInflowTons;
+    totalOutflowTons += summary.totalOutflowTons;
+    if (summary.isOverdrawn) overdrawnCount++;
+  }
+
+  return {
+    totalMines: activeMines.length,
+    totalYardTons: Math.round(totalYardTons * 100) / 100,
+    totalYardValue: Math.round(totalYardValue),
+    totalInflowTons: Math.round(totalInflowTons * 100) / 100,
+    totalOutflowTons: Math.round(totalOutflowTons * 100) / 100,
+    overdrawnCount,
   };
 }
 

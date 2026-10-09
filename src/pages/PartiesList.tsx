@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from 'react';
-import { getParties, saveParty, deleteParty, deletePartyWithRecords, archiveParty, getDispatches, getPayments, getSettings } from '../lib/db';
+import { getParties, saveParty, archiveParty, getDispatches, getPayments, getSettings } from '../lib/db';
 import type { Party, Dispatch, Payment, AppSettings } from '../types';
 import { calculatePartyBalance } from '../utils/calculations';
 import { getCurrencySymbol, formatAmountNumber } from '../utils/currency';
@@ -8,7 +8,6 @@ import { useLedgerListener } from '../hooks/useLedgerListener';
 import { v4 as uuidv4 } from 'uuid';
 import {
   UserPlus,
-  Trash2,
   ChevronRight,
   Building2,
   Search,
@@ -88,8 +87,6 @@ export default function PartiesList() {
     refreshData();
   });
 
-  const [partyToDelete, setPartyToDelete] = useState<Party | null>(null);
-  const [showCascadeConfirm, setShowCascadeConfirm] = useState(false);
   const [tabFilter, setTabFilter] = useState<'active' | 'archived'>('active');
   const [sortBy, setSortBy] = useState<'latest_entry' | 'name' | 'highest_due' | 'highest_adv'>('latest_entry');
   const [sortOrder, setSortOrder] = useState<'desc' | 'asc'>('desc');
@@ -105,36 +102,11 @@ export default function PartiesList() {
     localStorage.setItem('parties_view_mode', mode);
   };
 
-  const handleDelete = (e: React.MouseEvent, party: Party) => {
-    e.stopPropagation();
-    playPopSound();
-    setPartyToDelete(party);
-    setShowCascadeConfirm(false);
-  };
-
   const handleArchiveParty = async (party: Party, archiveState = true) => {
     await archiveParty(party.id, archiveState);
     playPopSound();
-    setPartyToDelete(null);
     showToast(archiveState ? 'Party archived' : 'Party un-archived successfully');
     refreshData();
-  };
-
-  const handleConfirmDeleteParty = async () => {
-    if (!partyToDelete) return;
-    try {
-      if (showCascadeConfirm) {
-        await deletePartyWithRecords(partyToDelete.id);
-      } else {
-        await deleteParty(partyToDelete.id);
-      }
-      playPopSound();
-      setPartyToDelete(null);
-      setShowCascadeConfirm(false);
-      refreshData();
-    } catch (err: any) {
-      alert(err?.message || 'Could not delete party.');
-    }
   };
 
   // Map metadata (latest activity timestamp, balance, profit) for efficient sorting
@@ -641,23 +613,6 @@ export default function PartiesList() {
                               <span>Unarchive</span>
                             </button>
                           )}
-                          <button
-                            onClick={(e) => handleDelete(e, party)}
-                            style={{
-                              background: 'none',
-                              border: 'none',
-                              padding: 6,
-                              color: 'var(--label-tertiary)',
-                              cursor: 'pointer',
-                              display: 'flex',
-                              alignItems: 'center',
-                              justifyContent: 'center',
-                              borderRadius: 8
-                            }}
-                            title={party.isArchived ? 'Manage Party' : 'Delete Party'}
-                          >
-                            <Trash2 style={{ width: 16, height: 16 }} />
-                          </button>
                           <ChevronRight className="ios-chevron" style={{ width: 16, height: 16 }} strokeWidth={2.5} />
                         </div>
                       </div>
@@ -1066,78 +1021,6 @@ export default function PartiesList() {
         }}
       />
 
-      {/* ── iOS Liquid Glass Delete Confirmation Modal ── */}
-      {partyToDelete && (() => {
-        const cDisp = dispatches.filter((d) => d.partyId === partyToDelete.id).length;
-        const cPay = payments.filter((p) => p.partyId === partyToDelete.id).length;
-        const hasRecords = cDisp > 0 || cPay > 0;
-
-        if (showCascadeConfirm) {
-          return (
-            <IOSConfirmModal
-              isOpen={Boolean(partyToDelete)}
-              title="Delete Party & All Child Records?"
-              message={`WARNING: This will permanently delete "${partyToDelete.name}" along with all ${cDisp} dispatch(es) and ${cPay} payment(s). This action cannot be undone.`}
-              confirmText={`Delete Everything (${cDisp + cPay + 1} records)`}
-              cancelText="Cancel"
-              destructive
-              countdownSeconds={3}
-              onConfirm={handleConfirmDeleteParty}
-              onCancel={() => {
-                setPartyToDelete(null);
-                setShowCascadeConfirm(false);
-              }}
-            />
-          );
-        }
-
-        if (partyToDelete.isArchived) {
-          return (
-            <IOSConfirmModal
-              isOpen={Boolean(partyToDelete)}
-              title="Archived Party"
-              message={`"${partyToDelete.name}" is currently archived. Would you like to unarchive it to restore it to the active parties list?`}
-              confirmText="Unarchive Party"
-              cancelText="Close"
-              destructive={false}
-              countdownSeconds={0}
-              onConfirm={() => handleArchiveParty(partyToDelete, false)}
-              onCancel={() => setPartyToDelete(null)}
-            />
-          );
-        }
-
-        if (hasRecords) {
-          return (
-            <IOSConfirmModal
-              isOpen={Boolean(partyToDelete)}
-              title="Party Has Existing Records"
-              message={`"${partyToDelete.name}" has ${cDisp} dispatch(es) and ${cPay} payment(s). You can't delete this party because it has existing records. To Delete the party you have to delete all the records first, Right now you can archive the party only.`}
-              confirmText="Archive Party"
-              cancelText="Cancel"
-              destructive={false}
-              icon="warning"
-              countdownSeconds={0}
-              onConfirm={() => handleArchiveParty(partyToDelete, true)}
-              onCancel={() => setPartyToDelete(null)}
-            />
-          );
-        }
-
-        return (
-          <IOSConfirmModal
-            isOpen={Boolean(partyToDelete)}
-            title="Delete Party?"
-            message={`Are you sure you want to delete "${partyToDelete.name}"? This party has no transactions.`}
-            confirmText="Delete Party"
-            cancelText="Cancel"
-            destructive
-            countdownSeconds={2}
-            onConfirm={handleConfirmDeleteParty}
-            onCancel={() => setPartyToDelete(null)}
-          />
-        );
-      })()}
     </div>
   );
 }

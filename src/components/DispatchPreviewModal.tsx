@@ -17,7 +17,8 @@ import {
   MessageSquare,
   Calculator,
   CheckCircle2,
-  Trash2
+  Trash2,
+  ExternalLink,
 } from 'lucide-react';
 
 interface DispatchPreviewModalProps {
@@ -264,8 +265,41 @@ ${dispatch.notes ? `*Remarks:* ${dispatch.notes}\n\n` : ''}✓ E-Verified Dispat
                 <div key={input.id || idx}>
                   <div style={{ padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <div>
-                      <div style={{ fontSize: 15, fontWeight: 500, color: 'var(--label-primary)' }}>{input.sourceName || 'Unknown Source'}</div>
-                      <div style={{ fontSize: 13, color: 'var(--label-secondary)', marginTop: 2 }}>Purchase: {curSym} {input.purchaseRate}/t</div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                        <span style={{ fontSize: 15, fontWeight: 500, color: 'var(--label-primary)' }}>
+                          {input.sourceName || 'Unknown Source'}
+                        </span>
+                        {input.mineId && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleClose();
+                              navigate(`/inventory/mines/${input.mineId}`);
+                            }}
+                            style={{
+                              background: 'rgba(0, 122, 255, 0.1)',
+                              color: 'var(--ios-blue)',
+                              border: '0.5px solid rgba(0, 122, 255, 0.25)',
+                              borderRadius: 6,
+                              padding: '2px 7px',
+                              fontSize: 11,
+                              fontWeight: 600,
+                              cursor: 'pointer',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: 3,
+                            }}
+                            title="Open Mine Ledger"
+                          >
+                            <span>Mine</span>
+                            <ExternalLink size={10} />
+                          </button>
+                        )}
+                      </div>
+                      <div style={{ fontSize: 13, color: 'var(--label-secondary)', marginTop: 2 }}>
+                        Purchase: {curSym} {input.purchaseRate}/t
+                      </div>
                     </div>
                     <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--label-primary)' }}>
                       {input.weight} t
