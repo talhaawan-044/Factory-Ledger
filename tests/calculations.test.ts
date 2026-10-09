@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { calculateSettlement, calculatePartyBalance, calculateTransitLoss, calculateLedgerTotals, isDispatchPending } from '../src/utils/calculations';
+import { calculateSettlement, calculatePartyBalance, calculateTransitLoss, calculateLedgerTotals, isDispatchPending, getEffectiveAdjustments, buildDispatchSlipRows } from '../src/utils/calculations';
+import { buildFleetExportData } from '../src/utils/exportSharing';
 import type { Dispatch, Payment } from '../src/types';
 
 describe('T1: Settlement and Financial Calculations Golden Values', () => {
@@ -353,5 +354,97 @@ describe('Issue 36: Cleanups & Aggregation Resilience (T28 & T29)', () => {
     expect(poTotals.settledCount).toBe(1);
   });
 });
+
+describe('Issue 37: Pro-Rata Quality Adjustments Transparency (T30 & T31)', () => {
+  it('T30: slip rows and exports show the pro-rata deduction and premium', () => {
+    const prorataDeductionDispatch: Dispatch = {
+      id: 'disp-prorata-ded',
+      date: '2026-10-09',
+      partyId: 'party-1',
+      truckNumber: 'TK-PRO-1',
+      baseRate: 31800,
+      targetGcv: 4500,
+      labActualGcv: 4300,
+      gcvAdjustment: 'prorata',
+      gcvAdjustmentRounding: 'paisa',
+      labReceivedWeight: 30,
+      taxMethod: 'manual',
+      manualTax: 0,
+      commissionPerTon: 0,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    const adj = getEffectiveAdjustments(prorataDeductionDispatch);
+    expect(adj.isProrata).toBe(true);
+    expect(adj.deduction).toBeCloseTo(1413.33, 2);
+    expect(adj.premium).toBe(0);
+    expect(adj.ruleLabel).toContain('lab 4300 / target 4500');
+
+    const slipRows = buildDispatchSlipRows(prorataDeductionDispatch);
+    const dedRow = slipRows.find((r) => r.kind === 'gcv-deduction');
+    expect(dedRow).toBeDefined();
+    expect(dedRow?.amount).toBeCloseTo(1413.33, 2);
+    expect(dedRow?.label).toContain('Pro-rata: lab 4300 / target 4500');
+
+    const exportData = buildFleetExportData([prorataDeductionDispatch]);
+    expect(exportData.rows[0].deduction).toBeCloseTo(1413.33, 2);
+
+    // Test pro-rata premium
+    const prorataPremiumDispatch: Dispatch = {
+      ...prorataDeductionDispatch,
+      id: 'disp-prorata-prem',
+      labActualGcv: 4700,
+    };
+    const adjPrem = getEffectiveAdjustments(prorataPremiumDispatch);
+    expect(adjPrem.premium).toBeCloseTo(1413.33, 2);
+    expect(adjPrem.deduction).toBe(0);
+
+    const slipRowsPrem = buildDispatchSlipRows(prorataPremiumDispatch);
+    const premRow = slipRowsPrem.find((r) => r.kind === 'gcv-premium');
+    expect(premRow).toBeDefined();
+    expect(premRow?.amount).toBeCloseTo(1413.33, 2);
+    expect(premRow?.label).toContain('Pro-rata: lab 4700 / target 4500');
+
+    const exportPremData = buildFleetExportData([prorataPremiumDispatch]);
+    expect(exportPremData.rows[0].premium).toBeCloseTo(1413.33, 2);
+  });
+
+  it('T31: manual dispatches still show their typed deduction and premium', () => {
+    const manualDispatch: Dispatch = {
+      id: 'disp-manual-adj',
+      date: '2026-10-09',
+      partyId: 'party-1',
+      truckNumber: 'TK-MAN-1',
+      baseRate: 30000,
+      manualDeduction: 500,
+      manualPremium: 250,
+      gcvAdjustment: 'manual',
+      labReceivedWeight: 25,
+      taxMethod: 'manual',
+      manualTax: 0,
+      commissionPerTon: 0,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    const adj = getEffectiveAdjustments(manualDispatch);
+    expect(adj.isProrata).toBe(false);
+    expect(adj.deduction).toBe(500);
+    expect(adj.premium).toBe(250);
+    expect(adj.ruleLabel).toBe('Manual adjustment');
+
+    const slipRows = buildDispatchSlipRows(manualDispatch);
+    const dedRow = slipRows.find((r) => r.kind === 'gcv-deduction');
+    const premRow = slipRows.find((r) => r.kind === 'gcv-premium');
+    expect(dedRow?.amount).toBe(500);
+    expect(premRow?.amount).toBe(250);
+
+    const exportData = buildFleetExportData([manualDispatch]);
+    expect(exportData.rows[0].deduction).toBe(500);
+    expect(exportData.rows[0].premium).toBe(250);
+  });
+});
+
 
 

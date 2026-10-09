@@ -1,6 +1,6 @@
 import React from 'react';
 import type { Dispatch, Party, PurchaseOrder, AppSettings } from '../types';
-import { calculateSettlement } from '../utils/calculations';
+import { calculateSettlement, getEffectiveAdjustments } from '../utils/calculations';
 import { getCurrencySymbol, formatAmountNumber } from '../utils/currency';
 
 interface DispatchReceiptProps {
@@ -13,6 +13,7 @@ interface DispatchReceiptProps {
 export const DispatchReceipt = React.forwardRef<HTMLDivElement, DispatchReceiptProps>(
   ({ dispatch, party, po, settings }, ref) => {
     const settlement = calculateSettlement(dispatch, settings);
+    const adj = getEffectiveAdjustments(dispatch, settings);
     const businessName = settings?.businessName || 'AWAN COAL LOGISTICS';
     const factoryName = party?.name || dispatch.factoryName || 'Factory Client';
     const curSym = getCurrencySymbol(settings?.currency);
@@ -292,20 +293,24 @@ export const DispatchReceipt = React.forwardRef<HTMLDivElement, DispatchReceiptP
                 </td>
               </tr>
 
-              {Boolean(dispatch.manualDeduction && dispatch.manualDeduction > 0) && (
+              {Boolean(adj.deduction > 0) && (
                 <tr style={{ borderBottom: '1px solid #F1F5F9' }}>
-                  <td style={{ padding: '5px 0', color: '#DC2626' }}>GCV Quality Deduction</td>
+                  <td style={{ padding: '5px 0', color: '#DC2626' }}>
+                    GCV Quality Deduction {adj.isProrata ? `(${adj.ruleLabel})` : ''}
+                  </td>
                   <td style={{ padding: '5px 0', textAlign: 'right', color: '#DC2626' }}>
-                    - {curSym} {dispatch.manualDeduction} / ton
+                    - {curSym} {adj.deduction.toFixed(2)} / ton
                   </td>
                 </tr>
               )}
 
-              {Boolean(dispatch.manualPremium && dispatch.manualPremium > 0) && (
+              {Boolean(adj.premium > 0) && (
                 <tr style={{ borderBottom: '1px solid #F1F5F9' }}>
-                  <td style={{ padding: '5px 0', color: '#16A34A' }}>Quality Premium</td>
+                  <td style={{ padding: '5px 0', color: '#16A34A' }}>
+                    Quality Premium {adj.isProrata ? `(${adj.ruleLabel})` : ''}
+                  </td>
                   <td style={{ padding: '5px 0', textAlign: 'right', color: '#16A34A' }}>
-                    + {curSym} {dispatch.manualPremium} / ton
+                    + {curSym} {adj.premium.toFixed(2)} / ton
                   </td>
                 </tr>
               )}

@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { Dispatch, Party, PurchaseOrder, AppSettings } from '../types';
-import { calculateSettlement } from '../utils/calculations';
+import { calculateSettlement, getEffectiveAdjustments } from '../utils/calculations';
 import { getCurrencySymbol, formatAmountNumber } from '../utils/currency';
 import { playPopSound, playSuccessSound } from '../utils/delight';
 import { DispatchReceipt } from './DispatchReceipt';
@@ -95,6 +95,7 @@ export default function DispatchPreviewModal({
 
     const curSym = getCurrencySymbol(settings?.currency);
     const settlement = calculateSettlement(dispatch, settings);
+    const adj = getEffectiveAdjustments(dispatch, settings);
 
     const text = `*${(settings?.businessName || 'AWAN COAL LOGISTICS').toUpperCase()}*
 *OFFICIAL SETTLEMENT SLIP*
@@ -111,8 +112,7 @@ ${poObj ? `*PO Number:* ${poObj.poNumber}\n` : ''}*Received Weight:* ${dispatch.
 
 *RATE & SETTLEMENT CALCULATION:*
 • Base Agreement Rate: ${curSym} ${dispatch.baseRate.toFixed(2)}/ton
-• GCV Deduction: - ${curSym} ${settlement.gcvDeduction.toFixed(2)}/ton
-${dispatch.manualPremium ? `• Premium: + ${curSym} ${dispatch.manualPremium.toFixed(2)}/ton\n` : ''}• Adjusted Rate: ${curSym} ${settlement.adjustedRate.toFixed(2)}/ton
+${adj.deduction > 0 ? `• GCV Deduction${adj.isProrata ? ` (${adj.ruleLabel})` : ''}: - ${curSym} ${adj.deduction.toFixed(2)}/ton\n` : ''}${adj.premium > 0 ? `• Premium${adj.isProrata ? ` (${adj.ruleLabel})` : ''}: + ${curSym} ${adj.premium.toFixed(2)}/ton\n` : ''}• Adjusted Rate: ${curSym} ${settlement.adjustedRate.toFixed(2)}/ton
 • Tax Deduction${dispatch.taxMethod === 'formula_18_5' ? ` ((Rate + ${dispatch.taxSalesPercent ?? 18}%) × ${dispatch.taxIncomePercent ?? 5}%)` : ''}: - ${curSym} ${settlement.taxDeduction.toFixed(2)}/ton
 ${dispatch.commissionPerTon ? `• Commission: - ${curSym} ${dispatch.commissionPerTon.toFixed(2)}/ton\n` : ''}----------------------------------------
 *PAYABLE RATE:* ${curSym} ${settlement.payableRate.toFixed(2)} / ton
@@ -318,6 +318,7 @@ ${dispatch.notes ? `*Remarks:* ${dispatch.notes}\n\n` : ''}✓ E-Verified Dispat
 
           {(() => {
             const settlement = calculateSettlement(dispatch, settings);
+            const adj = getEffectiveAdjustments(dispatch, settings);
             const isProfit = settlement.netProfit >= 0;
             return (
               <div className="ios-group">
@@ -331,15 +332,19 @@ ${dispatch.notes ? `*Remarks:* ${dispatch.notes}\n\n` : ''}✓ E-Verified Dispat
                     <span style={{ fontWeight: 600 }} className="tabular-nums">{curSym} {dispatch.baseRate.toFixed(2)}</span>
                   </div>
 
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 8, color: 'var(--ios-red)' }}>
-                    <span>- Manual Deduction</span>
-                    <span className="tabular-nums">- {curSym} {settlement.gcvDeduction.toFixed(2)}</span>
-                  </div>
+                  {adj.deduction > 0 && (
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 8, color: 'var(--ios-red)' }}>
+                      <span>- {adj.isProrata ? `GCV Deduction (${adj.ruleLabel})` : 'Manual Deduction'}</span>
+                      <span className="tabular-nums">- {curSym} {adj.deduction.toFixed(2)}</span>
+                    </div>
+                  )}
 
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 8, color: 'var(--ios-green)' }}>
-                    <span>+ Manual Premium</span>
-                    <span className="tabular-nums">+ {curSym} {(dispatch.manualPremium || 0).toFixed(2)}</span>
-                  </div>
+                  {adj.premium > 0 && (
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 8, color: 'var(--ios-green)' }}>
+                      <span>+ {adj.isProrata ? `Quality Premium (${adj.ruleLabel})` : 'Manual Premium'}</span>
+                      <span className="tabular-nums">+ {curSym} {adj.premium.toFixed(2)}</span>
+                    </div>
+                  )}
 
                   <div style={{ height: 0.5, background: 'var(--separator)', margin: '10px 0' }} />
 

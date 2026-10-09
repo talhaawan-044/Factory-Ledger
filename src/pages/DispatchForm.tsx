@@ -19,7 +19,7 @@ import {
 import type { Dispatch, CoalInput, Party, PurchaseOrder, AppSettings, InventoryLot, Mine } from '../types';
 import { getDispatch, saveDispatch, deleteDispatch, getParties, getPartyPurchaseOrders, getDispatches, getLots, getMines, saveParty, getSettings, cleanNumber } from '../lib/db';
 import { getTodayDateString } from '../utils/dateUtils';
-import { calculateSettlement, calculateLotStock, calculateMineStock } from '../utils/calculations';
+import { calculateSettlement, calculateMineStock, getEffectiveAdjustments, calculateLotAvailabilityForDispatch } from '../utils/calculations';
 import { getCurrencySymbol, formatAmountNumber } from '../utils/currency';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import IOSDatePicker from '../components/IOSDatePicker';
@@ -194,6 +194,15 @@ export default function DispatchForm() {
     };
   }, [dispatchId, partyId]);
 
+  useEffect(() => {
+    const handleLedgerChange = () => {
+      getDispatches().then(setAllDispatches);
+      getLots().then(setLots);
+    };
+    window.addEventListener('ledger_data_changed', handleLedgerChange);
+    return () => window.removeEventListener('ledger_data_changed', handleLedgerChange);
+  }, []);
+
   if (isLoading || !dispatch) {
     return (
       <div style={{ padding: 40, textAlign: 'center', color: 'var(--label-secondary)', fontSize: 15 }}>
@@ -204,6 +213,7 @@ export default function DispatchForm() {
 
   // Calculate live settlement
   const settlement = calculateSettlement(dispatch as Dispatch, settings);
+  const adj = getEffectiveAdjustments(dispatch as Dispatch, settings);
   const isProfit = settlement.netProfit >= 0;
 
   // Blend metrics
@@ -824,9 +834,8 @@ export default function DispatchForm() {
                   {input.lotId && (() => {
                     const linkedLot = lots.find((l) => l.id === input.lotId);
                     if (!linkedLot) return null;
-                    const otherDispatches = allDispatches.filter((d) => !dispatchId || d.id !== dispatchId);
-                    const lotStock = calculateLotStock(linkedLot, otherDispatches);
-                    const isOverdraw = (input.weight || 0) > lotStock.remainingWeight;
+                    const avail = calculateLotAvailabilityForDispatch(linkedLot, allDispatches, dispatch);
+                    const overdrawnAmount = avail.isOverdraw ? Math.abs(avail.remainingAfter) : 0;
 
                     return (
                       <div
@@ -835,10 +844,10 @@ export default function DispatchForm() {
                           marginBottom: 4,
                           padding: '8px 12px',
                           borderRadius: 10,
-                          background: isOverdraw ? 'rgba(255, 59, 48, 0.1)' : 'var(--fill-tertiary)',
-                          border: `0.5px solid ${isOverdraw ? 'rgba(255, 59, 48, 0.3)' : 'var(--separator)'}`,
+                          background: avail.isOverdraw ? 'rgba(255, 59, 48, 0.1)' : 'var(--fill-tertiary)',
+                          border: `0.5px solid ${avail.isOverdraw ? 'rgba(255, 59, 48, 0.3)' : 'var(--separator)'}`,
                           fontSize: 12,
-                          color: isOverdraw ? 'var(--ios-red)' : 'var(--label-primary)',
+                          color: avail.isOverdraw ? 'var(--ios-red)' : 'var(--label-primary)',
                           display: 'flex',
                           alignItems: 'center',
                           justifyContent: 'space-between',
@@ -848,11 +857,13 @@ export default function DispatchForm() {
                         <span style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
                           <span style={{ flexShrink: 0 }}>📦</span>
                           <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                            <strong>{linkedLot.boughtFrom || linkedLot.supplier}</strong>: {lotStock.remainingWeight.toFixed(1)}t available (Landed: {curSym} {formatAmountNumber(linkedLot.landedRate)}/t)
+                            <strong>{linkedLot.boughtFrom || linkedLot.supplier}</strong>: {avail.availableBeforeThis.toFixed(1)}t available (Landed: {curSym} {formatAmountNumber(linkedLot.landedRate)}/t)
                           </span>
                         </span>
-                        {isOverdraw && (
-                          <span style={{ fontWeight: 600, color: 'var(--ios-red)', fontSize: 11, flexShrink: 0 }}>⚠️ Exceeds yard stock</span>
+                        {avail.isOverdraw && (
+                          <span style={{ fontWeight: 600, color: 'var(--ios-red)', fontSize: 11, flexShrink: 0 }}>
+                            ⚠️ Overdrawn by {overdrawnAmount.toFixed(1)}t
+                          </span>
                         )}
                       </div>
                     );
@@ -1561,15 +1572,19 @@ export default function DispatchForm() {
             <span style={{ fontWeight: 600 }} className="tabular-nums">{curSym} {dispatch.baseRate.toFixed(2)}</span>
           </div>
 
-          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 8, color: 'var(--ios-red)' }}>
-            <span>- Manual Deduction</span>
-            <span className="tabular-nums">- {curSym} {settlement.gcvDeduction.toFixed(2)}</span>
-          </div>
+          {adj.deduction > 0 && (
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 8, color: 'var(--ios-red)' }}>
+              <span>- {adj.isProrata ? `GCV Deduction (${adj.ruleLabel})` : 'Manual Deduction'}</span>
+              <span className="tabular-nums">- {curSym} {adj.deduction.toFixed(2)}</span>
+            </div>
+          )}
 
-          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 8, color: 'var(--ios-green)' }}>
-            <span>+ Manual Premium</span>
-            <span className="tabular-nums">+ {curSym} {(dispatch.manualPremium || 0).toFixed(2)}</span>
-          </div>
+          {adj.premium > 0 && (
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 8, color: 'var(--ios-green)' }}>
+              <span>+ {adj.isProrata ? `Quality Premium (${adj.ruleLabel})` : 'Manual Premium'}</span>
+              <span className="tabular-nums">+ {curSym} {adj.premium.toFixed(2)}</span>
+            </div>
+          )}
 
           <div style={{ height: 0.5, background: 'var(--separator)', margin: '10px 0' }} />
 

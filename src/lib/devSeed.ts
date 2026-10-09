@@ -9,6 +9,7 @@ import {
 } from './db';
 import { idb } from './dexieDb';
 import type { Mine, InventoryLot, Party, Dispatch, Payment, PurchaseOrder, AppSettings } from '../types';
+import { toLocalDateString } from '../utils/dateUtils';
 
 /**
  * Injects a comprehensive, realistic real-world dataset into IndexedDB for development testing.
@@ -22,7 +23,7 @@ export async function seedTestData(): Promise<void> {
   const dayAgo = (days: number): string => {
     const d = new Date(today);
     d.setDate(d.getDate() - days);
-    return d.toISOString().split('T')[0];
+    return toLocalDateString(d);
   };
 
   const timestampAgo = (days: number): number => {

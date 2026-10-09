@@ -248,6 +248,9 @@ export default function Settings() {
   const [showRollbackConfirm, setShowRollbackConfirm] = useState(false);
   const [isRollingBack, setIsRollingBack] = useState(false);
 
+  // Issue 45: one-time migration notice for existing installs on formula_18_5 default
+  const [showManualTaxNotice, setShowManualTaxNotice] = useState(false);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
   const logoInputRef = useRef<HTMLInputElement>(null);
   const signatureInputRef = useRef<HTMLInputElement>(null);
@@ -275,6 +278,13 @@ export default function Settings() {
     });
     setSnapshotMeta(snap);
     setLoading(false);
+
+    // Issue 45: Show one-time notice if existing install still uses formula_18_5 default
+    const MIGRATION_FLAG = 'migrations.manualTaxNotice_v1';
+    const alreadyShown = localStorage.getItem(MIGRATION_FLAG);
+    if (!alreadyShown && s.defaultTaxMethod === 'formula_18_5') {
+      setShowManualTaxNotice(true);
+    }
   };
 
   useEffect(() => {
@@ -2324,6 +2334,73 @@ export default function Settings() {
                   <ChevronRight size={18} />
                 </div>
               </div>
+
+              {/* Issue 45: One-time migration notice for existing installs */}
+              {showManualTaxNotice && (
+                <div
+                  style={{
+                    margin: '0 0 0 0',
+                    padding: '12px 16px',
+                    background: 'rgba(255, 159, 10, 0.12)',
+                    borderTop: '0.5px solid rgba(255, 159, 10, 0.3)',
+                    display: 'flex',
+                    gap: 12,
+                    alignItems: 'flex-start',
+                  }}
+                >
+                  <span style={{ fontSize: 18, flexShrink: 0 }}>💡</span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--label-primary)', marginBottom: 4 }}>
+                      New Default: Manual Tax
+                    </div>
+                    <div style={{ fontSize: 12, color: 'var(--label-secondary)', lineHeight: 1.5 }}>
+                      New installs now default to Manual Tax entry. Your app still uses the Formula. Tap below to switch, or dismiss to keep Formula.
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                      <button
+                        style={{
+                          background: 'var(--ios-orange)',
+                          color: '#fff',
+                          border: 'none',
+                          borderRadius: 8,
+                          padding: '6px 14px',
+                          fontSize: 13,
+                          fontWeight: 600,
+                          cursor: 'pointer',
+                        }}
+                        onClick={async () => {
+                          const updated = { ...settings, defaultTaxMethod: 'manual' as const };
+                          setSettings(updated);
+                          await saveSettings(updated);
+                          localStorage.setItem('migrations.manualTaxNotice_v1', '1');
+                          setShowManualTaxNotice(false);
+                          showToast('Default tax changed to Manual');
+                        }}
+                      >
+                        Switch to Manual
+                      </button>
+                      <button
+                        style={{
+                          background: 'var(--fill-secondary)',
+                          color: 'var(--label-secondary)',
+                          border: 'none',
+                          borderRadius: 8,
+                          padding: '6px 14px',
+                          fontSize: 13,
+                          fontWeight: 600,
+                          cursor: 'pointer',
+                        }}
+                        onClick={() => {
+                          localStorage.setItem('migrations.manualTaxNotice_v1', '1');
+                          setShowManualTaxNotice(false);
+                        }}
+                      >
+                        Keep Formula
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>

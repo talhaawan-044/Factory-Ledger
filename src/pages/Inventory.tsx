@@ -56,6 +56,7 @@ export default function Inventory() {
   });
 
   const [toastMsg, setToastMsg] = useState<string | null>(null);
+  const [mineFormError, setMineFormError] = useState<string | null>(null);
 
   const curSym = getCurrencySymbol(settings?.currency);
 
@@ -145,6 +146,7 @@ export default function Inventory() {
   const handleOpenAddMine = () => {
     playPopSound();
     setEditingMine(null);
+    setMineFormError(null);
     setMineForm({
       name: '',
       ratePerTon: '',
@@ -161,13 +163,14 @@ export default function Inventory() {
     const rate = parseFloat(mineForm.ratePerTon);
 
     if (!name) {
-      alert('Please enter the mine name.');
+      setMineFormError('Please enter the mine name.');
       return;
     }
     if (isNaN(rate) || rate <= 0) {
-      alert('Please enter a valid rate per ton.');
+      setMineFormError('Please enter a valid rate per ton (must be greater than 0).');
       return;
     }
+    setMineFormError(null);
 
     try {
       const now = Date.now();
@@ -188,7 +191,7 @@ export default function Inventory() {
       showToast(editingMine ? 'Mine updated successfully' : 'Mine added successfully');
       loadData();
     } catch (err: any) {
-      alert(err?.message || 'Failed to save mine');
+      setMineFormError(err?.message || 'Failed to save mine. Please try again.');
     }
   };
 
@@ -1004,6 +1007,26 @@ export default function Inventory() {
                   placeholder="e.g. Grade, contractor contact, seam details"
                 />
               </div>
+
+              {mineFormError && (
+                <div
+                  style={{
+                    marginBottom: 14,
+                    padding: '10px 14px',
+                    background: 'rgba(255, 59, 48, 0.1)',
+                    border: '0.5px solid rgba(255, 59, 48, 0.3)',
+                    borderRadius: 10,
+                    fontSize: 13,
+                    color: 'var(--ios-red)',
+                    display: 'flex',
+                    alignItems: 'flex-start',
+                    gap: 8,
+                  }}
+                >
+                  <span style={{ flexShrink: 0 }}>⚠️</span>
+                  <span>{mineFormError}</span>
+                </div>
+              )}
 
               <button
                 type="submit"

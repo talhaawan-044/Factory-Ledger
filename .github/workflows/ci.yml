@@ -46,6 +46,20 @@ jobs:
             exit 1
           fi
 
+      - name: Guard against raw adjustment fields in display code
+        run: |
+          if grep -rn "\.manualDeduction\|\.manualPremium" src/components src/utils/exportSharing.ts; then
+            echo "Use getEffectiveAdjustments() in display code"
+            exit 1
+          fi
+
+      - name: Guard against UTC date strings
+        run: |
+          if grep -rn "toISOString().split" src; then
+            echo "Use getTodayDateString() or toLocalDateString() from dateUtils"
+            exit 1
+          fi
+
       - name: Typecheck and build production bundle
         run: npm run build
 

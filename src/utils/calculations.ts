@@ -1,5 +1,6 @@
 import type { Dispatch, Payment, TaxMethod, AppSettings, InventoryLot, Mine } from "../types";
 import { getCachedSettings } from "../lib/db";
+import { getCurrencySymbol, formatAmountNumber } from "./currency";
 
 export interface SettlementResult {
   gcvDeduction: number;
@@ -14,6 +15,28 @@ export interface SettlementResult {
   taxMethod?: TaxMethod;
   gcvPremium?: number;
   isProrata?: boolean;
+}
+
+export interface EffectiveAdjustments {
+  deduction: number;
+  premium: number;
+  isProrata: boolean;
+  ruleLabel: string;
+}
+
+export interface DispatchSlipRow {
+  kind: 'base-rate' | 'gcv-deduction' | 'gcv-premium' | 'adjusted-rate' | 'tax' | 'commission' | 'payable-rate' | 'total-revenue';
+  label: string;
+  amount: number;
+  perTon: boolean;
+  formattedText: string;
+}
+
+export interface LotAvailabilityInfo {
+  availableBeforeThis: number;
+  draftUse: number;
+  remainingAfter: number;
+  isOverdraw: boolean;
 }
 
 export interface PartyBalanceResult {
@@ -157,6 +180,122 @@ export function calculateSettlement(dispatch: Dispatch, settings?: AppSettings |
     isProrata,
   };
 }
+
+/**
+ * Returns effective quality deduction and premium values for UI display, receipts, and exports.
+ * Transparently extracts pro-rata calculated values from calculateSettlement if active,
+ * or returns manual adjustment values, ensuring paperwork matches the true settled price.
+ */
+export function getEffectiveAdjustments(dispatch: Dispatch, settings?: AppSettings | null): EffectiveAdjustments {
+  const s = calculateSettlement(dispatch, settings);
+  const isProrata = dispatch?.gcvAdjustment === 'prorata';
+  const targetGcv = cleanNum(dispatch?.targetGcv);
+  const labGcv = cleanNum(dispatch?.labActualGcv);
+  return {
+    deduction: s.gcvDeduction ?? 0,
+    premium: s.gcvPremium ?? 0,
+    isProrata,
+    ruleLabel: isProrata
+      ? `Pro-rata: lab ${labGcv} / target ${targetGcv}`
+      : 'Manual adjustment',
+  };
+}
+
+/**
+ * Pure builder that converts a dispatch's rate breakdown into standardized line items
+ * for settlement slips, preview modals, receipts, and export verification.
+ */
+export function buildDispatchSlipRows(dispatch: Dispatch, settings?: AppSettings | null): DispatchSlipRow[] {
+  const s = calculateSettlement(dispatch, settings);
+  const adj = getEffectiveAdjustments(dispatch, settings);
+  const curSym = getCurrencySymbol(settings?.currency);
+  const rows: DispatchSlipRow[] = [];
+
+  rows.push({
+    kind: 'base-rate',
+    label: 'Contract Base Rate',
+    amount: cleanNum(dispatch?.baseRate),
+    perTon: true,
+    formattedText: `${curSym} ${cleanNum(dispatch?.baseRate).toFixed(2)} / ton`,
+  });
+
+  if (adj.deduction > 0) {
+    const label = adj.isProrata
+      ? `GCV Quality Deduction (${adj.ruleLabel})`
+      : 'GCV Quality Deduction';
+    rows.push({
+      kind: 'gcv-deduction',
+      label,
+      amount: adj.deduction,
+      perTon: true,
+      formattedText: `- ${curSym} ${adj.deduction.toFixed(2)} / ton`,
+    });
+  }
+
+  if (adj.premium > 0) {
+    const label = adj.isProrata
+      ? `Quality Premium (${adj.ruleLabel})`
+      : 'Quality Premium';
+    rows.push({
+      kind: 'gcv-premium',
+      label,
+      amount: adj.premium,
+      perTon: true,
+      formattedText: `+ ${curSym} ${adj.premium.toFixed(2)} / ton`,
+    });
+  }
+
+  rows.push({
+    kind: 'adjusted-rate',
+    label: 'Adjusted Rate',
+    amount: s.adjustedRate,
+    perTon: true,
+    formattedText: `${curSym} ${s.adjustedRate.toFixed(2)} / ton`,
+  });
+
+  if (s.taxDeduction > 0) {
+    const taxFormulaLabel = dispatch?.taxMethod === 'formula_18_5'
+      ? `Tax Withholding ((Rate + ${dispatch.taxSalesPercent ?? 18}%) × ${dispatch.taxIncomePercent ?? 5}%)`
+      : 'Tax Withholding';
+    rows.push({
+      kind: 'tax',
+      label: taxFormulaLabel,
+      amount: s.taxDeduction,
+      perTon: true,
+      formattedText: `- ${curSym} ${s.taxDeduction.toFixed(2)} / ton`,
+    });
+  }
+
+  const commission = cleanNum(dispatch?.commissionPerTon);
+  if (commission > 0) {
+    rows.push({
+      kind: 'commission',
+      label: 'Commission',
+      amount: commission,
+      perTon: true,
+      formattedText: `- ${curSym} ${commission.toFixed(2)} / ton`,
+    });
+  }
+
+  rows.push({
+    kind: 'payable-rate',
+    label: 'Final Payable Rate',
+    amount: s.payableRate,
+    perTon: true,
+    formattedText: `${curSym} ${s.payableRate.toFixed(2)} / ton`,
+  });
+
+  rows.push({
+    kind: 'total-revenue',
+    label: 'Total Payable',
+    amount: s.totalRevenue,
+    perTon: false,
+    formattedText: `${curSym} ${formatAmountNumber(s.totalRevenue, settings)}`,
+  });
+
+  return rows;
+}
+
 
 
 /**
@@ -368,6 +507,32 @@ export function calculateLotStock(lot: InventoryLot, dispatches: Dispatch[]): Lo
     capitalTiedUp: Math.round(capitalTiedUp),
   };
 }
+
+/**
+ * Calculates stock availability for a lot in the context of creating or editing a dispatch.
+ * Correctly accounts for multi-row coal blending (summing all rows in draft that reference this lot)
+ * and excludes the draft dispatch itself from 'usedWeight' so that reopening a saved dispatch
+ * does not trigger a false overdraw warning.
+ */
+export function calculateLotAvailabilityForDispatch(
+  lot: InventoryLot,
+  allDispatches: Dispatch[],
+  draft: Partial<Dispatch>,
+): LotAvailabilityInfo {
+  const others = (allDispatches || []).filter((d) => !d?.deleted && (!draft?.id || d?.id !== draft?.id));
+  const availableBeforeThis = calculateLotStock(lot, others).remainingWeight;
+  const draftUse = (draft?.coalInputs || [])
+    .filter((i) => i?.lotId === lot.id)
+    .reduce((sum, i) => sum + cleanNum(i?.weight), 0);
+  const remainingAfter = Math.round((availableBeforeThis - draftUse) * 100) / 100;
+  return {
+    availableBeforeThis: Math.round(availableBeforeThis * 100) / 100,
+    draftUse: Math.round(draftUse * 100) / 100,
+    remainingAfter,
+    isOverdraw: remainingAfter < -0.001,
+  };
+}
+
 
 /**
  * Aggregates overall inventory metrics (stock, capital, supplier breakdown).

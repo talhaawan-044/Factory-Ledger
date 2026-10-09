@@ -1056,3 +1056,145 @@ describe('New Features: Pro-Rata GCV & Inventory with Landed Cost', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Issue 38 + 39: Lot Availability for Edit vs New Dispatch (T32 + T33)
+// ---------------------------------------------------------------------------
+import { calculateLotAvailabilityForDispatch } from '../src/utils/calculations';
+
+describe('Issues 38 & 39: Lot Availability in Dispatch Context (T32 & T33)', () => {
+  const makeLot = (id: string, receivedWeight: number): InventoryLot => ({
+    id,
+    mineId: 'mine-avail',
+    supplier: 'Test Supplier',
+    date: '2026-10-01',
+    billedWeight: receivedWeight,
+    receivedWeight,
+    purchaseRate: 20000,
+    landedRate: 20000,
+    createdAt: 1000,
+    updatedAt: 1000,
+  });
+
+  const makeDispatch = (id: string, lotId: string, weight: number): Dispatch => ({
+    id,
+    partyId: 'party-avail',
+    date: '2026-10-09',
+    truckNumber: `TK-${id}`,
+    baseRate: 30000,
+    labReceivedWeight: weight,
+    taxMethod: 'manual' as const,
+    manualTax: 0,
+    coalInputs: [{ id: `ci-${id}`, lotId, sourceName: 'Test', weight, purchaseRate: 20000 }],
+    overheads: { loading: 0, freight: 0, crush: 0, royalty: 0, other: 0 },
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  });
+
+  it('T32a: unchanged edit — opening saved dispatch (10t from 15t lot) shows 15t available, no warning', () => {
+    const lot = makeLot('lot-avail-a', 15);
+    // The saved dispatch uses 10t; it's the same dispatch being "edited"
+    const savedDispatch = makeDispatch('disp-saved', 'lot-avail-a', 10);
+    const allDispatches = [savedDispatch];
+
+    const avail = calculateLotAvailabilityForDispatch(lot, allDispatches, savedDispatch);
+    expect(avail.availableBeforeThis).toBeCloseTo(15, 2);
+    expect(avail.remainingAfter).toBeCloseTo(5, 2);
+    expect(avail.isOverdraw).toBe(false);
+  });
+
+  it('T32b: edit within lot — raising weight to 12t from 15t lot should not warn', () => {
+    const lot = makeLot('lot-avail-b', 15);
+    const savedDispatch = makeDispatch('disp-saved-b', 'lot-avail-b', 10);
+    // editing: weight changed to 12
+    const editedDraft: Dispatch = {
+      ...savedDispatch,
+      labReceivedWeight: 12,
+      coalInputs: [{ id: 'ci-b', lotId: 'lot-avail-b', sourceName: 'Test', weight: 12, purchaseRate: 20000 }],
+    };
+    const avail = calculateLotAvailabilityForDispatch(lot, [savedDispatch], editedDraft);
+    expect(avail.availableBeforeThis).toBeCloseTo(15, 2);
+    expect(avail.remainingAfter).toBeCloseTo(3, 2);
+    expect(avail.isOverdraw).toBe(false);
+  });
+
+  it('T32c: real overdraw — other dispatch uses 8t, draft uses 10t from 15t lot → overdrawn by 3t', () => {
+    const lot = makeLot('lot-avail-c', 15);
+    const otherDispatch = makeDispatch('disp-other', 'lot-avail-c', 8);
+    const draft = makeDispatch('disp-new', 'lot-avail-c', 10);
+    draft.id = 'disp-new'; // different from otherDispatch
+
+    const avail = calculateLotAvailabilityForDispatch(lot, [otherDispatch, draft], draft);
+    expect(avail.availableBeforeThis).toBeCloseTo(7, 2); // 15 - 8
+    expect(avail.remainingAfter).toBeCloseTo(-3, 2); // 7 - 10
+    expect(avail.isOverdraw).toBe(true);
+  });
+
+  it('T32d: new dispatch — other uses 10t, new draft uses 6t from 15t lot → overdrawn by 1t', () => {
+    const lot = makeLot('lot-avail-d', 15);
+    const otherDispatch = makeDispatch('disp-other-d', 'lot-avail-d', 10);
+    const draft = makeDispatch('disp-new-d', 'lot-avail-d', 6);
+
+    const avail = calculateLotAvailabilityForDispatch(lot, [otherDispatch], draft);
+    expect(avail.availableBeforeThis).toBeCloseTo(5, 2); // 15 - 10
+    expect(avail.remainingAfter).toBeCloseTo(-1, 2); // 5 - 6
+    expect(avail.isOverdraw).toBe(true);
+  });
+
+  it('T33: two rows from the same 10t lot (8t + 8t) are summed → overdrawn by 6t', () => {
+    const lot = makeLot('lot-avail-e', 10);
+    const draft: Dispatch = {
+      id: 'disp-two-rows',
+      partyId: 'party-avail',
+      date: '2026-10-09',
+      truckNumber: 'TK-TWO',
+      baseRate: 30000,
+      labReceivedWeight: 16,
+      taxMethod: 'manual' as const,
+      manualTax: 0,
+      coalInputs: [
+        { id: 'ci-row1', lotId: 'lot-avail-e', sourceName: 'Row 1', weight: 8, purchaseRate: 20000 },
+        { id: 'ci-row2', lotId: 'lot-avail-e', sourceName: 'Row 2', weight: 8, purchaseRate: 20000 },
+      ],
+      overheads: { loading: 0, freight: 0, crush: 0, royalty: 0, other: 0 },
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    const avail = calculateLotAvailabilityForDispatch(lot, [], draft);
+    expect(avail.availableBeforeThis).toBeCloseTo(10, 2);
+    expect(avail.draftUse).toBeCloseTo(16, 2); // both rows summed
+    expect(avail.remainingAfter).toBeCloseTo(-6, 2);
+    expect(avail.isOverdraw).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue 40: Local Timezone Date Guard (T34)
+// ---------------------------------------------------------------------------
+import { toLocalDateString, getTodayDateString } from '../src/utils/dateUtils';
+
+describe('Issue 40: Local Timezone Date Guard (T34)', () => {
+  it('T34: a date created at 02:00 Asia/Karachi (UTC+5) gets the local day, not the UTC previous day', () => {
+    // 2026-10-09 02:00 PKT = 2026-10-08 21:00 UTC
+    // Using toISOString().split('T')[0] on this timestamp gives '2026-10-08' (wrong)
+    // toLocalDateString must give '2026-10-09' when running in Asia/Karachi
+    //
+    // We simulate this by constructing a Date at 2am of a known day via explicit
+    // local-time constructor (year, month, day, hour) which is tz-agnostic in Node.
+    // Then we check toLocalDateString gives the same local day as getFullYear etc.
+    const targetDay = new Date(2026, 9, 9, 2, 0, 0); // Oct 9, 02:00 local time
+    const result = toLocalDateString(targetDay);
+    const expected = `${targetDay.getFullYear()}-${String(targetDay.getMonth() + 1).padStart(2, '0')}-${String(targetDay.getDate()).padStart(2, '0')}`;
+    expect(result).toBe(expected);
+
+    // Also verify that toISOString approach gives a different (wrong) result when
+    // the machine is running in UTC+5 and time is before 05:00
+    // (We can't force TZ in vitest without extra config, so we at minimum verify
+    //  that toLocalDateString always produces the local date string, not UTC)
+    const todayLocal = getTodayDateString();
+    const todayDate = new Date();
+    const expectedToday = `${todayDate.getFullYear()}-${String(todayDate.getMonth() + 1).padStart(2, '0')}-${String(todayDate.getDate()).padStart(2, '0')}`;
+    expect(todayLocal).toBe(expectedToday);
+  });
+});

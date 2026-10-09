@@ -3,7 +3,7 @@ import { Filesystem, Directory } from '@capacitor/filesystem';
 import { Capacitor } from '@capacitor/core';
 import type ExcelJS from 'exceljs';
 import type { Dispatch, Party, Payment, PurchaseOrder, AppSettings } from '../types';
-import { calculateSettlement, calculatePartyBalance, calculateTransitLoss, calculateLedgerTotals, isDispatchPending } from './calculations';
+import { calculateSettlement, calculatePartyBalance, calculateTransitLoss, calculateLedgerTotals, isDispatchPending, getEffectiveAdjustments } from './calculations';
 import { getSettings, getExportBackupData } from '../lib/db';
 import { getTodayDateString, formatDisplayDate } from './dateUtils';
 import { getCurrencySymbol, formatAmountNumber, getCurrencyExcelFormat } from './currency';
@@ -351,6 +351,7 @@ export function buildFleetExportData(
 
   const rows: FleetRow[] = sorted.map((d, index) => {
     const s = calculateSettlement(d);
+    const adj = getEffectiveAdjustments(d);
     const transit = calculateTransitLoss(d);
     const isPending = transit.isPending;
     const party = parties.find((p) => p.id === d.partyId);
@@ -376,8 +377,8 @@ export function buildFleetExportData(
       ash: d.labAsh ? parseFloat(d.labAsh.toFixed(2)) : 0,
       moisture: d.labMoisture ? parseFloat(d.labMoisture.toFixed(2)) : 0,
       baseRate: d.baseRate || 0,
-      deduction: d.manualDeduction || 0,
-      premium: d.manualPremium || 0,
+      deduction: adj.deduction,
+      premium: adj.premium,
       taxDeduction: s.taxDeduction ? parseFloat(s.taxDeduction.toFixed(2)) : 0,
       payableRate: parseFloat(s.payableRate.toFixed(2)),
       revenue: isPending ? 0 : Math.round(s.totalRevenue),
@@ -597,6 +598,7 @@ async function exportPartyStatementPdf(options: ExportDispatchesPdfOptions & { s
     if (entry.kind === 'dispatch') {
       const d = entry.data;
       const s = calculateSettlement(d);
+      const adj = getEffectiveAdjustments(d, settings);
       const isPending = isDispatchPending(d);
       const invoiced = isPending ? 0 : Math.round(s.totalRevenue);
       runningBal += invoiced;
@@ -641,8 +643,8 @@ async function exportPartyStatementPdf(options: ExportDispatchesPdfOptions & { s
 
       // Line 3: Commercial & Rate Adjustments
       const adjParts: string[] = [];
-      if (d.manualPremium) adjParts.push(`Bonus: +${curSym}${d.manualPremium}/t`);
-      if (d.manualDeduction) adjParts.push(`GCV Ded: -${curSym}${d.manualDeduction}/t`);
+      if (adj.premium) adjParts.push(`Bonus: +${curSym}${adj.premium.toFixed(2)}/t${adj.isProrata ? ' (Pro-Rata)' : ''}`);
+      if (adj.deduction) adjParts.push(`GCV Ded: -${curSym}${adj.deduction.toFixed(2)}/t${adj.isProrata ? ' (Pro-Rata)' : ''}`);
       if (s.taxDeduction) adjParts.push(`Tax: -${curSym}${s.taxDeduction.toFixed(2)}/t`);
       if (d.commissionPerTon) adjParts.push(`Comm: -${curSym}${d.commissionPerTon}/t`);
       lines.push(`RATE AUDIT: ${adjParts.length > 0 ? adjParts.join('  •  ') : 'Standard Settlement Rate'}`);
@@ -1030,6 +1032,7 @@ async function exportFleetAuditPdf(options: ExportDispatchesPdfOptions & { setti
     const party = parties.find((p) => p.id === d.partyId);
     const po = pos.find((p) => p.id === d.poId);
     const s = calculateSettlement(d);
+    const adj = getEffectiveAdjustments(d);
     const transit = calculateTransitLoss(d);
     const isPending = transit.isPending;
 
@@ -1079,8 +1082,8 @@ async function exportFleetAuditPdf(options: ExportDispatchesPdfOptions & { setti
 
     // Line 3: Commercial adjustments, pricing audit & sourcing
     const adjList = [
-      d.manualDeduction ? `GCV Ded: -${curSym}${d.manualDeduction}/t` : null,
-      d.manualPremium ? `Bonus: +${curSym}${d.manualPremium}/t` : null,
+      adj.deduction ? `GCV Ded: -${curSym}${adj.deduction.toFixed(2)}/t${adj.isProrata ? ' (Pro-Rata)' : ''}` : null,
+      adj.premium ? `Bonus: +${curSym}${adj.premium.toFixed(2)}/t${adj.isProrata ? ' (Pro-Rata)' : ''}` : null,
       s.taxDeduction ? `Tax: -${curSym}${s.taxDeduction.toFixed(2)}/t` : null,
       d.commissionPerTon ? `Comm: -${curSym}${d.commissionPerTon}/t` : null,
     ].filter(Boolean);
@@ -2058,6 +2061,7 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
       const isEven = idx % 2 === 0;
       const po = pos.find((p) => p.id === d.poId);
       const s = calculateSettlement(d);
+      const adj = getEffectiveAdjustments(d, settings);
       const transit = calculateTransitLoss(d);
       const isPending = transit.isPending;
       const gcvDiff = d.targetGcv && d.labActualGcv ? d.labActualGcv - d.targetGcv : 0;
@@ -2078,8 +2082,8 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
         d.labAsh ? parseFloat(d.labAsh.toFixed(2)) : 0,
         d.labMoisture ? parseFloat(d.labMoisture.toFixed(2)) : 0,
         d.baseRate || 0,
-        d.manualDeduction || 0,
-        d.manualPremium || 0,
+        adj.deduction,
+        adj.premium,
         s.taxDeduction ? parseFloat(s.taxDeduction.toFixed(2)) : 0,
         parseFloat(s.payableRate.toFixed(2)),
         isPending ? 0 : Math.round(s.totalRevenue),

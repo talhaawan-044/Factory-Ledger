@@ -980,7 +980,7 @@ export async function deleteLot(id: string): Promise<void> {
       dirty: true,
     });
   }
-  recordTombstone(id);
+  recordTombstone(id); // kept for backward-compat with any cloud pull that may re-introduce this lot id
   notifyLedgerMutation('lot', id, 'delete');
 }
 
