@@ -402,11 +402,17 @@ export function regenerateRecoveryKey(): string {
 }
 
 export function verifyRecoveryKey(inputKey: string): boolean {
-  if (!inputKey) return false;
+  if (!inputKey || getLockoutRemainingSeconds() > 0) return false;
   const storedKey = getStoredRecoveryKey();
   if (!storedKey) return false;
   const clean = (k: string) => k.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
-  return clean(inputKey) === clean(storedKey);
+  const isValid = clean(inputKey) === clean(storedKey);
+  if (isValid) {
+    resetFailedAttempts();
+  } else {
+    recordFailedAttempt();
+  }
+  return isValid;
 }
 
 export async function resetPinWithRecoveryKey(newPin: string): Promise<void> {

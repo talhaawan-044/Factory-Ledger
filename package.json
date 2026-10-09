@@ -9,6 +9,7 @@
     "lint": "oxlint",
     "test": "vitest run --exclude 'tests/rules/**'",
     "test:rules": "firebase emulators:exec --only firestore --project demo-factory-ledger \"vitest run tests/rules\"",
+    "verify:release": "bash scripts/verify-release-readiness.sh",
     "preview": "vite preview"
   },
   "dependencies": {

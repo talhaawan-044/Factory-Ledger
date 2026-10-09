@@ -8,6 +8,8 @@ import {
   getFailedAttempts,
   resetFailedAttempts,
   getStoredPinHash,
+  getOrCreateRecoveryKey,
+  verifyRecoveryKey,
 } from '../src/utils/securityLock';
 
 describe('Issue 14: PIN Lock Hardening & Rate Limiting', () => {
@@ -55,6 +57,25 @@ describe('Issue 14: PIN Lock Hardening & Rate Limiting', () => {
     expect(blockedAttempt).toBe(false);
   });
 
+  it('rate-limits recovery-key guessing and clears the shared lockout after a valid recovery key', async () => {
+    await enableAppLock('98765', false);
+    const recoveryKey = getOrCreateRecoveryKey();
+    const invalidRecoveryKey = recoveryKey === 'FL-2222-2222' ? 'FL-3333-3333' : 'FL-2222-2222';
+
+    for (let i = 1; i <= 4; i++) {
+      expect(verifyRecoveryKey(invalidRecoveryKey)).toBe(false);
+      expect(getFailedAttempts()).toBe(i);
+    }
+
+    expect(verifyRecoveryKey(invalidRecoveryKey)).toBe(false);
+    expect(getLockoutRemainingSeconds()).toBeGreaterThan(0);
+    expect(verifyRecoveryKey(recoveryKey)).toBe(false);
+
+    resetFailedAttempts();
+    expect(verifyRecoveryKey(recoveryKey)).toBe(true);
+    expect(getFailedAttempts()).toBe(0);
+  });
+
   it('transparently upgrades legacy SHA-256 hash to PBKDF2 on first successful login', async () => {
     const pin = '11223';
     const legacyHash = await hashPinLegacy(pin);
@@ -89,4 +110,3 @@ describe('Issue 14: PIN Lock Hardening & Rate Limiting', () => {
     await expect(purgeLegacySecurityFieldsFromCloud(uid)).resolves.not.toThrow();
   }, 15000);
 });
-

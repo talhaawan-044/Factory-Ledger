@@ -1,5 +1,5 @@
 {
-  "description": "Representative industrial coal settlement slips collected from factory weighbridge & logistics accounts for commercial verification.",
+  "description": "Synthetic commercial settlement scenarios for regression testing. These are not factory-source documents and must not be used as real-world accounting validation.",
   "tolerance": 1,
   "slips": [
     {

@@ -251,10 +251,12 @@ The project is preconfigured to generate release builds using Gradle and Android
    storeFile=release.keystore
    ```
 
-2. Run the release build pipeline:
+2. Run the release verification pipeline (requires JDK 21+, Android SDK build-tools with `apksigner`, and the release keystore):
    ```bash
-   npm run build && npx cap sync android && cd android && ./gradlew assembleRelease
+   npm run verify:release
    ```
+
+   For an offline-only release, Firebase Android configuration is optional. For Google Sign-In/cloud sync, verify that `android/app/google-services.json` is present and that the release SHA-1/SHA-256 fingerprints are registered in Firebase before building.
 
 3. Your optimized and aligned production APK is generated at:
    ```text

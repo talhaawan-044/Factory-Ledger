@@ -740,7 +740,7 @@ export async function syncLedgerToCloud(
   try {
     const legacyDocRef = doc(db, 'users', uid, 'ledger', 'backup');
     await deleteDoc(legacyDocRef);
-  } catch (cleanErr) {
+  } catch {
     // Non-fatal if legacy doc is already gone or non-existent
   }
 
@@ -813,7 +813,7 @@ export async function fetchLedgerFromCloud(
         // Clean up legacy doc
         try {
           await deleteDoc(legacyDocRef);
-        } catch (e) {
+        } catch {
           // ignore
         }
         return legacyData;
@@ -972,5 +972,3 @@ export async function purgeLegacySecurityFieldsFromCloud(uid: string): Promise<v
     console.warn('[Firebase] Warning: Failed to purge legacy security fields from cloud:', err);
   }
 }
-
-

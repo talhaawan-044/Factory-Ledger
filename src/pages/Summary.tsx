@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { getDispatches, getParties, getPayments, getPurchaseOrders, getSettings } from '../lib/db';
 import type { Dispatch, Party, Payment, PurchaseOrder, AppSettings } from '../types';
 import { calculateSettlement, calculatePartyBalance, isDispatchPending, calculateLedgerTotals } from '../utils/calculations';
@@ -25,6 +25,7 @@ export default function Summary() {
     const [pos, setPos] = useState<PurchaseOrder[]>([]);
     const [settings, setSettings] = useState<AppSettings | undefined>(undefined);
     const [loading, setLoading] = useState(true);
+    const [loadError, setLoadError] = useState<string | null>(null);
     const [period, setPeriod] = useState<'all' | 'month' | '30days'>('all');
     const [previewDispatch, setPreviewDispatch] = useState<Dispatch | null>(null);
     const [isEstimatorOpen, setIsEstimatorOpen] = useState(false);
@@ -47,23 +48,35 @@ export default function Summary() {
         };
     });
 
-    const loadData = () => {
-        Promise.all([getDispatches(), getParties(), getPayments(), getPurchaseOrders(), getSettings()]).then(([d, p, pay, poList, s]) => {
+    const loadData = useCallback(async () => {
+        try {
+            const [d, p, pay, poList, s] = await Promise.all([
+                getDispatches(),
+                getParties(),
+                getPayments(),
+                getPurchaseOrders(),
+                getSettings(),
+            ]);
             setDispatches(d);
             setParties(p);
             setPayments(pay);
             setPos(poList);
             setSettings(s);
+            setLoadError(null);
+        } catch (error) {
+            console.error('[Summary] Could not load the overview:', error);
+            setLoadError('Could not load your local ledger. Please try again.');
+        } finally {
             setLoading(false);
-        });
-    };
-
-    useEffect(() => {
-        loadData();
+        }
     }, []);
 
+    useEffect(() => {
+        void loadData();
+    }, [loadData]);
+
     useLedgerListener(() => {
-        loadData();
+        void loadData();
     });
 
 
@@ -72,6 +85,24 @@ export default function Summary() {
         return (
             <div style={{ padding: 40, textAlign: 'center', color: 'var(--label-secondary)', fontSize: 15 }}>
                 Loading overview…
+            </div>
+        );
+    }
+
+    if (loadError) {
+        return (
+            <div style={{ padding: 40, textAlign: 'center', color: 'var(--label-secondary)', fontSize: 15 }}>
+                <p style={{ margin: '0 0 16px' }}>{loadError}</p>
+                <button
+                    type="button"
+                    className="ios-button-primary"
+                    onClick={() => {
+                        setLoading(true);
+                        void loadData();
+                    }}
+                >
+                    Try again
+                </button>
             </div>
         );
     }
@@ -678,4 +709,3 @@ export default function Summary() {
         </div>
     );
 }
-

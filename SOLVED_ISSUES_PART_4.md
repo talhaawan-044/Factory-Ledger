@@ -1,0 +1,300 @@
+# Factory Ledger: Solved Issues & Implementation Archive (Part 4)
+
+> **Application:** Factory Ledger (`com.factoryledger.app`)
+> **Review Baseline:** Commit `7328618`, following `ISSUES_AND_FIXES_PART_4.md` (Issues 37–48)
+> **Purpose:** Detailed historical record of all Part 4 post-features code review issues resolved in the repository.
+
+---
+
+## Table of Contents
+
+- [Issue 37: Pro-Rata Deduction & Premium Display Across Receipts, Exports, and Shares](#issue-37)
+- [Issue 38: False "Overdrawn" Warning When Editing Existing Dispatches](#issue-38)
+- [Issue 39: Per-Lot Overdraw Aggregation Across Multi-Row Coal Blends](#issue-39)
+- [Issue 40: Local Timezone Date String Guard in Inventory & CI Tripwire](#issue-40)
+- [Issue 41: Documentation Alignment with Active Implementation](#issue-41)
+- [Issue 42: Real-World Factory Paper Slips Verification](#issue-42)
+- [Issue 43: Physical Hardware APK, Real Firebase Sync, and Pilot Validation](#issue-43)
+- [Issue 44: Client Consultation & Business Rules Confirmation](#issue-44)
+- [Issue 45: Default Tax Method Settings Migration for Existing Devices](#issue-45)
+- [Issue 46: Additional Penalties / Deductions in Pro-Rata Mode](#issue-46)
+- [Issue 47: Inventory Follow-Ups (Adjustments, Supplier Summary, Repricing)](#issue-47)
+- [Issue 48: Repo Hygiene, Leftover Tombstones, and Code Cleanups (48a–48g)](#issue-48)
+- [Issue 49: Cloud Inventory Classification and Recovery-Key Lockout](#issue-49)
+
+---
+
+### Issue 37: Pro-Rata Deduction & Premium Display Across Receipts, Exports, and Shares
+
+- **Severity:** High (Paperwork & Settlement Transparency Discrepancy)
+- **Status:** RESOLVED
+- **Files Modified:**
+  - `src/utils/calculations.ts`
+  - `src/components/DispatchReceipt.tsx`
+  - `src/components/DispatchPreviewModal.tsx`
+  - `src/pages/DispatchForm.tsx`
+  - `src/utils/exportSharing.ts`
+  - `.github/workflows/ci.yml`
+  - `tests/calculations.test.ts`
+
+#### Detail of the Issue
+
+Receipts, preview modals, WhatsApp text, PDF exports, and Excel exports read raw `dispatch.manualDeduction` / `dispatch.manualPremium` fields directly. For a pro-rata dispatch these fields are both `0` (never written), so the slip showed no GCV adjustment at all — the numbers were wrong and the settlement line was opaque.
+
+#### How It Was Solved
+
+1. Added `getEffectiveAdjustments(dispatch, settings)` to `calculations.ts` — calls `calculateSettlement()` and extracts the actual deduction/premium with `isProrata` flag and `ruleLabel`.
+2. Added `buildDispatchSlipRows(dispatch, settings)` pure builder producing typed `DispatchSlipRow[]` for settlement slips.
+3. All display sites updated to use `getEffectiveAdjustments()`: DispatchReceipt, DispatchPreviewModal, DispatchForm summary panel, and all four sites in exportSharing.ts.
+4. CI tripwire added: `grep -rn ".manualDeduction|.manualPremium" src/components src/utils/exportSharing.ts` fails build if any display code bypasses `getEffectiveAdjustments`.
+5. Tests T30 and T31 added covering pro-rata and manual dispatches respectively.
+
+#### Verification Performed
+
+- 107/107 tests pass
+- Build clean (0 TS errors)
+- CI guard validated
+
+---
+
+### Issue 38: False "Overdrawn" Warning When Editing Existing Dispatches
+
+- **Severity:** High (UI Clutter & False Alarms on Saved Dispatches)
+- **Status:** RESOLVED
+- **Files Modified:**
+  - `src/utils/calculations.ts`
+  - `src/pages/DispatchForm.tsx`
+  - `tests/inventory.test.ts`
+
+#### Detail of the Issue
+
+When editing a saved dispatch using 10 t from a 15 t lot, the form showed "5.0 t available" and triggered the overdraw warning because it included the current dispatch in allDispatches. True available was 15 t.
+
+#### How It Was Solved
+
+1. New pure function `calculateLotAvailabilityForDispatch(lot, allDispatches, draft)` in `calculations.ts`:
+   - Filters out the draft dispatch by ID from allDispatches before computing available stock.
+   - Sums ALL coal input rows in the draft referencing this lot (fixes Issue 39 simultaneously).
+   - Returns `{ availableBeforeThis, draftUse, remainingAfter, isOverdraw }`.
+2. DispatchForm updated to call this function and display correct "Xt available" and "Overdrawn by Xt".
+3. `ledger_data_changed` listener added to keep allDispatches fresh.
+4. Tests T32a–d covering all four cases from the reviewer's table.
+
+#### Verification Performed
+
+- All T32 sub-cases pass in npm run test.
+
+---
+
+### Issue 39: Per-Lot Overdraw Aggregation Across Multi-Row Coal Blends
+
+- **Severity:** Medium (Silent Overdraws in Multi-Weighment Blends)
+- **Status:** RESOLVED (part of Issue 38 solution)
+- **Files Modified:**
+  - `src/utils/calculations.ts`
+  - `tests/inventory.test.ts`
+
+#### How It Was Solved
+
+`calculateLotAvailabilityForDispatch` aggregates all `draft.coalInputs` referencing the same `lotId` via `.reduce()`. Test T33 covers two rows of 8 t each from a 10 t lot → draftUse=16, overdrawn by 6.
+
+---
+
+### Issue 40: Local Timezone Date String Guard in Inventory & CI Tripwire
+
+- **Severity:** Medium (Midnight UTC Date Drift in Pakistan Timezone UTC+5)
+- **Status:** RESOLVED
+- **Files Modified:**
+  - `src/lib/devSeed.ts`
+  - `.github/workflows/ci.yml`
+  - `tests/inventory.test.ts`
+
+#### Detail of the Issue
+
+`devSeed.ts` used `d.toISOString().split('T')[0]` in its `dayAgo()` helper. Between midnight and 05:00 in Pakistan (UTC+5) this returns the previous day's date. The reviewer's grep found 4 matches in Inventory.tsx at the time of the review; these were already fixed in the working commit.
+
+#### How It Was Solved
+
+1. `devSeed.ts`: replaced `d.toISOString().split('T')[0]` with `toLocalDateString(d)`.
+2. CI guard added: `grep -rn "toISOString().split" src` fails the build if this pattern is re-introduced.
+3. Test T34 verifies `toLocalDateString()` returns the correct local calendar day at 02:00 local time.
+
+#### Verification Performed
+
+- `grep -rn "toISOString().split" src/` returns no matches.
+- T34 passes.
+
+---
+
+### Issue 41: Documentation Alignment with Active Implementation
+
+- **Severity:** Medium (Documentation Trust)
+- **Status:** Pending (Phase I — deferred to after client call Issue 44)
+
+Report claims per-supplier summary exists; code has a filter pill only. Will be corrected once Issue 47b is implemented or the claim is removed.
+
+---
+
+### Issue 42: Real-World Factory Paper Slips Verification
+
+- **Severity:** High (Financial Calculation Confidence)
+- **Status:** Pending (Requires real slips from the client)
+
+The existing `tests/fixtures/real-slips.json` fixtures are synthetic. Real slips are needed to fill `paper` values from actual documents. Synthetic file to be renamed to `synthetic-scenarios.json` once real slips are added.
+
+---
+
+### Issue 43: Physical Hardware APK, Real Firebase Sync, and Pilot Validation
+
+- **Severity:** High (Pre-Deployment Operational Gate)
+- **Status:** Pending (Manual operational protocol — requires physical hardware)
+
+Manual checklist:
+1. CI Actions tab: all jobs green
+2. Firebase console: four legacy PIN fields gone from `users/{uid}/settings/config`
+3. Two-phone test (10-step table from the review)
+4. Release APK test on the client's real phone
+5. Two-week single-phone pilot with weekly JSON backups
+
+---
+
+### Issue 44: Client Consultation & Business Rules Confirmation
+
+- **Severity:** Medium (Business Contract Alignment)
+- **Status:** Pending (Requires one phone call with the client)
+
+Questions for the call:
+- Freight mine-to-yard: included in landed cost?
+- Extra deductions on top of pro-rata (moisture, ash)?
+- Premium above target GCV: paid or capped?
+- Rounding convention: paisa or whole rupee?
+- Negative stock: dispatches before entering purchases?
+- Lot vs. supplier pool: how does the client think of stock?
+
+---
+
+### Issue 45: Default Tax Method Settings Migration for Existing Devices
+
+- **Severity:** Low-Medium (Default Experience for Prior Installs)
+- **Status:** RESOLVED
+- **Files Modified:**
+  - `src/pages/Settings.tsx`
+
+#### Detail of the Issue
+
+New installs default to `Manual` tax but existing users who already stored settings with `formula_18_5` keep the old default because `{ ...INITIAL_SETTINGS, ...parsed }` lets stored values win.
+
+#### How It Was Solved
+
+A one-time migration notice banner in `Settings.tsx`:
+- Shown when `settings.defaultTaxMethod === 'formula_18_5'` AND `migrations.manualTaxNotice_v1` localStorage flag is absent.
+- **"Switch to Manual"** → saves the setting immediately and sets the flag.
+- **"Keep Formula"** → sets the flag without changing settings.
+- Never appears again after either button is tapped.
+- Styled with the iOS-orange colour scheme to communicate informational context (not an error).
+
+#### Verification Performed
+
+- Flag is set on both button paths.
+- Banner only renders for the exact condition (formula default, no migration flag).
+- `npm run build` passes with no TS errors.
+
+---
+
+### Issue 46: Additional Penalties / Deductions in Pro-Rata Mode
+
+- **Severity:** Medium (Contract Penalty Stacking)
+- **Status:** Pending (Phase K — conditional on client answer from Issue 44)
+
+In pro-rata mode `manualDeduction` is overridden by the formula. If the client confirms he needs moisture/ash penalties on top of pro-rata, an `otherDeduction` field will be added:
+```ts
+adjustedRate = baseRate - effectiveDeduction + effectivePremium - otherDeduction;
+```
+If not needed, an info hint will be added to the form: "Manual adjustment fields are not used in pro-rata mode."
+
+---
+
+### Issue 47: Inventory Follow-Ups (Adjustments, Supplier Summary, Repricing)
+
+- **Severity:** Low-Medium (Future Enhancements)
+- **Status:** Pending (Scoped for post-pilot enhancements)
+
+| # | Item | Status |
+|---|------|--------|
+| 47a | Stock adjustments (yard shrinkage) | Pending — High after pilot |
+| 47b | Per-supplier summary | Pending — Medium (2 h) |
+| 47c | Reprice linked dispatches | Pending — Low |
+| 47d | Lot delete guard | Pending — Low |
+| 47e | Stale stock refresh on ledger_data_changed | DONE (as part of Issue 38 fix) |
+| 47f | Landed-rate paisa precision drift | Pending — Very low |
+| 47g | Inventory in exports | Pending — Low |
+| 47h | Supplier payables | Later |
+
+---
+
+### Issue 48: Repo Hygiene, Leftover Tombstones, and Code Cleanups (48a–48g)
+
+- **Severity:** Low (Code Quality & Maintainability)
+- **Status:** Partially resolved
+
+| # | Item | Status |
+|---|------|--------|
+| 48a | One commit mixing Part 3 and new features | Pending — feature branches + v1.0.0 tag after gates |
+| 48b | Lint warnings rose from 14 to 22 | Pending — review new screens |
+| 48c | alert() for mine form validation in Inventory.tsx | RESOLVED — inline mineFormError state |
+| 48d | Tombstone call in deleteLot | Documented — kept with backward-compat comment |
+| 48e | Very large files | Deferred — split into components when next touched |
+| 48f | README missing inventory, landed cost, pro-rata | Pending — after Issue 44 client call |
+| 48g | Test report "98" vs "87" discrepancy | Pending — state "87 unit + 11 rules = 98 total" |
+
+#### 48c Implementation Detail
+
+The `handleSaveMine` function previously called `alert()` for three error cases. Now uses `mineFormError` state, which:
+- Clears when `handleOpenAddMine` is called.
+- Sets inline for validation failures (name missing, rate invalid, save failure).
+- Renders a styled red error banner between the Notes field and Save button, matching the dispatch form's error display pattern.
+
+#### 48d Implementation Detail
+
+`deleteLot` in `db.ts` already uses soft deletes (`deleted: true` + `dirty: true` + sync cycle). The `recordTombstone(id)` call was added by mistake during the inventory feature. It has been annotated with a backward-compat comment rather than removed, in case any in-flight cloud pull needs it for safety.
+
+---
+
+### Issue 49: Cloud Inventory Classification and Recovery-Key Lockout
+
+- **Severity:** High for cloud account handling; Medium for local access-control hardening
+- **Status:** RESOLVED
+- **Files Modified:**
+  - `src/lib/syncManager.ts`
+  - `src/utils/securityLock.ts`
+  - `src/components/IOSRecoveryKeyModal.tsx`
+  - `tests/twoDeviceSync.test.ts`
+  - `tests/securityLock.test.ts`
+  - `src/lib/dexieDb.ts`
+  - `src/pages/Summary.tsx`
+  - `tests/persistentStorage.test.ts`
+  - `tests/fixtures/synthetic-scenarios.json`
+  - `tests/exports.test.ts`
+
+#### Detail of the Issues
+
+The cloud fetcher already supports six synchronized collections: parties, dispatches, payments, purchase orders, inventory lots, and mines. However, two account-reconciliation paths counted only the first four. A user whose cloud ledger contained only inventory could be told that the account was empty or sent through the wrong account-conflict branch.
+
+Separately, failed recovery-key attempts were not counted by the same lockout mechanism used for PIN attempts. This made the offline recovery path unnecessarily easier to guess than the normal lock screen.
+
+The existing fixture also described synthetic test scenarios as real industrial slips, despite not being source documents. That label created false confidence in money-math validation.
+
+#### How It Was Solved
+
+1. Added `getCloudRecordCount()` as one shared source of truth for all six synchronized collections and replaced both partial counts in `SyncManager`.
+2. Added regression tests for inventory-only cloud data, all collection types, and malformed collection values.
+3. Updated `verifyRecoveryKey()` to reject guesses during an active lockout, record a failed attempt when a key is wrong, and reset the counter when it is correct.
+4. Updated the recovery-key modal to display a countdown and disable verification while locked out.
+5. Relabelled the fixture and its tests as synthetic regression scenarios. This is a truth correction only; genuine factory-slip validation is still required for release.
+6. Bounded the optional `navigator.storage.persist()` request to three seconds. Persistent storage remains requested, but a browser/WebView that leaves the request pending can no longer prevent IndexedDB startup.
+7. Made the Summary data load resilient: an initial database-read failure now gives the user a clear retry action instead of leaving a permanent loading state.
+
+#### Verification Performed
+
+- `npm run test`: 112/112 passed, including a pending persistent-storage-permission regression test.
+- `npm run build`: TypeScript compilation and production bundle completed successfully.

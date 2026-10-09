@@ -12,12 +12,38 @@ import {
   clearAllData,
 } from '../src/lib/db';
 import { sanitizeForFirestore, type CloudSyncResult } from '../src/lib/firebase';
-import { syncManager } from '../src/lib/syncManager';
+import { getCloudRecordCount, syncManager } from '../src/lib/syncManager';
 import type { AppSettings, Dispatch, Party } from '../src/types';
 
 describe('Phase C: Two-Device Sync Scenarios & Settings Separation (Issues 21, 22, 28)', () => {
   beforeEach(() => {
     localStorage.clear();
+  });
+
+  describe('Cloud record classification', () => {
+    it('counts inventory-only cloud data so recovery and account selection do not treat it as empty', () => {
+      expect(getCloudRecordCount({
+        parties: [],
+        dispatches: [],
+        payments: [],
+        pos: [],
+        lots: [{ id: 'lot-1' }],
+        mines: [{ id: 'mine-1' }],
+      })).toBe(2);
+    });
+
+    it('counts all supported cloud record collections and ignores malformed values', () => {
+      expect(getCloudRecordCount({
+        parties: [{ id: 'party-1' }],
+        dispatches: [{ id: 'dispatch-1' }],
+        payments: [{ id: 'payment-1' }],
+        pos: [{ id: 'po-1' }],
+        lots: [{ id: 'lot-1' }],
+        mines: [{ id: 'mine-1' }],
+        settings: { businessName: 'Not a record collection' },
+      })).toBe(6);
+      expect(getCloudRecordCount({ lots: 'invalid', mines: null })).toBe(0);
+    });
   });
 
   describe('Issue 22: Per-Device Settings vs Shared Business Settings (T14)', () => {

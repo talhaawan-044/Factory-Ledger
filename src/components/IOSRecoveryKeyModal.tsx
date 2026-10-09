@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { verifyRecoveryKey } from '../utils/securityLock';
+import { getLockoutRemainingSeconds, verifyRecoveryKey } from '../utils/securityLock';
 import { playCashChime, playPopSound } from '../utils/delight';
 import { KeyRound, X, ClipboardPaste, ArrowRight, ShieldAlert } from 'lucide-react';
 
@@ -17,14 +17,26 @@ export default function IOSRecoveryKeyModal({
   const [keyInput, setKeyInput] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
   const [isShaking, setIsShaking] = useState(false);
+  const [lockoutRemaining, setLockoutRemaining] = useState(() => getLockoutRemainingSeconds());
 
   useEffect(() => {
     if (isOpen) {
       setKeyInput('');
       setErrorMessage('');
       setIsShaking(false);
+      setLockoutRemaining(getLockoutRemainingSeconds());
     }
   }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen || lockoutRemaining <= 0) return;
+    const interval = window.setInterval(() => {
+      const remaining = getLockoutRemainingSeconds();
+      setLockoutRemaining(remaining);
+      if (remaining <= 0) setErrorMessage('');
+    }, 1000);
+    return () => window.clearInterval(interval);
+  }, [isOpen, lockoutRemaining]);
 
   if (!isOpen) return null;
 
@@ -50,6 +62,11 @@ export default function IOSRecoveryKeyModal({
   };
 
   const handleVerify = () => {
+    if (lockoutRemaining > 0) {
+      setErrorMessage(`Too many attempts. Locked for ${lockoutRemaining}s`);
+      return;
+    }
+
     if (!keyInput.trim()) {
       setErrorMessage('Please enter your recovery key');
       return;
@@ -60,6 +77,12 @@ export default function IOSRecoveryKeyModal({
       playCashChime();
       onSuccess();
     } else {
+      const remaining = getLockoutRemainingSeconds();
+      if (remaining > 0) {
+        setLockoutRemaining(remaining);
+        setErrorMessage(`Too many attempts. Locked for ${remaining}s`);
+        return;
+      }
       setIsShaking(true);
       setErrorMessage('Invalid recovery key. Please check and try again.');
       setTimeout(() => setIsShaking(false), 500);
@@ -255,6 +278,7 @@ export default function IOSRecoveryKeyModal({
         <button
           type="button"
           onClick={handleVerify}
+          disabled={lockoutRemaining > 0}
           style={{
             width: '100%',
             padding: '14px',
@@ -268,7 +292,8 @@ export default function IOSRecoveryKeyModal({
             alignItems: 'center',
             justifyContent: 'center',
             gap: 8,
-            cursor: 'pointer',
+            cursor: lockoutRemaining > 0 ? 'not-allowed' : 'pointer',
+            opacity: lockoutRemaining > 0 ? 0.55 : 1,
           }}
         >
           <span>Verify & Reset Passcode</span>

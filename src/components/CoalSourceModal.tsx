@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useCallback } from 'react';
 import type { Mine, InventoryLot, Dispatch, AppSettings } from '../types';
 import { getCurrencySymbol, formatAmountNumber } from '../utils/currency';
 import { formatDisplayDate } from '../utils/dateUtils';
@@ -78,8 +78,13 @@ export default function CoalSourceModal({
     }));
   };
 
+  const otherDispatches = useMemo(
+    () => dispatches.filter((d) => !d.deleted && (!currentDispatchId || d.id !== currentDispatchId)),
+    [dispatches, currentDispatchId]
+  );
+
   // Helper: Determine if a lot is currently available for this dispatch
-  const isLotAvailable = (lot: InventoryLot) => {
+  const isLotAvailable = useCallback((lot: InventoryLot) => {
     if (lot.deleted) return false;
 
     // If this lot is currently selected in THIS input field, keep it available
@@ -96,16 +101,13 @@ export default function CoalSourceModal({
     }
 
     // Check if lot has remaining stock after all other dispatches
-    const otherDispatches = dispatches.filter(
-      (d) => !d.deleted && (!currentDispatchId || d.id !== currentDispatchId)
-    );
     const stock = calculateLotStock(lot, otherDispatches);
     if (stock.remainingWeight <= 0.001) {
       return false;
     }
 
     return true;
-  };
+  }, [currentLotId, currentDispatchId, excludeLotIds, otherDispatches]);
 
   // Group available and used lots by mineId
   const { availableLotsByMineId, usedLotsByMineId } = useMemo(() => {
@@ -127,7 +129,7 @@ export default function CoalSourceModal({
       }
     }
     return { availableLotsByMineId: availMap, usedLotsByMineId: usedMap };
-  }, [lots, currentDispatchId, currentLotId, excludeLotIds, dispatches]);
+  }, [lots, isLotAvailable]);
 
   // Filtered mines based on search
   const filteredMines = useMemo(() => {

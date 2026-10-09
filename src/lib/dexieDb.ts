@@ -45,18 +45,30 @@ export class FactoryLedgerDB extends Dexie {
 
 export const idb = new FactoryLedgerDB();
 
+// Persistent-storage permission is an optional resilience enhancement. It must
+// never prevent the ledger itself from opening if a browser or WebView leaves
+// the permission request pending.
+const PERSISTENCE_REQUEST_TIMEOUT_MS = 3_000;
+
 /**
  * Request persistent browser/device storage to prevent eviction under OS disk pressure.
  */
 export async function requestPersistentStorage(): Promise<boolean> {
   if (typeof navigator !== 'undefined' && navigator.storage && navigator.storage.persist) {
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
     try {
-      const persisted = await navigator.storage.persist();
+      const persistenceRequest = navigator.storage.persist();
+      const timeout = new Promise<boolean>((resolve) => {
+        timeoutId = setTimeout(() => resolve(false), PERSISTENCE_REQUEST_TIMEOUT_MS);
+      });
+      const persisted = await Promise.race([persistenceRequest, timeout]);
       console.log(`[Storage] Persistent storage granted: ${persisted}`);
       return persisted;
     } catch (err) {
       console.warn('[Storage] Could not request persistent storage:', err);
       return false;
+    } finally {
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
     }
   }
   return false;

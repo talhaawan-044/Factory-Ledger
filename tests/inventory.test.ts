@@ -5,7 +5,6 @@ import {
   calculateLotStock,
   calculateInventoryTotals,
   calculateMineStock,
-  calculateOverallMinesSummary,
 } from '../src/utils/calculations';
 import {
   saveLot,
@@ -15,12 +14,10 @@ import {
   saveMine,
   getMines,
   getMine,
-  deleteMine,
   getMineLots,
   saveDispatch,
   deleteDispatch,
   getDispatch,
-  getDispatches,
   clearAllData,
   getAllBackupData,
   restoreBackup,
@@ -28,7 +25,7 @@ import {
   markRecordsClean,
   mergeLedgerData,
 } from '../src/lib/db';
-import type { InventoryLot, Dispatch, PurchaseOrder, Mine } from '../src/types';
+import type { InventoryLot, Dispatch, Mine } from '../src/types';
 
 describe('New Features: Pro-Rata GCV & Inventory with Landed Cost', () => {
   beforeEach(async () => {

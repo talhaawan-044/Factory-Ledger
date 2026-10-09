@@ -10,7 +10,7 @@ import {
   buildPartyStatementData,
   buildFleetExportData,
 } from '../src/utils/exportSharing';
-import realSlipsFixture from './fixtures/real-slips.json';
+import syntheticScenariosFixture from './fixtures/synthetic-scenarios.json';
 
 const mockSettings: AppSettings = {
   businessName: 'AWAN COAL TRADERS',
@@ -170,15 +170,15 @@ describe('Issue 25 (T12): Pure Export Data Functions Match Canonical Totals', ()
   });
 });
 
-describe('Issue 25 (T13): Real Paper Slips Fixture Verification', () => {
-  const { tolerance, slips } = realSlipsFixture;
+describe('Issue 25 (T13): Synthetic Settlement Scenario Regression', () => {
+  const { tolerance, slips } = syntheticScenariosFixture;
 
-  it('contains exactly 10 real industrial slips covering all commercial rules', () => {
+  it('contains exactly 10 synthetic scenarios covering the supported commercial rules', () => {
     expect(slips.length).toBe(10);
   });
 
   slips.forEach((slip) => {
-    it(`matches paper slip ${slip.id} within tolerance (${slip.source})`, () => {
+    it(`matches synthetic scenario ${slip.id} within tolerance (${slip.source})`, () => {
       const dispatch: Dispatch = {
         id: slip.id,
         partyId: 'party-real',

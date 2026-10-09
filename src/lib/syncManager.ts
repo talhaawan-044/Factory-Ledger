@@ -58,6 +58,19 @@ export interface LoginScenarioResult {
 
 const STORAGE_KEY_LAST_SYNC = 'coal_last_cloud_sync';
 const STORAGE_KEY_AUTO_SYNC = 'coal_auto_sync_cloud';
+const CLOUD_RECORD_COLLECTIONS = ['parties', 'dispatches', 'payments', 'pos', 'lots', 'mines'] as const;
+
+/**
+ * Counts every synced record type. Keep this in one place: using a partial
+ * count can treat an inventory-only cloud account as empty during login or
+ * restoration and take the wrong account-resolution path.
+ */
+export function getCloudRecordCount(cloudData: Record<string, unknown> | null | undefined): number {
+  return CLOUD_RECORD_COLLECTIONS.reduce((count, collectionName) => {
+    const records = cloudData?.[collectionName];
+    return count + (Array.isArray(records) ? records.length : 0);
+  }, 0);
+}
 
 class SyncManager {
   private state: SyncState;
@@ -361,11 +374,7 @@ class SyncManager {
       const localCounts = await getLocalRecordCounts();
       const localCount = localCounts.total;
 
-      const cloudCount =
-        (cloudData.parties?.length || 0) +
-        (cloudData.dispatches?.length || 0) +
-        (cloudData.payments?.length || 0) +
-        (cloudData.pos?.length || 0);
+      const cloudCount = getCloudRecordCount(cloudData);
 
       if (localCount === 0 && cloudCount > 0) {
         // Local is completely empty (fresh install, new device, or cleared browser data)
@@ -451,11 +460,7 @@ class SyncManager {
     try {
       cloudData = await fetchLedgerFromCloud(user.uid);
       if (cloudData) {
-        cloudCount =
-          (cloudData.parties?.length || 0) +
-          (cloudData.dispatches?.length || 0) +
-          (cloudData.payments?.length || 0) +
-          (cloudData.pos?.length || 0);
+        cloudCount = getCloudRecordCount(cloudData);
       }
     } catch (err) {
       console.warn('[SyncManager] Error fetching cloud data during login check:', err);
