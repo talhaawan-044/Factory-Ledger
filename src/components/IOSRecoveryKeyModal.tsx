@@ -1,7 +1,12 @@
 import { useState, useEffect } from 'react';
-import { getLockoutRemainingSeconds, verifyRecoveryKey } from '../utils/securityLock';
+import {
+  authenticateWithDeviceLock,
+  getLockoutRemainingSeconds,
+  isDeviceLockAvailable,
+  verifyRecoveryKey,
+} from '../utils/securityLock';
 import { playCashChime, playPopSound } from '../utils/delight';
-import { KeyRound, X, ClipboardPaste, ArrowRight, ShieldAlert } from 'lucide-react';
+import { KeyRound, X, ClipboardPaste, ArrowRight, ShieldAlert, Smartphone } from 'lucide-react';
 
 interface IOSRecoveryKeyModalProps {
   isOpen: boolean;
@@ -18,6 +23,8 @@ export default function IOSRecoveryKeyModal({
   const [errorMessage, setErrorMessage] = useState('');
   const [isShaking, setIsShaking] = useState(false);
   const [lockoutRemaining, setLockoutRemaining] = useState(() => getLockoutRemainingSeconds());
+  const [deviceLockAvailable, setDeviceLockAvailable] = useState(false);
+  const [isAuthenticating, setIsAuthenticating] = useState(false);
 
   useEffect(() => {
     if (isOpen) {
@@ -25,6 +32,8 @@ export default function IOSRecoveryKeyModal({
       setErrorMessage('');
       setIsShaking(false);
       setLockoutRemaining(getLockoutRemainingSeconds());
+      setIsAuthenticating(false);
+      isDeviceLockAvailable().then(setDeviceLockAvailable).catch(() => setDeviceLockAvailable(false));
     }
   }, [isOpen]);
 
@@ -61,7 +70,7 @@ export default function IOSRecoveryKeyModal({
     }
   };
 
-  const handleVerify = () => {
+  const handleVerify = async () => {
     if (lockoutRemaining > 0) {
       setErrorMessage(`Too many attempts. Locked for ${lockoutRemaining}s`);
       return;
@@ -72,7 +81,9 @@ export default function IOSRecoveryKeyModal({
       return;
     }
 
-    const isValid = verifyRecoveryKey(keyInput.trim());
+    setIsAuthenticating(true);
+    const isValid = await verifyRecoveryKey(keyInput.trim());
+    setIsAuthenticating(false);
     if (isValid) {
       playCashChime();
       onSuccess();
@@ -86,6 +97,21 @@ export default function IOSRecoveryKeyModal({
       setIsShaking(true);
       setErrorMessage('Invalid recovery key. Please check and try again.');
       setTimeout(() => setIsShaking(false), 500);
+    }
+  };
+
+  const handlePhoneLock = async () => {
+    if (isAuthenticating) return;
+    playPopSound();
+    setErrorMessage('');
+    setIsAuthenticating(true);
+    const success = await authenticateWithDeviceLock();
+    setIsAuthenticating(false);
+    if (success) {
+      playCashChime();
+      onSuccess();
+    } else {
+      setErrorMessage('Phone verification was cancelled or unsuccessful.');
     }
   };
 
@@ -180,8 +206,44 @@ export default function IOSRecoveryKeyModal({
             lineHeight: 1.4,
           }}
         >
-          Enter your secret offline Master Recovery Key to verify identity and choose a new 5-digit PIN.
+          Verify ownership of this phone, then choose a new 5-digit Factory Ledger PIN.
         </p>
+
+        {deviceLockAvailable && (
+          <button
+            type="button"
+            onClick={handlePhoneLock}
+            disabled={isAuthenticating}
+            style={{
+              width: '100%',
+              padding: '13px',
+              borderRadius: 14,
+              background: 'var(--ios-blue, #0A84FF)',
+              border: 'none',
+              color: '#FFFFFF',
+              fontSize: 15,
+              fontWeight: 600,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 8,
+              cursor: isAuthenticating ? 'wait' : 'pointer',
+              opacity: isAuthenticating ? 0.65 : 1,
+              marginBottom: 14,
+            }}
+          >
+            <Smartphone size={18} />
+            <span>{isAuthenticating ? 'Verifying…' : 'Use Phone Lock'}</span>
+          </button>
+        )}
+
+        {deviceLockAvailable && (
+          <div style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
+            <div style={{ height: 1, flex: 1, background: 'var(--separator-opaque, #33343F)' }} />
+            <span style={{ fontSize: 11, color: 'var(--label-tertiary, #636366)', fontWeight: 600 }}>OR USE RECOVERY CODE</span>
+            <div style={{ height: 1, flex: 1, background: 'var(--separator-opaque, #33343F)' }} />
+          </div>
+        )}
 
         {/* Key Input Box */}
         <div
@@ -204,14 +266,15 @@ export default function IOSRecoveryKeyModal({
             onKeyDown={(e) => {
               if (e.key === 'Enter') handleVerify();
             }}
-            placeholder="FL-XXXX-XXXX"
+            placeholder="FL-XXXX-XXXX-XXXX-XXXX"
             autoFocus
             style={{
               flex: 1,
+              minWidth: 0,
               background: 'transparent',
               border: 'none',
               color: 'var(--label-primary, #FFFFFF)',
-              fontSize: 18,
+              fontSize: 15,
               fontWeight: 700,
               fontFamily: 'monospace',
               letterSpacing: 2,
@@ -270,7 +333,7 @@ export default function IOSRecoveryKeyModal({
         >
           <ShieldAlert size={16} color="#FF9F0A" style={{ flexShrink: 0, marginTop: 2 }} />
           <span style={{ fontSize: 12, color: 'var(--label-secondary, #8E8E93)', lineHeight: 1.35 }}>
-            This recovery key operates 100% offline. No internet connection is needed to reset your PIN.
+            This device emergency code works offline and only resets the Factory Ledger PIN on this phone.
           </span>
         </div>
 
@@ -278,7 +341,7 @@ export default function IOSRecoveryKeyModal({
         <button
           type="button"
           onClick={handleVerify}
-          disabled={lockoutRemaining > 0}
+          disabled={lockoutRemaining > 0 || isAuthenticating}
           style={{
             width: '100%',
             padding: '14px',
@@ -292,11 +355,11 @@ export default function IOSRecoveryKeyModal({
             alignItems: 'center',
             justifyContent: 'center',
             gap: 8,
-            cursor: lockoutRemaining > 0 ? 'not-allowed' : 'pointer',
-            opacity: lockoutRemaining > 0 ? 0.55 : 1,
+            cursor: lockoutRemaining > 0 || isAuthenticating ? 'not-allowed' : 'pointer',
+            opacity: lockoutRemaining > 0 || isAuthenticating ? 0.55 : 1,
           }}
         >
-          <span>Verify & Reset Passcode</span>
+          <span>{isAuthenticating ? 'Verifying…' : 'Verify Recovery Code'}</span>
           <ArrowRight size={18} />
         </button>
 

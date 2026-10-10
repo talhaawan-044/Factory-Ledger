@@ -489,111 +489,196 @@ export async function saveDispatch(dispatch: Dispatch): Promise<void> {
     updatedAt: now,
     dirty: true,
   };
+  const changedLotIds = new Set<string>();
 
-  await idb.dispatches.put(itemToSave);
-  notifyLedgerMutation('dispatch', sanitized.id, existing ? 'update' : 'create');
+  await idb.transaction('rw', [idb.dispatches, idb.lots, idb.parties], async () => {
+    const allDispatches = await idb.dispatches.toArray();
+    const allLots = await idb.lots.toArray();
+    const lotById = new Map(allLots.map((lot) => [lot.id, lot]));
+    const selectedLotIds = new Set<string>();
 
-  // Synchronize lots linked to this dispatch
-  const selectedLotIds = new Set(
-    (sanitized.coalInputs || []).map((ci) => ci.lotId).filter(Boolean) as string[]
-  );
+    for (const input of sanitized.coalInputs || []) {
+      if (input.weight <= 0) {
+        throw new Error(`Coal source "${input.sourceName || 'Untitled source'}" must have a positive weight.`);
+      }
+      if (input.purchaseRate <= 0) {
+        throw new Error(`Coal source "${input.sourceName || 'Untitled source'}" must have a positive purchase rate.`);
+      }
+      if (!input.lotId) continue;
 
-  let targetPartyName = sanitized.factoryName;
-  if (sanitized.partyId) {
-    const party = await idb.parties.get(sanitized.partyId);
-    if (party?.name) targetPartyName = party.name;
-  }
+      if (selectedLotIds.has(input.lotId)) {
+        throw new Error('The same stock entry cannot be selected more than once in a dispatch.');
+      }
+      selectedLotIds.add(input.lotId);
 
-  const allLots = await idb.lots.toArray();
-  for (const lot of allLots) {
-    if (lot.deleted) continue;
-    if (selectedLotIds.has(lot.id)) {
+      const lot = lotById.get(input.lotId);
+      if (!lot || lot.deleted) {
+        throw new Error('A selected stock entry no longer exists. Please choose an available entry again.');
+      }
+
+      const receivedWeight = cleanNumber(lot.receivedWeight || lot.billedWeight || lot.tonnage);
+      const usedByOtherDispatches = allDispatches
+        .filter((candidate) => !candidate.deleted && candidate.id !== sanitized.id)
+        .reduce(
+          (sum, candidate) => sum + (candidate.coalInputs || [])
+            .filter((coalInput) => coalInput.lotId === input.lotId)
+            .reduce((inputSum, coalInput) => inputSum + cleanNumber(coalInput.weight), 0),
+          0
+        );
+      const availableBeforeThisDispatch = receivedWeight - usedByOtherDispatches;
+      const previousInput = existing?.coalInputs?.find((coalInput) => coalInput.lotId === input.lotId);
+
+      if (input.weight > availableBeforeThisDispatch + 0.001) {
+        throw new Error(
+          `Stock entry "${lot.boughtFrom || lot.supplier || lot.mineName || 'Stock'}" has only ${Math.max(0, availableBeforeThisDispatch).toFixed(2)} tons available for this dispatch.`
+        );
+      }
+
+      const expectedRate = previousInput
+        ? cleanNumber(previousInput.purchaseRate)
+        : cleanNumber(lot.landedRate);
+      if (Math.abs(input.purchaseRate - expectedRate) > 0.01) {
+        throw new Error(
+          previousInput
+            ? 'The landed-rate snapshot for this stock allocation is locked. Change only the allocated weight or choose another stock entry.'
+            : 'The selected stock entry rate has changed. Please select the entry again to use its current landed rate.'
+        );
+      }
+    }
+
+    await idb.dispatches.put(itemToSave);
+
+    // These marker fields are compatibility/display helpers only. A lot may be
+    // allocated across several dispatches; coalInputs remain authoritative.
+    const activeAfterSave = allDispatches
+      .filter((candidate) => !candidate.deleted && candidate.id !== sanitized.id)
+      .concat(itemToSave.deleted ? [] : [itemToSave]);
+    const parties = await idb.parties.toArray();
+    const partyNameById = new Map(parties.map((party) => [party.id, party.name]));
+    const affectedLotIds = new Set<string>([
+      ...selectedLotIds,
+      ...((existing?.coalInputs || []).map((input) => input.lotId).filter(Boolean) as string[]),
+    ]);
+
+    for (const lotId of affectedLotIds) {
+      const lot = lotById.get(lotId);
+      if (!lot || lot.deleted) continue;
+      const representative = activeAfterSave
+        .filter((candidate) => (candidate.coalInputs || []).some((input) => input.lotId === lotId))
+        .sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0))[0];
+      const partyName = representative
+        ? partyNameById.get(representative.partyId) || representative.factoryName
+        : undefined;
+
       if (
-        lot.usedInDispatchId !== sanitized.id ||
-        lot.usedInDispatchTruck !== sanitized.truckNumber ||
-        lot.usedInPartyName !== targetPartyName ||
-        lot.usedInDate !== sanitized.date
+        lot.usedInDispatchId !== representative?.id ||
+        lot.usedInDispatchTruck !== representative?.truckNumber ||
+        lot.usedInPartyName !== partyName ||
+        lot.usedInDate !== representative?.date
       ) {
         await idb.lots.put({
           ...lot,
-          usedInDispatchId: sanitized.id,
-          usedInDispatchTruck: sanitized.truckNumber,
-          usedInPartyName: targetPartyName,
-          usedInDate: sanitized.date,
+          usedInDispatchId: representative?.id,
+          usedInDispatchTruck: representative?.truckNumber,
+          usedInPartyName: partyName,
+          usedInDate: representative?.date,
           updatedAt: now,
           dirty: true,
         });
-        notifyLedgerMutation('lot', lot.id, 'update');
+        changedLotIds.add(lot.id);
       }
-    } else if (lot.usedInDispatchId === sanitized.id) {
-      // Lot was unlinked / removed from this dispatch's coal recipe
-      await idb.lots.put({
-        ...lot,
-        usedInDispatchId: undefined,
-        usedInDispatchTruck: undefined,
-        usedInPartyName: undefined,
-        usedInDate: undefined,
-        updatedAt: now,
-        dirty: true,
-      });
-      notifyLedgerMutation('lot', lot.id, 'update');
     }
-  }
+  });
+
+  notifyLedgerMutation('dispatch', sanitized.id, existing ? 'update' : 'create');
+  changedLotIds.forEach((lotId) => notifyLedgerMutation('lot', lotId, 'update'));
 }
 
 export async function deleteDispatch(id: string): Promise<void> {
   await ensureInitialized();
   const existing = await idb.dispatches.get(id);
   const now = Date.now();
-  if (existing) {
-    await idb.dispatches.put({
-      ...existing,
-      deleted: true,
-      deletedAt: now,
-      updatedAt: now,
-      dirty: true,
-    });
-  } else {
-    await idb.dispatches.put({
-      id,
-      partyId: '',
-      date: getTodayDateString(),
-      truckNumber: '',
-      factoryName: '',
-      targetGcv: 0,
-      baseRate: 0,
-      coalInputs: [],
-      overheads: { loading: 0, freight: 0, crush: 0, royalty: 0, other: 0 },
-      labActualGcv: 0,
-      labReceivedWeight: 0,
-      labSulphur: 0,
-      createdAt: now,
-      updatedAt: now,
-      deleted: true,
-      deletedAt: now,
-      dirty: true,
-    });
-  }
+  const changedLotIds = new Set<string>();
 
-  // Automatically unlink any lots that were linked to this deleted dispatch
-  const allLots = await idb.lots.toArray();
-  for (const lot of allLots) {
-    if (lot.usedInDispatchId === id) {
-      await idb.lots.put({
-        ...lot,
-        usedInDispatchId: undefined,
-        usedInDispatchTruck: undefined,
-        usedInPartyName: undefined,
-        usedInDate: undefined,
+  await idb.transaction('rw', [idb.dispatches, idb.lots, idb.parties], async () => {
+    if (existing) {
+      await idb.dispatches.put({
+        ...existing,
+        deleted: true,
+        deletedAt: now,
         updatedAt: now,
         dirty: true,
       });
-      notifyLedgerMutation('lot', lot.id, 'update');
+    } else {
+      await idb.dispatches.put({
+        id,
+        partyId: '',
+        date: getTodayDateString(),
+        truckNumber: '',
+        factoryName: '',
+        targetGcv: 0,
+        baseRate: 0,
+        coalInputs: [],
+        overheads: { loading: 0, freight: 0, crush: 0, royalty: 0, other: 0 },
+        labActualGcv: 0,
+        labReceivedWeight: 0,
+        labSulphur: 0,
+        createdAt: now,
+        updatedAt: now,
+        deleted: true,
+        deletedAt: now,
+        dirty: true,
+      });
     }
-  }
+
+    const [allLots, allDispatches, parties] = await Promise.all([
+      idb.lots.toArray(),
+      idb.dispatches.toArray(),
+      idb.parties.toArray(),
+    ]);
+    const partyNameById = new Map(parties.map((party) => [party.id, party.name]));
+    const affectedLotIds = new Set<string>([
+      ...((existing?.coalInputs || []).map((input) => input.lotId).filter(Boolean) as string[]),
+      ...allLots.filter((lot) => lot.usedInDispatchId === id).map((lot) => lot.id),
+    ]);
+
+    for (const lot of allLots) {
+      if (!affectedLotIds.has(lot.id)) continue;
+      const representative = allDispatches
+        .filter(
+          (candidate) =>
+            !candidate.deleted &&
+            candidate.id !== id &&
+            (candidate.coalInputs || []).some((input) => input.lotId === lot.id)
+        )
+        .sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0))[0];
+      const partyName = representative
+        ? partyNameById.get(representative.partyId) || representative.factoryName
+        : undefined;
+
+      if (
+        lot.usedInDispatchId !== representative?.id ||
+        lot.usedInDispatchTruck !== representative?.truckNumber ||
+        lot.usedInPartyName !== partyName ||
+        lot.usedInDate !== representative?.date
+      ) {
+        await idb.lots.put({
+          ...lot,
+          usedInDispatchId: representative?.id,
+          usedInDispatchTruck: representative?.truckNumber,
+          usedInPartyName: partyName,
+          usedInDate: representative?.date,
+          updatedAt: now,
+          dirty: true,
+        });
+        changedLotIds.add(lot.id);
+      }
+    }
+  });
 
   recordTombstone(id);
   notifyLedgerMutation('dispatch', id, 'delete');
+  changedLotIds.forEach((lotId) => notifyLedgerMutation('lot', lotId, 'update'));
 }
 
 export async function getPartyDispatches(partyId: string): Promise<Dispatch[]> {
@@ -895,6 +980,17 @@ export async function saveLot(lot: InventoryLot): Promise<void> {
   const sanitized = sanitizeLot(lot);
   const existing = await idb.lots.get(sanitized.id);
   const now = Date.now();
+
+  if (sanitized.billedWeight <= 0 || sanitized.receivedWeight <= 0) {
+    throw new Error('Loaded and received weight must both be greater than zero.');
+  }
+  if (sanitized.purchaseRate <= 0) {
+    throw new Error('Coal rate per ton must be greater than zero.');
+  }
+  if (cleanNumber(lot.loadingCost) < 0 || cleanNumber(lot.freightCost) < 0) {
+    throw new Error('Loading and freight amounts cannot be negative.');
+  }
+
   const itemToSave: InventoryLot = {
     ...sanitized,
     createdAt: sanitized.createdAt || now,
@@ -902,43 +998,36 @@ export async function saveLot(lot: InventoryLot): Promise<void> {
     dirty: true,
   };
 
-  await idb.lots.put(itemToSave);
-  notifyLedgerMutation('lot', sanitized.id, existing ? 'update' : 'create');
+  await idb.transaction('rw', [idb.lots, idb.dispatches], async () => {
+    if (existing) {
+      const linkedDispatch = await idb.dispatches
+        .filter(
+          (dispatch) =>
+            !dispatch.deleted &&
+            (dispatch.coalInputs || []).some((input) => input.lotId === sanitized.id)
+        )
+        .first();
 
-  // Cascade updates to any dispatches consuming this lot so calculations stay in sync
-  if (existing) {
-    const allDispatches = await idb.dispatches.toArray();
-    const effectiveRate = sanitized.landedRate || sanitized.purchaseRate || sanitized.ratePerTon || 0;
-    const effectiveSourceName = sanitized.mineName && (sanitized.boughtFrom || sanitized.supplier)
-      ? `${sanitized.mineName} - ${sanitized.boughtFrom || sanitized.supplier}`
-      : (sanitized.boughtFrom || sanitized.supplier || sanitized.mineName || '');
+      if (linkedDispatch) {
+        const financialFieldsChanged =
+          Math.abs(cleanNumber(existing.billedWeight) - sanitized.billedWeight) > 0.001 ||
+          Math.abs(cleanNumber(existing.receivedWeight) - sanitized.receivedWeight) > 0.001 ||
+          Math.abs(cleanNumber(existing.purchaseRate) - sanitized.purchaseRate) > 0.001 ||
+          Math.abs(cleanNumber(existing.loadingCost) - cleanNumber(sanitized.loadingCost)) > 0.001 ||
+          Math.abs(cleanNumber(existing.freightCost) - cleanNumber(sanitized.freightCost)) > 0.001;
 
-    for (const disp of allDispatches) {
-      if (disp.deleted) continue;
-      let hasChanges = false;
-      const updatedCoalInputs = (disp.coalInputs || []).map((ci) => {
-        if (ci.lotId === sanitized.id) {
-          hasChanges = true;
-          return {
-            ...ci,
-            purchaseRate: effectiveRate > 0 ? effectiveRate : ci.purchaseRate,
-            sourceName: effectiveSourceName || ci.sourceName,
-          };
+        if (financialFieldsChanged) {
+          throw new Error(
+            `This stock entry is locked by Dispatch #${linkedDispatch.truckNumber || 'N/A'}. Remove or replace it in that dispatch before changing weight or cost.`
+          );
         }
-        return ci;
-      });
-
-      if (hasChanges) {
-        await idb.dispatches.put({
-          ...disp,
-          coalInputs: updatedCoalInputs,
-          updatedAt: now,
-          dirty: true,
-        });
-        notifyLedgerMutation('dispatch', disp.id, 'update');
       }
     }
-  }
+
+    await idb.lots.put(itemToSave);
+  });
+
+  notifyLedgerMutation('lot', sanitized.id, existing ? 'update' : 'create');
 }
 
 export async function deleteLot(id: string): Promise<void> {

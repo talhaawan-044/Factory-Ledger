@@ -5,6 +5,8 @@ import {
   calculateLotStock,
   calculateInventoryTotals,
   calculateMineStock,
+  calculateMineAvailabilityForDispatch,
+  auditInventoryRelations,
 } from '../src/utils/calculations';
 import {
   saveLot,
@@ -440,8 +442,14 @@ describe('New Features: Pro-Rata GCV & Inventory with Landed Cost', () => {
       ];
 
       const { merged, hasLocalChanges } = mergeLedgerData(
-        { parties: [], dispatches: [], payments: [], pos: [], lots: localLots, settings: {} as any },
-        { parties: [], dispatches: [], payments: [], pos: [], lots: cloudLots, settings: {} as any }
+        {
+          parties: [], dispatches: [], payments: [], pos: [], lots: localLots, settings: {} as any,
+          exportDate: ''
+        },
+        {
+          parties: [], dispatches: [], payments: [], pos: [], lots: cloudLots, settings: {} as any,
+          exportDate: ''
+        }
       );
 
       expect(hasLocalChanges).toBe(true);
@@ -458,6 +466,8 @@ describe('New Features: Pro-Rata GCV & Inventory with Landed Cost', () => {
         name: 'Duki Coal Mine',
         ratePerTon: 21000,
         location: 'Yard 2 - Plot B',
+        createdAt: 0,
+        updatedAt: 0
       };
       await saveMine(mine);
 
@@ -476,6 +486,8 @@ describe('New Features: Pro-Rata GCV & Inventory with Landed Cost', () => {
         id: 'mine-duki',
         name: 'Duki Mine',
         ratePerTon: 22000,
+        createdAt: 0,
+        updatedAt: 0
       };
       await saveMine(mine);
 
@@ -495,6 +507,8 @@ describe('New Features: Pro-Rata GCV & Inventory with Landed Cost', () => {
         landedRate: 22000,
         supplier: 'Chakwal Traders',
         date: '2026-10-09',
+        createdAt: 0,
+        updatedAt: 0
       };
       await saveLot(stockEntry1);
 
@@ -514,6 +528,8 @@ describe('New Features: Pro-Rata GCV & Inventory with Landed Cost', () => {
         landedRate: 22000,
         supplier: 'Pit Contractor',
         date: '2026-10-09',
+        createdAt: 0,
+        updatedAt: 0
       };
       await saveLot(stockEntry2);
 
@@ -535,6 +551,8 @@ describe('New Features: Pro-Rata GCV & Inventory with Landed Cost', () => {
         id: 'mine-khost',
         name: 'Khost Pit 4',
         ratePerTon: 20000,
+        createdAt: 0,
+        updatedAt: 0
       };
       await saveMine(mine);
 
@@ -550,6 +568,8 @@ describe('New Features: Pro-Rata GCV & Inventory with Landed Cost', () => {
         landedRate: 20000,
         supplier: 'Khost Pit 4',
         date: '2026-10-09',
+        createdAt: 0,
+        updatedAt: 0
       };
       await saveLot(lot);
 
@@ -571,6 +591,12 @@ describe('New Features: Pro-Rata GCV & Inventory with Landed Cost', () => {
           },
         ],
         overheads: { loading: 0, freight: 0, crush: 0, royalty: 0, other: 0 },
+        factoryName: '',
+        labActualGcv: 0,
+        labSulphur: 0,
+        labReceivedWeight: 0,
+        createdAt: 0,
+        updatedAt: 0
       };
 
       const stock = calculateMineStock(mine, [lot], [dispatch]);
@@ -598,6 +624,9 @@ describe('New Features: Pro-Rata GCV & Inventory with Landed Cost', () => {
         loadingCost: 5000,
         freightCost: 20000,
         date: '2026-10-09',
+        landedRate: 0,
+        createdAt: 0,
+        updatedAt: 0
       };
       await saveLot(lot);
 
@@ -620,6 +649,218 @@ describe('New Features: Pro-Rata GCV & Inventory with Landed Cost', () => {
       expect(savedShortage?.landedRate).toBeCloseTo(28061.22, 1);
     });
 
+    it('values mine inventory from received tons and each entry landed rate, not the mine default', () => {
+      const mine: Mine = {
+        id: 'mine-landed-value',
+        name: 'Landed Value Mine',
+        ratePerTon: 25000,
+        createdAt: 1,
+        updatedAt: 1,
+      };
+      const lot: InventoryLot = {
+        id: 'lot-landed-value',
+        mineId: mine.id,
+        supplier: 'Supplier A',
+        date: '2026-10-09',
+        tonnage: 10,
+        billedWeight: 10,
+        receivedWeight: 9.8,
+        purchaseRate: 25000,
+        loadingCost: 5000,
+        freightCost: 20000,
+        totalValue: 275000,
+        landedRate: 28061.22,
+        createdAt: 1,
+        updatedAt: 1,
+      };
+
+      const stock = calculateMineStock(mine, [lot], []);
+      expect(stock.totalInflowTons).toBe(9.8);
+      expect(stock.remainingTons).toBe(9.8);
+      expect(stock.totalInflowValue).toBe(275000);
+      expect(stock.remainingValue).toBe(275000);
+    });
+
+    it('allocates one stock entry across dispatches until its received weight is exhausted', async () => {
+      const lot: InventoryLot = {
+        id: 'lot-partial-allocation',
+        mineId: 'mine-partial',
+        supplier: 'Partial Supplier',
+        date: '2026-10-09',
+        billedWeight: 20,
+        receivedWeight: 20,
+        purchaseRate: 25000,
+        landedRate: 25000,
+        createdAt: 1,
+        updatedAt: 1,
+      };
+      await saveLot(lot);
+
+      const first: Dispatch = {
+        id: 'dispatch-partial-1',
+        partyId: 'party-1',
+        date: '2026-10-09',
+        truckNumber: 'EX-101',
+        factoryName: 'Factory One',
+        targetGcv: 5000,
+        baseRate: 35000,
+        labActualGcv: 5000,
+        labSulphur: 1,
+        labReceivedWeight: 15,
+        coalInputs: [{ id: 'ci-partial-1', lotId: lot.id, mineId: lot.mineId, sourceName: 'Partial', weight: 15, purchaseRate: 25000 }],
+        overheads: { loading: 0, freight: 0, crush: 0, royalty: 0, other: 0 },
+        createdAt: 1,
+        updatedAt: 1,
+      };
+      await saveDispatch(first);
+
+      const second: Dispatch = {
+        ...first,
+        id: 'dispatch-partial-2',
+        truckNumber: 'EX-202',
+        labReceivedWeight: 5,
+        coalInputs: [{ ...first.coalInputs[0], id: 'ci-partial-2', weight: 5 }],
+      };
+      await saveDispatch(second);
+
+      const savedLot = await getLot(lot.id);
+      const stock = calculateLotStock(savedLot!, [first, second]);
+      expect(stock.usedWeight).toBe(20);
+      expect(stock.remainingWeight).toBe(0);
+      expect(savedLot?.usedInDispatchId).toBe(second.id);
+
+      const third: Dispatch = {
+        ...first,
+        id: 'dispatch-partial-3',
+        truckNumber: 'EX-303',
+        labReceivedWeight: 1,
+        coalInputs: [{ ...first.coalInputs[0], id: 'ci-partial-3', weight: 1 }],
+      };
+      await expect(saveDispatch(third)).rejects.toThrow(/only 0.00 tons available/);
+      expect(await getDispatch(third.id)).toBeNull();
+
+      await deleteDispatch(second.id);
+      const reopenedLot = await getLot(lot.id);
+      expect(reopenedLot?.usedInDispatchId).toBe(first.id);
+      expect(calculateLotStock(reopenedLot!, [first]).remainingWeight).toBe(5);
+    });
+
+    it('allows partial weight edits while keeping the landed-rate snapshot locked', async () => {
+      const lot: InventoryLot = {
+        id: 'lot-snapshot-guard',
+        supplier: 'Snapshot Supplier',
+        date: '2026-10-09',
+        billedWeight: 10,
+        receivedWeight: 9.8,
+        purchaseRate: 31000,
+        loadingCost: 5000,
+        freightCost: 20000,
+        landedRate: 34183.67,
+        createdAt: 1,
+        updatedAt: 1,
+      };
+      await saveLot(lot);
+
+      const dispatch: Dispatch = {
+        id: 'dispatch-snapshot-guard',
+        partyId: 'party-1',
+        date: '2026-10-09',
+        truckNumber: 'SG-101',
+        factoryName: 'Factory One',
+        targetGcv: 5000,
+        baseRate: 40000,
+        labActualGcv: 5000,
+        labSulphur: 1,
+        labReceivedWeight: 9.8,
+        coalInputs: [{
+          id: 'ci-snapshot-guard',
+          lotId: lot.id,
+          sourceName: 'Snapshot Supplier',
+          weight: 9,
+          purchaseRate: 34183.67,
+        }],
+        overheads: { loading: 0, freight: 0, crush: 0, royalty: 0, other: 0 },
+        createdAt: 1,
+        updatedAt: 1,
+      };
+
+      dispatch.coalInputs[0].purchaseRate = 31000;
+      await expect(saveDispatch(dispatch)).rejects.toThrow(/rate has changed/);
+
+      dispatch.coalInputs[0].purchaseRate = 34183.67;
+      await saveDispatch(dispatch);
+
+      dispatch.coalInputs[0].weight = 9.5;
+      await expect(saveDispatch(dispatch)).resolves.not.toThrow();
+
+      dispatch.coalInputs[0].purchaseRate = 35000;
+      await expect(saveDispatch(dispatch)).rejects.toThrow(/landed-rate snapshot.*locked/i);
+
+      dispatch.coalInputs[0].purchaseRate = 34183.67;
+      dispatch.coalInputs[0].weight = 10;
+      await expect(saveDispatch(dispatch)).rejects.toThrow(/only 9.80 tons available/);
+    });
+
+    it('rejects negative loading or freight amounts before persistence', async () => {
+      const invalidLot: InventoryLot = {
+        id: 'lot-negative-cost',
+        supplier: 'Supplier A',
+        date: '2026-10-09',
+        billedWeight: 10,
+        receivedWeight: 10,
+        purchaseRate: 25000,
+        loadingCost: -5000,
+        landedRate: 24500,
+        createdAt: 1,
+        updatedAt: 1,
+      };
+      await expect(saveLot(invalidLot)).rejects.toThrow(/cannot be negative/);
+      expect(await getLot(invalidLot.id)).toBeNull();
+    });
+
+    it('allows multiple allocations but reports their combined overdraw', () => {
+      const lot: InventoryLot = {
+        id: 'lot-conflict-audit',
+        supplier: 'Conflict Supplier',
+        date: '2026-10-09',
+        billedWeight: 10,
+        receivedWeight: 10,
+        purchaseRate: 20000,
+        landedRate: 20000,
+        usedInDispatchId: 'dispatch-conflict-a',
+        createdAt: 1,
+        updatedAt: 1,
+      };
+      const makeConflictDispatch = (id: string, truckNumber: string, weight: number): Dispatch => ({
+        id,
+        partyId: 'party-1',
+        date: '2026-10-09',
+        truckNumber,
+        factoryName: 'Factory',
+        targetGcv: 5000,
+        baseRate: 30000,
+        labActualGcv: 5000,
+        labSulphur: 1,
+        labReceivedWeight: 10,
+        coalInputs: [{ id: `ci-${id}`, lotId: lot.id, sourceName: 'Conflict Supplier', weight, purchaseRate: 20000 }],
+        overheads: { loading: 0, freight: 0, crush: 0, royalty: 0, other: 0 },
+        createdAt: 1,
+        updatedAt: 1,
+      });
+
+      const validIssues = auditInventoryRelations(
+        [lot],
+        [makeConflictDispatch('dispatch-conflict-a', 'CF-A', 4), makeConflictDispatch('dispatch-conflict-b', 'CF-B', 6)]
+      );
+      expect(validIssues).toHaveLength(0);
+
+      const overdrawnIssues = auditInventoryRelations(
+        [lot],
+        [makeConflictDispatch('dispatch-conflict-a', 'CF-A', 6), makeConflictDispatch('dispatch-conflict-b', 'CF-B', 6)]
+      );
+      expect(overdrawnIssues.some((issue) => issue.kind === 'overdrawn')).toBe(true);
+    });
+
     it('tracks linked dispatch and preserves usedInDispatch metadata', async () => {
       const lot: InventoryLot = {
         id: 'lot-dispatch-linked',
@@ -635,6 +876,9 @@ describe('New Features: Pro-Rata GCV & Inventory with Landed Cost', () => {
         usedInPartyName: 'Maple Leaf Cement',
         usedInDate: '2026-10-09',
         date: '2026-10-09',
+        landedRate: 0,
+        createdAt: 0,
+        updatedAt: 0
       };
       await saveLot(lot);
 
@@ -650,6 +894,8 @@ describe('New Features: Pro-Rata GCV & Inventory with Landed Cost', () => {
         name: 'Chamalang Mine',
         ratePerTon: 25000,
         location: 'Plot 7',
+        createdAt: 0,
+        updatedAt: 0
       };
       await saveMine(mine);
 
@@ -668,20 +914,22 @@ describe('New Features: Pro-Rata GCV & Inventory with Landed Cost', () => {
       expect(restoredMines[0].ratePerTon).toBe(25000);
     });
 
-    it('cascades rate edits from stock entry to linked dispatch and updates calculations', async () => {
+    it('locks used stock-entry financials and preserves the historical dispatch snapshot', async () => {
       const lot: InventoryLot = {
         id: 'lot-cascade-test',
         mineId: 'mine-1',
         mineName: 'Islam C',
         boughtFrom: 'Hamza',
         supplier: 'Hamza',
-        tonnage: 40,
-        billedWeight: 40,
-        receivedWeight: 40,
+        tonnage: 10,
+        billedWeight: 10,
+        receivedWeight: 10,
         purchaseRate: 30000,
         landedRate: 30000,
-        totalValue: 1200000,
+        totalValue: 300000,
         date: '2026-10-09',
+        createdAt: 0,
+        updatedAt: 0
       };
       await saveLot(lot);
 
@@ -716,24 +964,23 @@ describe('New Features: Pro-Rata GCV & Inventory with Landed Cost', () => {
       expect(initialSettlement.totalCost).toBe(300000); // 10t * 30000
       expect(initialSettlement.netProfit).toBe(100000); // 400000 revenue - 300000 cost
 
-      // User realizes mistake: updates stock entry from 30,000 to 31,000
+      // Repricing the source voucher would silently rewrite historical profit.
       const updatedLot: InventoryLot = {
         ...lot,
         purchaseRate: 31000,
         landedRate: 31000,
-        totalValue: 1240000,
+        totalValue: 310000,
       };
-      await saveLot(updatedLot);
+      await expect(saveLot(updatedLot)).rejects.toThrow(/locked by Dispatch #TKX-999/);
 
-      // Verify the linked dispatch automatically updated in the database
+      // The linked dispatch retains the cost snapshot captured when it was saved.
       const syncedDispatch = await getDispatch('disp-cascade-test');
       expect(syncedDispatch).not.toBeNull();
-      expect(syncedDispatch?.coalInputs[0].purchaseRate).toBe(31000);
+      expect(syncedDispatch?.coalInputs[0].purchaseRate).toBe(30000);
 
-      // Check recalculated settlement reflects the new rate of 31,000
       const syncedSettlement = calculateSettlement(syncedDispatch!);
-      expect(syncedSettlement.totalCost).toBe(310000); // 10t * 31000
-      expect(syncedSettlement.netProfit).toBe(90000); // 400000 revenue - 310000 cost
+      expect(syncedSettlement.totalCost).toBe(300000);
+      expect(syncedSettlement.netProfit).toBe(100000);
     });
 
     it('prevents deleting lot if it is actively used in a dispatch', async () => {
@@ -747,6 +994,8 @@ describe('New Features: Pro-Rata GCV & Inventory with Landed Cost', () => {
         purchaseRate: 25000,
         landedRate: 25000,
         date: '2026-10-09',
+        createdAt: 0,
+        updatedAt: 0
       };
       await saveLot(lot);
 
@@ -792,6 +1041,8 @@ describe('New Features: Pro-Rata GCV & Inventory with Landed Cost', () => {
         purchaseRate: 21000,
         landedRate: 21000,
         date: '2026-10-09',
+        createdAt: 0,
+        updatedAt: 0
       };
       await saveLot(lot);
 
@@ -848,6 +1099,8 @@ describe('New Features: Pro-Rata GCV & Inventory with Landed Cost', () => {
         purchaseRate: 22000,
         landedRate: 22000,
         date: '2026-10-09',
+        createdAt: 0,
+        updatedAt: 0
       };
       await saveLot(lot);
 
@@ -903,6 +1156,8 @@ describe('New Features: Pro-Rata GCV & Inventory with Landed Cost', () => {
         purchaseRate: 20000,
         landedRate: 20000,
         date: '2026-10-09',
+        createdAt: 0,
+        updatedAt: 0
       };
       const lotB: InventoryLot = {
         id: 'lot-switch-b',
@@ -914,6 +1169,8 @@ describe('New Features: Pro-Rata GCV & Inventory with Landed Cost', () => {
         purchaseRate: 24000,
         landedRate: 24000,
         date: '2026-10-09',
+        createdAt: 0,
+        updatedAt: 0
       };
       await saveLot(lotA);
       await saveLot(lotB);
@@ -979,6 +1236,8 @@ describe('New Features: Pro-Rata GCV & Inventory with Landed Cost', () => {
         purchaseRate: 20000,
         landedRate: 20000,
         date: '2026-10-09',
+        createdAt: 0,
+        updatedAt: 0
       };
       const lot2: InventoryLot = {
         id: 'lot-multi-2',
@@ -990,6 +1249,8 @@ describe('New Features: Pro-Rata GCV & Inventory with Landed Cost', () => {
         purchaseRate: 25000,
         landedRate: 25000,
         date: '2026-10-09',
+        createdAt: 0,
+        updatedAt: 0
       };
       await saveLot(lot1);
       await saveLot(lot2);
@@ -1031,25 +1292,30 @@ describe('New Features: Pro-Rata GCV & Inventory with Landed Cost', () => {
       expect((await getLot('lot-multi-1'))?.usedInDispatchId).toBe('disp-multi-blend');
       expect((await getLot('lot-multi-2'))?.usedInDispatchId).toBe('disp-multi-blend');
 
-      // Update rate of lot1 only (20,000 -> 22,000)
-      await saveLot({
+      // Linked vouchers remain immutable until their dispatch relationship is removed.
+      const repricedLot1: InventoryLot = {
         ...lot1,
         purchaseRate: 22000,
         landedRate: 22000,
-      });
+      };
+      await expect(saveLot(repricedLot1)).rejects.toThrow(/locked by Dispatch #ML-700/);
 
       const updatedDispatch = await getDispatch('disp-multi-blend');
-      expect(updatedDispatch?.coalInputs[0].purchaseRate).toBe(22000);
-      expect(updatedDispatch?.coalInputs[1].purchaseRate).toBe(25000); // lot2 remains 25000
+      expect(updatedDispatch?.coalInputs[0].purchaseRate).toBe(20000);
+      expect(updatedDispatch?.coalInputs[1].purchaseRate).toBe(25000);
 
-      // Total cost = (15 * 22000) + (10 * 25000) = 330,000 + 250,000 = 580,000
+      // Total remains (15 * 20,000) + (10 * 25,000) = 550,000.
       const settlement = calculateSettlement(updatedDispatch!);
-      expect(settlement.totalCost).toBe(580000);
+      expect(settlement.totalCost).toBe(550000);
 
       // Delete dispatch -> both lots unlinked
       await deleteDispatch('disp-multi-blend');
       expect((await getLot('lot-multi-1'))?.usedInDispatchId).toBeUndefined();
       expect((await getLot('lot-multi-2'))?.usedInDispatchId).toBeUndefined();
+
+      // Once unlinked, correcting the stock voucher is allowed.
+      await expect(saveLot(repricedLot1)).resolves.not.toThrow();
+      expect((await getLot('lot-multi-1'))?.purchaseRate).toBe(22000);
     });
   });
 });
@@ -1086,6 +1352,10 @@ describe('Issues 38 & 39: Lot Availability in Dispatch Context (T32 & T33)', () 
     overheads: { loading: 0, freight: 0, crush: 0, royalty: 0, other: 0 },
     createdAt: Date.now(),
     updatedAt: Date.now(),
+    factoryName: '',
+    targetGcv: 0,
+    labActualGcv: 0,
+    labSulphur: 0
   });
 
   it('T32a: unchanged edit — opening saved dispatch (10t from 15t lot) shows 15t available, no warning', () => {
@@ -1156,6 +1426,10 @@ describe('Issues 38 & 39: Lot Availability in Dispatch Context (T32 & T33)', () 
       overheads: { loading: 0, freight: 0, crush: 0, royalty: 0, other: 0 },
       createdAt: Date.now(),
       updatedAt: Date.now(),
+      factoryName: '',
+      targetGcv: 0,
+      labActualGcv: 0,
+      labSulphur: 0
     };
 
     const avail = calculateLotAvailabilityForDispatch(lot, [], draft);
@@ -1163,6 +1437,27 @@ describe('Issues 38 & 39: Lot Availability in Dispatch Context (T32 & T33)', () 
     expect(avail.draftUse).toBeCloseTo(16, 2); // both rows summed
     expect(avail.remainingAfter).toBeCloseTo(-6, 2);
     expect(avail.isOverdraw).toBe(true);
+  });
+
+  it('excludes the current dispatch from legacy direct-mine availability', () => {
+    const mine: Mine = {
+      id: 'mine-direct-edit',
+      name: 'Direct Mine',
+      ratePerTon: 20000,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    const lot = makeLot('lot-direct-edit', 15);
+    lot.mineId = mine.id;
+    const saved: Dispatch = {
+      ...makeDispatch('dispatch-direct-edit', '', 10),
+      coalInputs: [{ id: 'ci-direct', mineId: mine.id, sourceName: mine.name, weight: 10, purchaseRate: 20000 }],
+    };
+
+    const availability = calculateMineAvailabilityForDispatch(mine, [lot], [saved], saved);
+    expect(availability.availableBeforeThis).toBe(15);
+    expect(availability.remainingAfter).toBe(5);
+    expect(availability.isOverdraw).toBe(false);
   });
 });
 

@@ -49,6 +49,7 @@ SOLVED_ISSUES_PART_2.*
 SOLVED_ISSUES_PART_3.*
 SOLVED_ISSUES_PART_4.*
 NEW_FEATURES_IMPLEMENTATION.*
+CODEX_CHANGE_PLAN.md
 
 # Python cache & virtual environments
 __pycache__/

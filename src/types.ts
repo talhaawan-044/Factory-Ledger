@@ -117,7 +117,7 @@ export interface AppSettings {
   companyAddress?: string;
   ntnNumber?: string;
   updatedAt?: number;
-  // Security & App Lock settings (synced to cloud)
+  // Device-local App Lock settings (explicitly stripped from cloud sync)
   appLockEnabled?: boolean;
   pinHash?: string;
   pinLength?: number;
@@ -154,7 +154,7 @@ export interface InventoryLot {
   totalValue?: number; // Total cost (coal + loading + fare)
   loadingCost?: number; // Loading amount (PKR)
   freightCost?: number; // Fare / Freight amount (PKR)
-  usedInDispatchId?: string; // Linked dispatch ID
+  usedInDispatchId?: string; // Compatibility/display marker for one current allocation; dispatch coalInputs are authoritative
   usedInDispatchTruck?: string; // Linked dispatch truck number
   usedInPartyName?: string; // Linked dispatch party / factory name
   usedInDate?: string; // Linked dispatch date
@@ -191,5 +191,3 @@ export interface BackupPayload {
   images?: Record<string, string>;
   meta?: Record<string, unknown>;
 }
-
-

@@ -12,6 +12,9 @@ export default function FloatingField({
   required = false,
   autoFocus = false,
   error,
+  disabled = false,
+  readOnly = false,
+  helperText,
   style,
   inputStyle,
 }: {
@@ -25,6 +28,9 @@ export default function FloatingField({
   required?: boolean;
   autoFocus?: boolean;
   error?: string;
+  disabled?: boolean;
+  readOnly?: boolean;
+  helperText?: string;
   style?: React.CSSProperties;
   inputStyle?: React.CSSProperties;
 }) {
@@ -191,11 +197,13 @@ export default function FloatingField({
   };
 
   return (
-    <div style={{ marginBottom: error ? 14 : 12, width: '100%' }}>
+    <div style={{ marginBottom: error || helperText ? 14 : 12, width: '100%' }}>
       <div
         className={`floating-field ${isFocused ? 'is-focused' : ''} ${isFloated ? 'is-floated' : ''} ${suffix ? 'has-suffix' : ''} ${error ? 'has-error' : ''}`}
         style={{
           marginBottom: 0,
+          opacity: disabled ? 0.62 : 1,
+          background: disabled || readOnly ? 'var(--fill-quaternary)' : undefined,
           ...(error ? { borderColor: '#ff3b30', borderWidth: 1.5 } : {}),
           ...style
         }}
@@ -209,6 +217,8 @@ export default function FloatingField({
           step={step}
           required={required}
           autoFocus={autoFocus}
+          disabled={disabled}
+          readOnly={readOnly}
           placeholder={isFloated && placeholder ? placeholder : ''}
           value={localVal}
           onChange={handleChange}
@@ -216,7 +226,10 @@ export default function FloatingField({
           onFocus={() => setIsFocused(true)}
           onBlur={handleBlur}
           className="floating-input"
-          style={inputStyle}
+          style={{
+            cursor: disabled ? 'not-allowed' : readOnly ? 'default' : undefined,
+            ...inputStyle,
+          }}
         />
         <label className="floating-label" style={error ? { color: '#ff3b30' } : undefined}>
           {label}
@@ -230,6 +243,11 @@ export default function FloatingField({
       {error && (
         <div style={{ fontSize: 11, color: '#ff3b30', marginTop: 3, paddingLeft: 4, fontWeight: 500 }}>
           {error}
+        </div>
+      )}
+      {!error && helperText && (
+        <div style={{ fontSize: 11, color: 'var(--label-tertiary)', marginTop: 4, paddingLeft: 4, lineHeight: 1.35 }}>
+          {helperText}
         </div>
       )}
     </div>

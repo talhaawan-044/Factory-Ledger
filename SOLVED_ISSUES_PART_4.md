@@ -21,6 +21,8 @@
 - [Issue 47: Inventory Follow-Ups (Adjustments, Supplier Summary, Repricing)](#issue-47)
 - [Issue 48: Repo Hygiene, Leftover Tombstones, and Code Cleanups (48a–48g)](#issue-48)
 - [Issue 49: Cloud Inventory Classification and Recovery-Key Lockout](#issue-49)
+- [Issue 50: Stock-Lot Allocation, Landed-Cost Valuation, and iOS Workflow](#issue-50)
+- [Issue 51: Bottom Navigation Liquid-Glass Treatment](#issue-51)
 
 ---
 
@@ -224,7 +226,7 @@ If not needed, an info hint will be added to the form: "Manual adjustment fields
 | 47a | Stock adjustments (yard shrinkage) | Pending — High after pilot |
 | 47b | Per-supplier summary | Pending — Medium (2 h) |
 | 47c | Reprice linked dispatches | Pending — Low |
-| 47d | Lot delete guard | Pending — Low |
+| 47d | Lot delete guard | RESOLVED — storage rejects deletion while actively linked |
 | 47e | Stale stock refresh on ledger_data_changed | DONE (as part of Issue 38 fix) |
 | 47f | Landed-rate paisa precision drift | Pending — Very low |
 | 47g | Inventory in exports | Pending — Low |
@@ -298,3 +300,81 @@ The existing fixture also described synthetic test scenarios as real industrial 
 
 - `npm run test`: 112/112 passed, including a pending persistent-storage-permission regression test.
 - `npm run build`: TypeScript compilation and production bundle completed successfully.
+
+---
+
+### Issue 50: Stock-Lot Allocation, Landed-Cost Valuation, and iOS Workflow
+
+- **Severity:** High (Stock and Profit Integrity)
+- **Status:** RESOLVED
+- **Files Modified:**
+  - `src/lib/db.ts`
+  - `src/utils/calculations.ts`
+  - `src/pages/Inventory.tsx`
+  - `src/pages/MineLedger.tsx`
+  - `src/pages/DispatchForm.tsx`
+  - `src/components/CoalSourceModal.tsx`
+  - `src/components/StockPreviewModal.tsx`
+  - `src/components/DispatchPreviewModal.tsx`
+  - `src/components/FloatingField.tsx`
+  - `src/components/IOSDatePicker.tsx`
+  - `tests/inventory.test.ts`
+  - `tests/storageFailure.test.ts`
+  - `AGENTS.md`
+  - `.agents/rules/ui-guidelines.md`
+
+#### Detail of the Issues
+
+The mine summary treated the mine's global rate as the value of every voucher and used billed tons for physical stock. That was wrong whenever a voucher had loading/freight costs or a received-weight shortage. The mine activity list repeated the global-rate mistake for dispatch outflow.
+
+The original picker treated a stock entry as simply used or unused, while real yards consume one received lot across several dispatches. A 20-ton entry must be able to supply 15 tons now and leave 5 tons for later. The legacy `usedInDispatchId` field can reference only one dispatch, so it cannot be the authority for availability. The UI also needed to distinguish editable allocation weight from the immutable landed-rate snapshot.
+
+#### How It Was Solved
+
+1. `calculateMineStock()` now totals physical inventory from received weight, values each inflow at its own landed cost, and values outflow from the purchase-rate snapshot stored on each dispatch input. Legacy direct-mine rows are valued with FIFO fallback.
+2. `saveDispatch()` validates positive values, lot existence, duplicate rows, aggregate allocation weight and exact landed rate inside one Dexie transaction. One lot may serve several dispatches, but their active allocations cannot exceed its received weight.
+3. Linked allocation weight remains editable up to the contextual balance; source and landed rate remain locked. Editing an existing dispatch excludes its own allocation, so 15 t can be changed safely while the other dispatches still count.
+4. Dispatch deletion or source replacement atomically restores the released balance and repoints/clears compatibility marker metadata. Used-lot financial/date fields are locked, while nonfinancial supplier/location metadata can still be corrected.
+5. Dispatch rows are authoritative. The legacy single-dispatch marker may point to any current allocation, and `auditInventoryRelations()` surfaces missing lots, aggregate overdraw and genuinely stale markers without treating legitimate multi-dispatch use as a conflict.
+6. Tracked mine stock can only be selected through a stock entry; a separate Manual Source path remains available for genuinely untracked coal.
+7. Linked source and landed rate render disabled, while allocation weight stays editable with the maximum available and remaining-after-save shown inline. Picker and preview sheets show Available, Partially Used and Fully Used states plus per-dispatch allocation history.
+8. Root `AGENTS.md` plus `.agents/rules/ui-guidelines.md` record the iOS-first rule for future chats: reuse the existing iOS date/select/field/confirm components, avoid raw browser pickers and alerts, use flat surfaces, safe-area-aware mobile layouts and Lucide icons.
+
+#### Verification Performed
+
+- `npm test -- --run`: 120/120 passed across 9 test files.
+- Coverage includes landed valuation with billed/received variance, 20 t split into 15 t + 5 t dispatches, aggregate exhaustion, deletion restoring 5 t and repointing the marker, landed-rate snapshot guards, negative loading/freight, relation auditing, current-dispatch availability, and transactional rollback.
+- Browser walkthrough verified both landed-cost valuation and partial allocation: a 20 t / Rs. 680,000 lot allocated 15 t to TK-15 leaves 5 t / Rs. 170,000, remains selectable as Partially Used, and lists the allocation in its iOS preview sheet.
+- `npx tsc -b --pretty false`: passed.
+- `npm run lint`: zero errors (existing warnings remain).
+- `npm run build`: passed.
+
+---
+
+### Issue 51: Bottom Navigation Liquid-Glass Treatment
+
+- **Severity:** Medium (Global UI Quality)
+- **Status:** RESOLVED
+- **Files Modified:**
+  - `src/components/Layout.tsx`
+  - `src/index.css`
+
+#### Detail of the Issue
+
+The bottom navigation technically used backdrop blur and a Chromium displacement filter, but its high-opacity tint made it look like a frosted white dock. Each active tab also supplied its own background, so the selection did not read as one continuous liquid lens moving through a shared glass surface.
+
+#### How It Was Solved
+
+1. Added one absolutely positioned `ios-tab-liquid-selection` lens beneath all five tab items, driven by the active route through `--active-tab-shift`.
+2. Used a spring curve to move the same lens between tabs instead of replacing independent backgrounds.
+3. Reduced the shell's opaque tint and tuned the existing displacement-map refraction to a 14px bezel, 10px maximum shift, 6px blur and 1.65 saturation.
+4. Added solid glass rim and top-edge highlights, a restrained accent tint and structural shadows. No gradients or glow effects were introduced.
+5. Added separate dark material values plus `prefers-reduced-transparency` and `prefers-reduced-motion` fallbacks.
+6. Preserved minimum touch sizes, keyboard hiding behaviour and safe-area positioning.
+
+#### Verification Performed
+
+- Browser route test moved Inventory (index 2) to Settings (index 4); the lens transform moved from 150.375px to 300.75px and the correct item became active.
+- Bar bounds remained 390×64 px with no horizontal overflow.
+- Light and dark simulator screenshots were inspected.
+- `npm test -- --run`, lint, TypeScript and production build pass.

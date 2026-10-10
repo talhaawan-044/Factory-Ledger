@@ -1,8 +1,12 @@
 import { useState, useEffect } from 'react';
-import { verifyPin, getPinLength } from '../utils/securityLock';
+import {
+  authenticateWithDeviceLock,
+  getPinLength,
+  isDeviceLockAvailable,
+  verifyPin,
+} from '../utils/securityLock';
 import { playCashChime, playPopSound } from '../utils/delight';
-import { ShieldCheck, X, Delete } from 'lucide-react';
-import IOSRecoveryKeyModal from './IOSRecoveryKeyModal';
+import { ShieldCheck, X, Delete, Smartphone } from 'lucide-react';
 
 interface IOSVerifyPasscodeModalProps {
   isOpen: boolean;
@@ -22,7 +26,8 @@ export default function IOSVerifyPasscodeModal({
   const [pin, setPin] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
   const [isShaking, setIsShaking] = useState(false);
-  const [showRecoveryModal, setShowRecoveryModal] = useState(false);
+  const [deviceLockAvailable, setDeviceLockAvailable] = useState(false);
+  const [isAuthenticatingDevice, setIsAuthenticatingDevice] = useState(false);
   const pinLength = getPinLength();
 
   useEffect(() => {
@@ -30,6 +35,8 @@ export default function IOSVerifyPasscodeModal({
       setPin('');
       setErrorMessage('');
       setIsShaking(false);
+      setIsAuthenticatingDevice(false);
+      isDeviceLockAvailable().then(setDeviceLockAvailable).catch(() => setDeviceLockAvailable(false));
     }
   }, [isOpen]);
 
@@ -64,6 +71,21 @@ export default function IOSVerifyPasscodeModal({
       playPopSound();
       setPin(pin.slice(0, -1));
       setErrorMessage('');
+    }
+  };
+
+  const handleDeviceAuthentication = async () => {
+    if (isAuthenticatingDevice) return;
+    playPopSound();
+    setErrorMessage('');
+    setIsAuthenticatingDevice(true);
+    const success = await authenticateWithDeviceLock();
+    setIsAuthenticatingDevice(false);
+    if (success) {
+      playCashChime();
+      onSuccess();
+    } else {
+      setErrorMessage('Phone verification was cancelled or unsuccessful.');
     }
   };
 
@@ -284,37 +306,29 @@ export default function IOSVerifyPasscodeModal({
           </button>
         </div>
 
-        <button
-          type="button"
-          onClick={() => {
-            playPopSound();
-            setShowRecoveryModal(true);
-          }}
-          style={{
-            background: 'none',
-            border: 'none',
-            color: 'var(--ios-blue, #0A84FF)',
-            fontSize: 13,
-            fontWeight: 500,
-            cursor: 'pointer',
-            marginTop: 14,
-            padding: '6px 12px',
-            outline: 'none',
-          }}
-        >
-          Forgot Passcode?
-        </button>
-
-        {/* Emergency Recovery Key Modal */}
-        {showRecoveryModal && (
-          <IOSRecoveryKeyModal
-            isOpen={showRecoveryModal}
-            onSuccess={() => {
-              setShowRecoveryModal(false);
-              onSuccess();
+        {deviceLockAvailable && (
+          <button
+            type="button"
+            onClick={handleDeviceAuthentication}
+            disabled={isAuthenticatingDevice}
+            style={{
+              background: 'none',
+              border: 'none',
+              color: 'var(--ios-blue, #0A84FF)',
+              fontSize: 13,
+              fontWeight: 600,
+              cursor: isAuthenticatingDevice ? 'wait' : 'pointer',
+              marginTop: 14,
+              padding: '8px 12px',
+              outline: 'none',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
             }}
-            onCancel={() => setShowRecoveryModal(false)}
-          />
+          >
+            <Smartphone size={16} />
+            {isAuthenticatingDevice ? 'Verifying…' : 'Use Phone Lock Instead'}
+          </button>
         )}
 
         <style>{`

@@ -90,7 +90,7 @@ The application's commercial profit, deduction, and invoicing engines follow off
 - **Slow PBKDF2 Hashing:** PINs are hashed using WebCrypto PBKDF2 (100,000 iterations) with a device-unique cryptographic salt stored strictly on the local device.
 - **Escalating Lockout Rate Limiting:** 30-second lockout after 5 consecutive incorrect passcode attempts to prevent brute-forcing.
 - **Hardware Biometrics:** Native Android fingerprint and biometric prompt via custom native plugin (`AppBiometricPlugin.java`).
-- **Master Offline Recovery Key (`FL-XXXX-XXXX`):** Self-service offline recovery key allowing passcode resets without needing server connectivity.
+- **Device Recovery (`FL-XXXX-XXXX-XXXX-XXXX`):** Android Phone Lock or a device-specific emergency code can reset a forgotten app PIN offline. Only a salted one-way verifier of the emergency code is stored.
 - **Sensitive Gate Protection:** Passcode verification required to change security settings, export ledger data, or import backups.
 
 ### Cloud Sync & Offline-First Resilience
@@ -268,7 +268,7 @@ The project is preconfigured to generate release builds using Gradle and Android
 ## Security & Privacy Architecture
 
 - **No Remote Telemetry:** The app collects zero user tracking or diagnostic metrics.
-- **Passcode Convenience Lock:** A 5-digit PIN screen provides casual privacy against unauthorized device handlers, not database-at-rest encryption. Passcodes are hashed using WebCrypto PBKDF2 (100,000 iterations) with a device-unique cryptographic salt stored strictly on the local device. PIN credentials and recovery keys are never synchronized to Firestore.
+- **Passcode Convenience Lock:** A 5-digit PIN screen provides casual privacy against unauthorized device handlers, not database-at-rest encryption. Passcodes are hashed using WebCrypto PBKDF2 (100,000 iterations) with a device-unique cryptographic salt stored strictly on the local device. Android Phone Lock can authorize local recovery; emergency recovery codes use a 600,000-iteration salted PBKDF2 verifier and are shown only once. PIN credentials and recovery verifiers are never synchronized to Firestore.
 - **Lockout Rate Limiting:** 5 consecutive failed passcode attempts trigger an escalating lockout timer (starting at 30 seconds) to slow down guessing attacks.
 - **Biometric Hardware Isolation:** Biometric unlock uses Android's `BiometricPrompt` via custom native plugin; the app never sees fingerprint or face data.
 - **Native OS Protection:** Android release builds specify `android:allowBackup="false"` and `FLAG_SECURE` to block unintended data leakage via `adb backup` or recent apps thumbnails. (In debug builds, `FLAG_SECURE` is disabled to facilitate automated testing and QA).

@@ -10,6 +10,7 @@ interface Props {
   style?: React.CSSProperties;
   inputStyle?: React.CSSProperties;
   floating?: boolean;
+  disabled?: boolean;
 }
 
 function parseLocalDate(dateStr?: string): Date {
@@ -26,7 +27,7 @@ function parseLocalDate(dateStr?: string): Date {
   return new Date(dateStr);
 }
 
-export default function IOSDatePicker({ label, value, onChange, style, inputStyle, floating = false }: Props) {
+export default function IOSDatePicker({ label, value, onChange, style, inputStyle, floating = false, disabled = false }: Props) {
   const [isOpen, setIsOpen] = useState(false);
   const [currentMonth, setCurrentMonth] = useState(() => (value ? parseLocalDate(value) : new Date()));
 
@@ -35,6 +36,7 @@ export default function IOSDatePicker({ label, value, onChange, style, inputStyl
   useRefraction(sheetRef, isOpen, { radius: GLASS_RADIUS, blur: 12, saturate: 1.5 });
 
   const handleOpen = () => {
+    if (disabled) return;
     if (value) {
       setCurrentMonth(parseLocalDate(value));
     }
@@ -70,7 +72,7 @@ export default function IOSDatePicker({ label, value, onChange, style, inputStyl
       {floating ? (
         <div
           className={`floating-field ${isOpen ? 'is-focused' : ''} ${isFloated ? 'is-floated' : ''}`}
-          style={{ marginBottom: 12, cursor: 'pointer', userSelect: 'none', ...style }}
+          style={{ marginBottom: 12, cursor: disabled ? 'not-allowed' : 'pointer', userSelect: 'none', opacity: disabled ? 0.62 : 1, ...style }}
           onClick={handleOpen}
         >
           <div
@@ -89,7 +91,7 @@ export default function IOSDatePicker({ label, value, onChange, style, inputStyl
           </label>
         </div>
       ) : (
-        <div style={{ display: 'flex', alignItems: 'center', padding: '12px 16px', position: 'relative', cursor: 'pointer', ...style }} onClick={handleOpen}>
+        <div style={{ display: 'flex', alignItems: 'center', padding: '12px 16px', position: 'relative', cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.62 : 1, ...style }} onClick={handleOpen}>
           <span style={{ width: 85, fontSize: 17, color: 'var(--label-primary)', fontWeight: 400, flexShrink: 0 }}>
             {label}
           </span>

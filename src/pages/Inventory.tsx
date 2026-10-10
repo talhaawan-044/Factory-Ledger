@@ -2,7 +2,7 @@ import { useEffect, useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { getMines, saveMine, getLots, getDispatches, getSettings } from '../lib/db';
 import type { Mine, InventoryLot, Dispatch, AppSettings } from '../types';
-import { calculateMineStock, calculateOverallMinesSummary } from '../utils/calculations';
+import { calculateMineStock, calculateOverallMinesSummary, auditInventoryRelations } from '../utils/calculations';
 import { getCurrencySymbol, formatAmountNumber } from '../utils/currency';
 import { playPopSound, playSuccessSound, triggerConfetti } from '../utils/delight';
 import { useLedgerListener } from '../hooks/useLedgerListener';
@@ -22,6 +22,7 @@ import {
   MapPin,
   TrendingUp,
   Package,
+  ShieldAlert,
 } from 'lucide-react';
 import FloatingField from '../components/FloatingField';
 import IOSSelect from '../components/IOSSelect';
@@ -97,6 +98,11 @@ export default function Inventory() {
   const overallSummary = useMemo(() => {
     return calculateOverallMinesSummary(mines, lots, dispatches);
   }, [mines, lots, dispatches]);
+
+  const integrityIssues = useMemo(
+    () => auditInventoryRelations(lots, dispatches),
+    [lots, dispatches]
+  );
 
   // Per-mine detailed stocks
   const mineCardData = useMemo(() => {
@@ -222,6 +228,37 @@ export default function Inventory() {
           <h1 className="ios-large-title">Inventory</h1>
         </div>
       </div>
+
+      {integrityIssues.length > 0 && (
+        <div style={{ padding: '0 16px 14px' }}>
+          <div
+            role="status"
+            style={{
+              background: 'rgba(255, 149, 0, 0.1)',
+              border: '0.5px solid rgba(255, 149, 0, 0.34)',
+              borderRadius: 16,
+              padding: '12px 14px',
+              display: 'flex',
+              gap: 11,
+              alignItems: 'flex-start',
+            }}
+          >
+            <ShieldAlert size={20} style={{ color: 'var(--ios-orange)', flexShrink: 0, marginTop: 1 }} />
+            <div style={{ minWidth: 0, flex: 1 }}>
+              <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--label-primary)' }}>
+                Inventory relationship needs review
+              </div>
+              <div style={{ fontSize: 12, color: 'var(--label-secondary)', marginTop: 2, lineHeight: 1.4 }}>
+                {integrityIssues.slice(0, 2).map((issue) => issue.message).join(' ')}
+                {integrityIssues.length > 2 ? ` +${integrityIssues.length - 2} more.` : ''}
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--ios-orange)', fontWeight: 600, marginTop: 5 }}>
+                Open the affected mine and reassign the stock entry before relying on its balance.
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Top Summary Metrics Cards ── */}
       <div style={{ padding: '0 16px 14px' }}>
@@ -1023,7 +1060,7 @@ export default function Inventory() {
                     gap: 8,
                   }}
                 >
-                  <span style={{ flexShrink: 0 }}>⚠️</span>
+                  <ShieldAlert size={16} style={{ flexShrink: 0 }} />
                   <span>{mineFormError}</span>
                 </div>
               )}

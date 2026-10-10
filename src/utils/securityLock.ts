@@ -9,6 +9,8 @@ import { registerPlugin, Capacitor } from '@capacitor/core';
 interface AppBiometricPluginInterface {
   isAvailable(): Promise<{ available: boolean }>;
   authenticate(): Promise<{ success: boolean; error?: string; errorCode?: number }>;
+  isDeviceCredentialAvailable(): Promise<{ available: boolean }>;
+  authenticateDeviceCredential(): Promise<{ success: boolean; error?: string; errorCode?: number }>;
 }
 
 const AppBiometric = registerPlugin<AppBiometricPluginInterface>('AppBiometric');
@@ -20,7 +22,10 @@ const PIN_LENGTH_KEY = 'coal_pin_length';
 const LOCK_TIMEOUT_KEY = 'coal_lock_timeout'; // in seconds: 0 = immediate, 60 = 1 min, 300 = 5 min
 const LAST_ACTIVE_KEY = 'coal_last_active_time';
 const BIOMETRIC_CRED_ID_KEY = 'coal_biometric_cred_id';
+// Legacy releases stored the readable recovery code under this key. New releases
+// migrate it to a one-way verifier and remove the plaintext value.
 const RECOVERY_KEY_KEY = 'coal_app_recovery_key';
+const RECOVERY_KEY_VERIFIER_KEY = 'coal_app_recovery_key_verifier_v2';
 const DEVICE_SALT_KEY = 'coal_device_pin_salt';
 const FAILED_ATTEMPTS_KEY = 'coal_pin_failed_attempts';
 const LOCKOUT_EXPIRY_KEY = 'coal_pin_lockout_expiry';
@@ -318,14 +323,44 @@ export async function authenticateWithBiometrics(): Promise<boolean> {
 }
 
 /**
+ * Check whether Android has a secure screen lock configured. This is separate
+ * from biometric availability: recovery may use the phone PIN/pattern/password.
+ */
+export async function isDeviceLockAvailable(): Promise<boolean> {
+  if (!Capacitor.isNativePlatform()) return false;
+  try {
+    const res = await AppBiometric.isDeviceCredentialAvailable();
+    return Boolean(res?.available);
+  } catch (err) {
+    console.warn('Device lock availability check failed:', err);
+    return false;
+  }
+}
+
+/**
+ * Ask Android to verify the phone owner using its system-controlled prompt.
+ * Factory Ledger receives only success/failure and never sees the phone secret.
+ */
+export async function authenticateWithDeviceLock(): Promise<boolean> {
+  if (!Capacitor.isNativePlatform()) return false;
+  try {
+    const res = await AppBiometric.authenticateDeviceCredential();
+    return Boolean(res?.success);
+  } catch (err) {
+    console.warn('Device lock authentication failed or was cancelled:', err);
+    return false;
+  }
+}
+
+/**
  * Enable App Lock with a given PIN (now 5 digits standard)
  */
-export async function enableAppLock(pin: string, enableBio = true): Promise<void> {
+export async function enableAppLock(pin: string, enableBio = true): Promise<string | null> {
+  const newlyCreatedRecoveryKey = await ensureRecoveryKey();
   const hash = await hashPin(pin);
   localStorage.setItem(PIN_HASH_KEY, hash);
   localStorage.setItem(PIN_LENGTH_KEY, String(pin.length));
   localStorage.setItem(LOCK_ENABLED_KEY, 'true');
-  getOrCreateRecoveryKey();
   if (enableBio) {
     const supported = await isBiometricAvailable();
     if (supported) {
@@ -333,6 +368,7 @@ export async function enableAppLock(pin: string, enableBio = true): Promise<void
     }
   }
   notifyLockStatusChanged();
+  return newlyCreatedRecoveryKey;
 }
 
 /**
@@ -345,6 +381,7 @@ export function disableAppLock(): void {
   localStorage.removeItem(BIOMETRIC_ENABLED_KEY);
   localStorage.removeItem(BIOMETRIC_CRED_ID_KEY);
   localStorage.removeItem(RECOVERY_KEY_KEY);
+  localStorage.removeItem(RECOVERY_KEY_VERIFIER_KEY);
   localStorage.removeItem(DEVICE_SALT_KEY);
   resetFailedAttempts();
   isLockedInMemory = false;
@@ -363,50 +400,138 @@ export async function updatePin(newPin: string): Promise<void> {
 }
 
 /**
- * Offline Master Recovery Key Management:
- * Generates an 8-character alphanumeric master key formatted as FL-XXXX-XXXX
- * using an unambiguous character set (no 0/O, no 1/I).
+ * Device Emergency Recovery Code Management
+ *
+ * New codes contain 80 random bits and are displayed once. Only a salted,
+ * deliberately slow PBKDF2 verifier is retained on the device. Older readable
+ * FL-XXXX-XXXX codes are migrated without invalidating the user's saved copy.
  */
+const RECOVERY_KEY_ITERATIONS = 600_000;
+
 export function generateRecoveryKey(): string {
   const chars = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
-  let part1 = '';
-  let part2 = '';
-  const arr = new Uint8Array(8);
+  const arr = new Uint8Array(16);
   crypto.getRandomValues(arr);
-  for (let i = 0; i < 4; i++) part1 += chars[arr[i] % chars.length];
-  for (let i = 4; i < 8; i++) part2 += chars[arr[i] % chars.length];
-  return `FL-${part1}-${part2}`;
+  const value = Array.from(arr, (byte) => chars[byte % chars.length]).join('');
+  return `FL-${value.slice(0, 4)}-${value.slice(4, 8)}-${value.slice(8, 12)}-${value.slice(12, 16)}`;
 }
 
-export function getStoredRecoveryKey(): string | null {
-  if (typeof window === 'undefined') return null;
-  return localStorage.getItem(RECOVERY_KEY_KEY);
+function normalizeRecoveryKey(key: string): string {
+  return key.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
 }
 
-export function getOrCreateRecoveryKey(): string {
-  if (typeof window === 'undefined') return 'FL-8888-8888';
-  let key = localStorage.getItem(RECOVERY_KEY_KEY);
-  if (!key) {
-    key = generateRecoveryKey();
-    localStorage.setItem(RECOVERY_KEY_KEY, key);
+function randomHex(byteLength: number): string {
+  const bytes = new Uint8Array(byteLength);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+async function deriveRecoveryKeyHash(key: string, salt: string, iterations = RECOVERY_KEY_ITERATIONS): Promise<string> {
+  const encoder = new TextEncoder();
+  const material = await crypto.subtle.importKey(
+    'raw',
+    encoder.encode(normalizeRecoveryKey(key)),
+    { name: 'PBKDF2' },
+    false,
+    ['deriveBits']
+  );
+  const bits = await crypto.subtle.deriveBits(
+    {
+      name: 'PBKDF2',
+      salt: encoder.encode(salt),
+      iterations,
+      hash: 'SHA-256',
+    },
+    material,
+    256
+  );
+  return Array.from(new Uint8Array(bits), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function constantTimeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let difference = 0;
+  for (let i = 0; i < a.length; i++) {
+    difference |= a.charCodeAt(i) ^ b.charCodeAt(i);
   }
-  return key;
+  return difference === 0;
 }
 
-export function regenerateRecoveryKey(): string {
+async function storeRecoveryKeyVerifier(key: string): Promise<void> {
+  if (typeof window === 'undefined') return;
+  const salt = randomHex(16);
+  const hash = await deriveRecoveryKeyHash(key, salt);
+  localStorage.setItem(
+    RECOVERY_KEY_VERIFIER_KEY,
+    `pbkdf2-sha256:${RECOVERY_KEY_ITERATIONS}:${salt}:${hash}`
+  );
+  localStorage.removeItem(RECOVERY_KEY_KEY);
+}
+
+export function hasRecoveryKey(): boolean {
+  if (typeof window === 'undefined') return false;
+  return Boolean(
+    localStorage.getItem(RECOVERY_KEY_VERIFIER_KEY) || localStorage.getItem(RECOVERY_KEY_KEY)
+  );
+}
+
+export async function migrateLegacyRecoveryKey(): Promise<void> {
+  if (typeof window === 'undefined' || localStorage.getItem(RECOVERY_KEY_VERIFIER_KEY)) return;
+  const legacyKey = localStorage.getItem(RECOVERY_KEY_KEY);
+  if (legacyKey) await storeRecoveryKeyVerifier(legacyKey);
+}
+
+export async function createRecoveryKey(): Promise<string> {
   const key = generateRecoveryKey();
-  if (typeof window !== 'undefined') {
-    localStorage.setItem(RECOVERY_KEY_KEY, key);
-  }
+  await storeRecoveryKeyVerifier(key);
   return key;
 }
 
-export function verifyRecoveryKey(inputKey: string): boolean {
-  if (!inputKey || getLockoutRemainingSeconds() > 0) return false;
-  const storedKey = getStoredRecoveryKey();
-  if (!storedKey) return false;
-  const clean = (k: string) => k.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
-  const isValid = clean(inputKey) === clean(storedKey);
+/** Returns a newly generated code, or null when this device already has one. */
+export async function ensureRecoveryKey(): Promise<string | null> {
+  if (hasRecoveryKey()) {
+    await migrateLegacyRecoveryKey();
+    return null;
+  }
+  return createRecoveryKey();
+}
+
+export async function regenerateRecoveryKey(): Promise<string> {
+  return createRecoveryKey();
+}
+
+export async function verifyRecoveryKey(inputKey: string): Promise<boolean> {
+  if (!inputKey || getLockoutRemainingSeconds() > 0 || typeof window === 'undefined') return false;
+
+  const normalized = normalizeRecoveryKey(inputKey);
+  // Accept the legacy 8-character body and the new 16-character body, with or without separators.
+  if (!normalized.startsWith('FL') || (normalized.length !== 10 && normalized.length !== 18)) {
+    recordFailedAttempt();
+    return false;
+  }
+
+  let isValid = false;
+  const verifier = localStorage.getItem(RECOVERY_KEY_VERIFIER_KEY);
+  if (verifier) {
+    const [scheme, iterationsValue, salt, expectedHash] = verifier.split(':');
+    const iterations = Number(iterationsValue);
+    if (
+      scheme === 'pbkdf2-sha256' &&
+      Number.isSafeInteger(iterations) &&
+      iterations >= 100_000 &&
+      iterations <= 1_000_000 &&
+      /^[a-f0-9]{32}$/.test(salt) &&
+      /^[a-f0-9]{64}$/.test(expectedHash)
+    ) {
+      const actualHash = await deriveRecoveryKeyHash(inputKey, salt, iterations);
+      isValid = constantTimeEqual(actualHash, expectedHash);
+    }
+  } else {
+    const legacyKey = localStorage.getItem(RECOVERY_KEY_KEY);
+    isValid = Boolean(legacyKey && constantTimeEqual(normalized, normalizeRecoveryKey(legacyKey)));
+    if (isValid && legacyKey) await storeRecoveryKeyVerifier(legacyKey);
+  }
+
   if (isValid) {
     resetFailedAttempts();
   } else {
@@ -415,10 +540,12 @@ export function verifyRecoveryKey(inputKey: string): boolean {
   return isValid;
 }
 
-export async function resetPinWithRecoveryKey(newPin: string): Promise<void> {
+export async function resetPinWithRecoveryKey(inputKey: string, newPin: string): Promise<boolean> {
+  if (!(await verifyRecoveryKey(inputKey))) return false;
   await updatePin(newPin);
   resetFailedAttempts();
   unlockSession();
+  return true;
 }
 
 /**

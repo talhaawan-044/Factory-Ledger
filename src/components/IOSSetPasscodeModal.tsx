@@ -6,7 +6,6 @@ import {
   getPinLength,
   isBiometricAvailable,
   isBiometricEnabled,
-  getOrCreateRecoveryKey,
 } from '../utils/securityLock';
 import { playCashChime, playPopSound, playSuccessSound } from '../utils/delight';
 import { Lock, X, Delete, Copy, Check, ShieldCheck } from 'lucide-react';
@@ -102,12 +101,15 @@ export default function IOSSetPasscodeModal({
               onSuccess(isBiometricEnabled());
             } else {
               const bioSupported = await isBiometricAvailable();
-              await enableAppLock(next, bioSupported);
+              const newRecoveryKey = await enableAppLock(next, bioSupported);
               playCashChime();
-              const key = getOrCreateRecoveryKey();
-              setGeneratedKey(key);
               setBioSupportedState(bioSupported);
-              setStep('show_recovery_key');
+              if (newRecoveryKey) {
+                setGeneratedKey(newRecoveryKey);
+                setStep('show_recovery_key');
+              } else {
+                onSuccess(bioSupported);
+              }
             }
           } else {
             // Mismatch
@@ -229,7 +231,7 @@ export default function IOSSetPasscodeModal({
             </h3>
 
             <p style={{ fontSize: 13, color: 'var(--label-secondary)', textAlign: 'center', margin: '0 0 16px', lineHeight: 1.4 }}>
-              Save your secret <strong>Emergency Recovery Key</strong>. If you ever forget your PIN, this is the only way to reset it offline.
+              Save this <strong>Device Emergency Recovery Code</strong> outside the app. It is shown only once and can reset the PIN on this phone.
             </p>
 
             <div

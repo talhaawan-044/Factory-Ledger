@@ -13,9 +13,11 @@ import {
   savePurchaseOrder,
   getPurchaseOrders,
   deletePurchaseOrder,
+  saveLot,
+  getLot,
   clearAllData,
 } from '../src/lib/db';
-import type { Dispatch, Party, Payment, PurchaseOrder } from '../src/types';
+import type { Dispatch, Party, Payment, PurchaseOrder, InventoryLot } from '../src/types';
 
 function makeDispatch(id = 'fail-disp-1', partyId = 'fail-party-1'): Dispatch {
   return {
@@ -102,6 +104,39 @@ describe('Issue 25: IndexedDB Dexie Storage Quota Failure Handling', () => {
 
     const afterCount = (await getDispatches()).length;
     expect(afterCount).toBe(beforeCount);
+  });
+
+  it('rolls back the dispatch when its linked stock marker cannot be written', async () => {
+    const lot: InventoryLot = {
+      id: 'lot-atomic-failure',
+      supplier: 'Atomic Supplier',
+      date: '2026-10-09',
+      billedWeight: 10,
+      receivedWeight: 10,
+      purchaseRate: 20000,
+      landedRate: 20000,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    await saveLot(lot);
+
+    const dispatch = makeDispatch('dispatch-atomic-failure');
+    dispatch.coalInputs = [{
+      id: 'ci-atomic-failure',
+      lotId: lot.id,
+      sourceName: 'Atomic Supplier',
+      weight: 10,
+      purchaseRate: 20000,
+    }];
+
+    const spy = vi.spyOn(idb.lots, 'put').mockRejectedValue(
+      Object.assign(new Error('Lot marker write failed'), { name: 'QuotaExceededError' })
+    );
+    await expect(saveDispatch(dispatch)).rejects.toThrow(/Lot marker write failed/);
+    spy.mockRestore();
+
+    expect((await getDispatches()).some((item) => item.id === dispatch.id)).toBe(false);
+    expect((await getLot(lot.id))?.usedInDispatchId).toBeUndefined();
   });
 
   it('deleteDispatch rejects when idb.dispatches.put throws QuotaExceededError', async () => {

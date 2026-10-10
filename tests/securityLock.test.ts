@@ -8,7 +8,6 @@ import {
   getFailedAttempts,
   resetFailedAttempts,
   getStoredPinHash,
-  getOrCreateRecoveryKey,
   verifyRecoveryKey,
 } from '../src/utils/securityLock';
 
@@ -58,22 +57,33 @@ describe('Issue 14: PIN Lock Hardening & Rate Limiting', () => {
   });
 
   it('rate-limits recovery-key guessing and clears the shared lockout after a valid recovery key', async () => {
-    await enableAppLock('98765', false);
-    const recoveryKey = getOrCreateRecoveryKey();
+    const recoveryKey = await enableAppLock('98765', false);
+    expect(recoveryKey).toMatch(/^FL-(?:[2-9A-HJ-NP-Z]{4}-){3}[2-9A-HJ-NP-Z]{4}$/);
+    expect(localStorage.getItem('coal_app_recovery_key')).toBeNull();
+    expect(localStorage.getItem('coal_app_recovery_key_verifier_v2')).toMatch(/^pbkdf2-sha256:/);
     const invalidRecoveryKey = recoveryKey === 'FL-2222-2222' ? 'FL-3333-3333' : 'FL-2222-2222';
 
     for (let i = 1; i <= 4; i++) {
-      expect(verifyRecoveryKey(invalidRecoveryKey)).toBe(false);
+      expect(await verifyRecoveryKey(invalidRecoveryKey)).toBe(false);
       expect(getFailedAttempts()).toBe(i);
     }
 
-    expect(verifyRecoveryKey(invalidRecoveryKey)).toBe(false);
+    expect(await verifyRecoveryKey(invalidRecoveryKey)).toBe(false);
     expect(getLockoutRemainingSeconds()).toBeGreaterThan(0);
-    expect(verifyRecoveryKey(recoveryKey)).toBe(false);
+    expect(await verifyRecoveryKey(recoveryKey!)).toBe(false);
 
     resetFailedAttempts();
-    expect(verifyRecoveryKey(recoveryKey)).toBe(true);
+    expect(await verifyRecoveryKey(recoveryKey!)).toBe(true);
     expect(getFailedAttempts()).toBe(0);
+  });
+
+  it('migrates a legacy readable recovery key to a one-way verifier', async () => {
+    localStorage.setItem('coal_app_recovery_key', 'FL-2345-6789');
+
+    expect(await verifyRecoveryKey('fl 2345 6789')).toBe(true);
+    expect(localStorage.getItem('coal_app_recovery_key')).toBeNull();
+    expect(localStorage.getItem('coal_app_recovery_key_verifier_v2')).toMatch(/^pbkdf2-sha256:/);
+    expect(await verifyRecoveryKey('FL-2345-6789')).toBe(true);
   });
 
   it('transparently upgrades legacy SHA-256 hash to PBKDF2 on first successful login', async () => {

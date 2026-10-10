@@ -598,7 +598,7 @@ export default function Settings() {
     await saveSettings(updated);
     setAppLockActive(false);
     setBioActive(false);
-    showToast('App Lock disabled & synced to cloud');
+    showToast('App Lock disabled on this device');
   };
 
   const handlePasscodeSuccess = async (withBio: boolean) => {
@@ -617,7 +617,7 @@ export default function Settings() {
     };
     setSettings(updated);
     await saveSettings(updated);
-    showToast(isChangingPasscode ? '5-Digit Passcode updated & synced to cloud' : 'App Lock activated with 5-Digit Passcode');
+    showToast(isChangingPasscode ? '5-Digit Passcode updated on this device' : 'App Lock activated with 5-Digit Passcode');
   };
 
   const handleToggleBiometrics = async () => {
@@ -1503,7 +1503,7 @@ export default function Settings() {
                         {pinLength === 4 ? 'Upgrade to 5-Digit Passcode' : 'Change 5-Digit Passcode'}
                       </span>
                       <div style={{ fontSize: 12, color: pinLength === 4 ? '#FF9F0A' : 'var(--label-secondary)', marginTop: 1 }}>
-                        {pinLength === 4 ? 'Using legacy 4-digit PIN · Tap to upgrade to 5 digits' : 'Synced securely to Cloud Firestore'}
+                        {pinLength === 4 ? 'Using legacy 4-digit PIN · Tap to upgrade to 5 digits' : 'Protects Factory Ledger on this device'}
                       </div>
                     </div>
                     <span style={{ fontSize: 14, color: 'var(--ios-blue)', fontWeight: 600 }}>
@@ -1512,7 +1512,7 @@ export default function Settings() {
                     <div className="ios-separator with-glyph" />
                   </div>
 
-                  {/* Master Recovery Key Row */}
+                  {/* Device Emergency Recovery Code Row */}
                   <div
                     className="ios-cell"
                     onClick={() => {
@@ -1525,13 +1525,13 @@ export default function Settings() {
                       <KeyRound size={18} color="#FFFFFF" />
                     </div>
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <span className="ios-cell-label">Master Recovery Key</span>
+                      <span className="ios-cell-label">Device Recovery Code</span>
                       <div style={{ fontSize: 12, color: 'var(--label-secondary)', marginTop: 1 }}>
-                        Offline key to reset forgotten PIN · Tap to view
+                        Offline fallback for this phone · Tap to manage
                       </div>
                     </div>
                     <span style={{ fontSize: 14, color: 'var(--ios-blue)', fontWeight: 600 }}>
-                      View Key
+                      Manage
                     </span>
                     <div className="ios-separator with-glyph" />
                   </div>

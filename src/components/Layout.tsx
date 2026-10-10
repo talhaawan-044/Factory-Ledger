@@ -24,7 +24,7 @@ import {
   Palette
 } from 'lucide-react';
 import IOSAppLockScreen from './IOSAppLockScreen';
-import { recordActivity, evaluateLockOnResume } from '../utils/securityLock';
+import { recordActivity, evaluateLockOnResume, migrateLegacyRecoveryKey } from '../utils/securityLock';
 
 const ACCENT_PRESETS = [
   { id: 'blue', label: 'Sapphire', color: '#007AFF', className: '' },
@@ -47,7 +47,13 @@ export default function Layout() {
 
   const liquidGlass = true;
   const navRef = useRef<HTMLElement>(null);
-  useRefraction(navRef, liquidGlass, { radius: GLASS_RADIUS });
+  useRefraction(navRef, liquidGlass, {
+    radius: GLASS_RADIUS,
+    bezel: 14,
+    maxShift: 10,
+    blur: 6,
+    saturate: 1.65,
+  });
 
   const location = useLocation();
   const navigate = useNavigate();
@@ -137,6 +143,9 @@ export default function Layout() {
 
   // Security Lock & Biometrics Lifecycle Management
   useEffect(() => {
+    migrateLegacyRecoveryKey().catch((err) => {
+      console.warn('Could not migrate legacy device recovery code:', err);
+    });
     evaluateLockOnResume();
 
     const handleTouchOrKey = () => recordActivity();
@@ -275,6 +284,7 @@ export default function Layout() {
   const isInventory = location.pathname.startsWith('/inventory');
   const isEntries = location.pathname === '/entries' || location.pathname.includes('/dispatch');
   const isSettings = location.pathname === '/settings';
+  const activeTabIndex = isSummary ? 0 : isParties ? 1 : isInventory ? 2 : isEntries ? 3 : 4;
 
   return (
     <div className={`device-stage ${isFullscreen || isNative ? 'fullscreen-mode' : ''}`}>
@@ -415,13 +425,17 @@ export default function Layout() {
           <Outlet context={{ settings }} />
         </main>
 
-        {/* ── Apple iOS Bottom Tab Bar (Solid Floating 4px Dock / Liquid Glass) ── */}
+        {/* ── Apple iOS Liquid Glass Bottom Tab Bar ── */}
         <nav
           ref={navRef}
           aria-label="Main Navigation"
           className={`ios-tabbar${liquidGlass ? ' glass' : ''}`}
-          style={{ '--glass-radius': `${GLASS_RADIUS}px` } as CSSProperties}
+          style={{
+            '--glass-radius': `${GLASS_RADIUS}px`,
+            '--active-tab-shift': `${activeTabIndex * 100}%`,
+          } as CSSProperties}
         >
+          <span className="ios-tab-liquid-selection" aria-hidden="true" />
           {/* Tab 1: Summary */}
           <NavLink
             to="/"

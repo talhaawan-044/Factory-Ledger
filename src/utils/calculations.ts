@@ -39,6 +39,13 @@ export interface LotAvailabilityInfo {
   isOverdraw: boolean;
 }
 
+export interface MineAvailabilityInfo {
+  availableBeforeThis: number;
+  draftUse: number;
+  remainingAfter: number;
+  isOverdraw: boolean;
+}
+
 export interface PartyBalanceResult {
   totalBilled: number;
   totalPaymentsReceived: number;
@@ -533,6 +540,36 @@ export function calculateLotAvailabilityForDispatch(
   };
 }
 
+/**
+ * Availability for legacy/manual mine-level rows that are not tied to a lot.
+ * The dispatch being edited is excluded so reopening it never double-counts
+ * its own consumption.
+ */
+export function calculateMineAvailabilityForDispatch(
+  mine: Mine,
+  lots: InventoryLot[],
+  allDispatches: Dispatch[],
+  draft: Partial<Dispatch>,
+): MineAvailabilityInfo {
+  const others = (allDispatches || []).filter((d) => !d?.deleted && (!draft?.id || d.id !== draft.id));
+  const availableBeforeThis = calculateMineStock(mine, lots, others).remainingTons;
+  const mineName = mine.name.trim().toLowerCase();
+  const draftUse = (draft.coalInputs || [])
+    .filter((input) => {
+      if (input?.lotId) return false;
+      return input?.mineId === mine.id ||
+        (Boolean(input?.sourceName) && input.sourceName.trim().toLowerCase() === mineName);
+    })
+    .reduce((sum, input) => sum + cleanNum(input?.weight), 0);
+  const remainingAfter = Math.round((availableBeforeThis - draftUse) * 100) / 100;
+  return {
+    availableBeforeThis: Math.round(availableBeforeThis * 100) / 100,
+    draftUse: Math.round(draftUse * 100) / 100,
+    remainingAfter,
+    isOverdraw: remainingAfter < -0.001,
+  };
+}
+
 
 /**
  * Aggregates overall inventory metrics (stock, capital, supplier breakdown).
@@ -601,12 +638,86 @@ export interface MineStockSummary {
   status: 'in_stock' | 'low' | 'exhausted' | 'overdrawn';
 }
 
+export interface InventoryRelationIssue {
+  kind: 'missing_lot' | 'overdrawn' | 'marker_mismatch';
+  severity: 'warning' | 'critical';
+  lotId?: string;
+  dispatchIds: string[];
+  message: string;
+}
+
+/**
+ * Audits denormalized stock/dispatch relationships after restore or cloud sync.
+ * Dispatch coalInputs are authoritative; lot marker fields are display helpers.
+ */
+export function auditInventoryRelations(
+  lots: InventoryLot[],
+  dispatches: Dispatch[],
+): InventoryRelationIssue[] {
+  const activeLots = (lots || []).filter((lot) => !lot.deleted);
+  const activeDispatches = (dispatches || []).filter((dispatch) => !dispatch.deleted);
+  const lotById = new Map(activeLots.map((lot) => [lot.id, lot]));
+  const usesByLot = new Map<string, Dispatch[]>();
+  const issues: InventoryRelationIssue[] = [];
+
+  for (const dispatch of activeDispatches) {
+    for (const input of dispatch.coalInputs || []) {
+      if (!input.lotId) continue;
+      const lot = lotById.get(input.lotId);
+      if (!lot) {
+        issues.push({
+          kind: 'missing_lot',
+          severity: 'critical',
+          lotId: input.lotId,
+          dispatchIds: [dispatch.id],
+          message: `Dispatch #${dispatch.truckNumber || 'N/A'} references a missing stock entry.`,
+        });
+        continue;
+      }
+      const uses = usesByLot.get(lot.id) || [];
+      if (!uses.some((candidate) => candidate.id === dispatch.id)) uses.push(dispatch);
+      usesByLot.set(lot.id, uses);
+    }
+  }
+
+  for (const lot of activeLots) {
+    const uses = usesByLot.get(lot.id) || [];
+    const lotLabel = lot.boughtFrom || lot.supplier || lot.mineName || 'Stock entry';
+    const stock = calculateLotStock(lot, activeDispatches);
+    if (stock.isOverdrawn) {
+      issues.push({
+        kind: 'overdrawn',
+        severity: 'critical',
+        lotId: lot.id,
+        dispatchIds: uses.map((dispatch) => dispatch.id),
+        message: `${lotLabel} is overdrawn by ${Math.abs(stock.remainingWeight).toFixed(2)} tons.`,
+      });
+    }
+
+    const markerMatchesAuthoritativeUse = lot.usedInDispatchId
+      ? uses.some((dispatch) => dispatch.id === lot.usedInDispatchId)
+      : uses.length === 0;
+    if (!markerMatchesAuthoritativeUse) {
+      issues.push({
+        kind: 'marker_mismatch',
+        severity: 'warning',
+        lotId: lot.id,
+        dispatchIds: uses.map((dispatch) => dispatch.id),
+        message: `${lotLabel} has an out-of-date dispatch status marker.`,
+      });
+    }
+  }
+
+  return issues;
+}
+
 /**
  * Calculates stock balance and financials for an individual Mine:
  * Inflow = Sum of all stock entries (lots) linked to this mine.
  * Outflow = Sum of all coal blending recipes consuming coal from this mine.
  * Remaining Stock = Inflow Tons - Outflow Tons.
- * Stock Value = Remaining Tons * Mine Rate Per Ton.
+ * Stock value is derived lot-by-lot from each entry's landed rate. The mine's
+ * default rate is only a seed for new entries and must never reprice inventory.
  */
 export function calculateMineStock(
   mine: Mine,
@@ -623,17 +734,20 @@ export function calculateMineStock(
   let totalInflowValue = 0;
 
   for (const lot of activeLots) {
-    const tons = cleanNum(lot.tonnage ?? (lot.receivedWeight || lot.billedWeight || 0));
-    const rate = cleanNum(lot.ratePerTon ?? (lot.landedRate || lot.purchaseRate || mine.ratePerTon || 0));
-    const val = lot.totalValue !== undefined ? cleanNum(lot.totalValue) : tons * rate;
-    totalInflowTons += tons;
-    totalInflowValue += val;
+    const receivedTons = cleanNum(lot.receivedWeight || lot.billedWeight || lot.tonnage || 0);
+    const landedRate = cleanNum(lot.landedRate || lot.purchaseRate || lot.ratePerTon || mine.ratePerTon || 0);
+    const value = lot.totalValue !== undefined ? cleanNum(lot.totalValue) : receivedTons * landedRate;
+    totalInflowTons += receivedTons;
+    totalInflowValue += value;
   }
 
   // Find all dispatches blending coal from this mine
   const activeDispatches = (dispatches || []).filter((d) => !d.deleted);
+  const mineLotIds = new Set(activeLots.map((lot) => lot.id));
   let totalOutflowTons = 0;
+  let totalOutflowValue = 0;
   let linkedDispatchesCount = 0;
+  let directMineOutflowTons = 0;
 
   for (const d of activeDispatches) {
     let dispatchUsedMine = false;
@@ -641,9 +755,13 @@ export function calculateMineStock(
       for (const ci of d.coalInputs) {
         const matchesMine =
           ci.mineId === mine.id ||
+          (Boolean(ci.lotId) && mineLotIds.has(ci.lotId as string)) ||
           (Boolean(ci.sourceName) && ci.sourceName.trim().toLowerCase() === mine.name.trim().toLowerCase());
         if (matchesMine) {
-          totalOutflowTons += cleanNum(ci.weight);
+          const weight = cleanNum(ci.weight);
+          totalOutflowTons += weight;
+          totalOutflowValue += weight * cleanNum(ci.purchaseRate);
+          if (!ci.lotId) directMineOutflowTons += weight;
           dispatchUsedMine = true;
         }
       }
@@ -655,8 +773,30 @@ export function calculateMineStock(
 
   const remainingTons = Math.round((totalInflowTons - totalOutflowTons) * 100) / 100;
   const isOverdrawn = remainingTons < -0.001;
-  const remainingValue = Math.round(Math.max(0, remainingTons) * cleanNum(mine.ratePerTon));
-  const totalOutflowValue = Math.round(totalOutflowTons * cleanNum(mine.ratePerTon));
+
+  // Value the actual remaining quantities at their own landed rates. Legacy
+  // mine-level rows have no lotId, so consume the remaining pool FIFO.
+  const remainingLots = activeLots
+    .map((lot) => {
+      const stock = calculateLotStock(lot, activeDispatches);
+      return {
+        lot,
+        remaining: Math.max(0, stock.remainingWeight),
+        landedRate: cleanNum(lot.landedRate || lot.purchaseRate || lot.ratePerTon || mine.ratePerTon || 0),
+      };
+    })
+    .sort((a, b) => {
+      const dateCompare = String(a.lot.date || '').localeCompare(String(b.lot.date || ''));
+      return dateCompare || cleanNum(a.lot.createdAt) - cleanNum(b.lot.createdAt);
+    });
+
+  let unallocatedOutflow = directMineOutflowTons;
+  let remainingValue = 0;
+  for (const item of remainingLots) {
+    const consumed = Math.min(item.remaining, Math.max(0, unallocatedOutflow));
+    unallocatedOutflow -= consumed;
+    remainingValue += (item.remaining - consumed) * item.landedRate;
+  }
 
   let status: 'in_stock' | 'low' | 'exhausted' | 'overdrawn' = 'in_stock';
   if (isOverdrawn) {
@@ -672,9 +812,9 @@ export function calculateMineStock(
     totalInflowTons: Math.round(totalInflowTons * 100) / 100,
     totalInflowValue: Math.round(totalInflowValue),
     totalOutflowTons: Math.round(totalOutflowTons * 100) / 100,
-    totalOutflowValue,
+    totalOutflowValue: Math.round(totalOutflowValue),
     remainingTons,
-    remainingValue,
+    remainingValue: Math.round(Math.max(0, remainingValue)),
     isOverdrawn,
     entriesCount: activeLots.length,
     dispatchesCount: linkedDispatchesCount,
@@ -715,5 +855,3 @@ export function calculateOverallMinesSummary(
     overdrawnCount,
   };
 }
-
-

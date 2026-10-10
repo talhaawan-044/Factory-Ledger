@@ -15,11 +15,12 @@ import {
   Calculator,
   Plus,
   ChevronDown,
+  Package,
 } from 'lucide-react';
 import type { Dispatch, CoalInput, Party, PurchaseOrder, AppSettings, InventoryLot, Mine } from '../types';
 import { getDispatch, saveDispatch, deleteDispatch, getParties, getPartyPurchaseOrders, getDispatches, getLots, getMines, saveParty, getSettings, cleanNumber } from '../lib/db';
 import { getTodayDateString } from '../utils/dateUtils';
-import { calculateSettlement, calculateMineStock, getEffectiveAdjustments, calculateLotAvailabilityForDispatch } from '../utils/calculations';
+import { calculateSettlement, getEffectiveAdjustments, calculateLotAvailabilityForDispatch, calculateMineAvailabilityForDispatch } from '../utils/calculations';
 import { getCurrencySymbol, formatAmountNumber } from '../utils/currency';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import IOSDatePicker from '../components/IOSDatePicker';
@@ -275,6 +276,39 @@ export default function DispatchForm() {
     const totalLoaded = (dispatch.coalInputs || []).reduce((sum, ci) => sum + cleanNumber(ci.weight), 0);
     if (totalLoaded <= 0) {
       errors.coalInputs = 'Loaded coal recipe weight must be greater than 0';
+    } else {
+      const duplicateLotIds = new Set<string>();
+      for (const input of dispatch.coalInputs || []) {
+        if (!input.sourceName.trim()) {
+          errors.coalInputs = 'Every coal source needs a source name';
+          break;
+        }
+        if (!Number.isFinite(input.weight) || input.weight <= 0) {
+          errors.coalInputs = `Enter a positive weight for ${input.sourceName || 'every coal source'}`;
+          break;
+        }
+        if (!Number.isFinite(input.purchaseRate) || input.purchaseRate <= 0) {
+          errors.coalInputs = `Enter a positive purchase rate for ${input.sourceName || 'every coal source'}`;
+          break;
+        }
+        if (input.lotId) {
+          if (duplicateLotIds.has(input.lotId)) {
+            errors.coalInputs = 'A stock entry can only appear once in a dispatch';
+            break;
+          }
+          duplicateLotIds.add(input.lotId);
+          const linkedLot = lots.find((lot) => lot.id === input.lotId && !lot.deleted);
+          if (!linkedLot) {
+            errors.coalInputs = `The stock entry selected for ${input.sourceName} is no longer available`;
+            break;
+          }
+          const availability = calculateLotAvailabilityForDispatch(linkedLot, allDispatches, dispatch);
+          if (availability.isOverdraw) {
+            errors.coalInputs = `${input.sourceName} exceeds its available stock by ${Math.abs(availability.remainingAfter).toFixed(2)} tons`;
+            break;
+          }
+        }
+      }
     }
     if (cleanNumber(dispatch.baseRate) <= 0) {
       errors.baseRate = 'Base rate must be greater than 0';
@@ -420,6 +454,7 @@ export default function DispatchForm() {
   };
 
   const handleCoalSourceSelection = (inputId: string, sel: CoalSourceSelection) => {
+    clearError('coalInputs');
     setDispatch((prev) => {
       if (!prev) return prev;
       return {
@@ -855,14 +890,14 @@ export default function DispatchForm() {
                         }}
                       >
                         <span style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                          <span style={{ flexShrink: 0 }}>📦</span>
+                          <Package size={14} style={{ flexShrink: 0 }} />
                           <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                            <strong>{linkedLot.boughtFrom || linkedLot.supplier}</strong>: {avail.availableBeforeThis.toFixed(1)}t available (Landed: {curSym} {formatAmountNumber(linkedLot.landedRate)}/t)
+                            <strong>{linkedLot.boughtFrom || linkedLot.supplier}</strong>: {avail.availableBeforeThis.toFixed(2)}t available · {Math.max(0, avail.remainingAfter).toFixed(2)}t left after this dispatch
                           </span>
                         </span>
                         {avail.isOverdraw && (
                           <span style={{ fontWeight: 600, color: 'var(--ios-red)', fontSize: 11, flexShrink: 0 }}>
-                            ⚠️ Overdrawn by {overdrawnAmount.toFixed(1)}t
+                            Overdrawn by {overdrawnAmount.toFixed(1)}t
                           </span>
                         )}
                       </div>
@@ -873,8 +908,8 @@ export default function DispatchForm() {
                   {input.mineId && !input.lotId && (() => {
                     const linkedMine = mines.find((m) => m.id === input.mineId);
                     if (!linkedMine) return null;
-                    const mineStock = calculateMineStock(linkedMine, lots, allDispatches);
-                    const isOverdraw = (input.weight || 0) > mineStock.remainingTons;
+                    const availability = calculateMineAvailabilityForDispatch(linkedMine, lots, allDispatches, dispatch);
+                    const isOverdraw = availability.isOverdraw;
 
                     return (
                       <div
@@ -894,13 +929,13 @@ export default function DispatchForm() {
                         }}
                       >
                         <span style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                          <span style={{ flexShrink: 0 }}>⛏️</span>
+                          <Layers size={14} style={{ flexShrink: 0 }} />
                           <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                            <strong>{linkedMine.name}</strong>: {mineStock.remainingTons.toFixed(1)}t available (Rate: {curSym} {formatAmountNumber(linkedMine.ratePerTon)}/t)
+                            <strong>{linkedMine.name}</strong>: {availability.availableBeforeThis.toFixed(1)}t available (legacy untracked source)
                           </span>
                         </span>
                         {isOverdraw && (
-                          <span style={{ fontWeight: 600, color: 'var(--ios-red)', fontSize: 11, flexShrink: 0 }}>⚠️ Exceeds yard stock</span>
+                          <span style={{ fontWeight: 600, color: 'var(--ios-red)', fontSize: 11, flexShrink: 0 }}>Exceeds yard stock</span>
                         )}
                       </div>
                     );
@@ -912,6 +947,8 @@ export default function DispatchForm() {
                   value={input.sourceName}
                   onChange={(val) => updateCoalInput(input.id, 'sourceName', val)}
                   placeholder="e.g. Afghan 6000 or Duki Mine"
+                  disabled={Boolean(input.lotId)}
+                  helperText={input.lotId ? 'Linked to the selected stock voucher. Tap Change to use another source.' : undefined}
                 />
 
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
@@ -922,6 +959,12 @@ export default function DispatchForm() {
                     suffix="tons"
                     value={input.weight || ''}
                     onChange={(val) => updateCoalInput(input.id, 'weight', parseFloat(val) || 0)}
+                    helperText={input.lotId ? (() => {
+                      const linkedLot = lots.find((lot) => lot.id === input.lotId);
+                      if (!linkedLot) return 'The linked stock entry is no longer available.';
+                      const availability = calculateLotAvailabilityForDispatch(linkedLot, allDispatches, dispatch);
+                      return `Allocate up to ${availability.availableBeforeThis.toFixed(2)} tons from this stock entry.`;
+                    })() : undefined}
                   />
                   <FloatingField
                     label="Buy Price"
@@ -929,6 +972,8 @@ export default function DispatchForm() {
                     suffix={`${curSym}/t`}
                     value={input.purchaseRate || ''}
                     onChange={(val) => updateCoalInput(input.id, 'purchaseRate', parseFloat(val) || 0)}
+                    disabled={Boolean(input.lotId)}
+                    helperText={input.lotId ? 'Landed rate is locked; only the allocated weight can change.' : undefined}
                   />
                 </div>
               </div>
@@ -1722,7 +1767,7 @@ export default function DispatchForm() {
         settings={settings}
         currentMineId={dispatch.coalInputs.find((ci) => ci.id === activePickingInputId)?.mineId}
         currentLotId={dispatch.coalInputs.find((ci) => ci.id === activePickingInputId)?.lotId}
-        currentDispatchId={dispatchId}
+        currentDispatchId={dispatch.id}
         excludeLotIds={(dispatch.coalInputs || [])
           .filter((ci) => ci.id !== activePickingInputId && Boolean(ci.lotId))
           .map((ci) => ci.lotId as string)}

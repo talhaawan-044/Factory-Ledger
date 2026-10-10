@@ -11,7 +11,7 @@ import {
   getSettings,
 } from '../lib/db';
 import type { Mine, InventoryLot, Dispatch, Party, AppSettings } from '../types';
-import { calculateMineStock } from '../utils/calculations';
+import { calculateLotStock, calculateMineStock } from '../utils/calculations';
 import { getCurrencySymbol, formatAmountNumber } from '../utils/currency';
 import { getTodayDateString, formatDisplayDate } from '../utils/dateUtils';
 import { playPopSound, playSuccessSound, triggerConfetti } from '../utils/delight';
@@ -55,6 +55,8 @@ export default function MineLedger() {
   // Add / Edit Stock Modal state
   const [isAddingStock, setIsAddingStock] = useState(false);
   const [editingLotId, setEditingLotId] = useState<string | null>(null);
+  const [stockFormError, setStockFormError] = useState<string | null>(null);
+  const [isSavingStock, setIsSavingStock] = useState(false);
   const [stockForm, setStockForm] = useState({
     tonnage: '',
     receivedTonnage: '',
@@ -68,6 +70,8 @@ export default function MineLedger() {
 
   // Edit Mine Modal state
   const [isEditingMine, setIsEditingMine] = useState(false);
+  const [mineFormError, setMineFormError] = useState<string | null>(null);
+  const [isSavingMine, setIsSavingMine] = useState(false);
   const [mineForm, setMineForm] = useState({
     name: '',
     ratePerTon: '',
@@ -129,12 +133,14 @@ export default function MineLedger() {
   // Outflow Dispatches that consumed coal from this mine
   const matchedDispatches = useMemo(() => {
     if (!mine) return [];
+    const mineLotIds = new Set(lots.filter((lot) => !lot.deleted).map((lot) => lot.id));
     return dispatches
       .filter((d) => !d.deleted)
       .map((d) => {
         const matchingInputs = (d.coalInputs || []).filter(
           (ci) =>
             ci.mineId === mine.id ||
+            (Boolean(ci.lotId) && mineLotIds.has(ci.lotId!)) ||
             (Boolean(ci.sourceName) && ci.sourceName.trim().toLowerCase() === mine.name.trim().toLowerCase())
         );
         if (matchingInputs.length === 0) return null;
@@ -142,11 +148,16 @@ export default function MineLedger() {
         return {
           dispatch: d,
           usedWeight: totalUsedWeight,
-          cost: Math.round(totalUsedWeight * (mine.ratePerTon || 0)),
+          cost: Math.round(
+            matchingInputs.reduce(
+              (sum, ci) => sum + ((ci.weight || 0) * (ci.purchaseRate || 0)),
+              0
+            )
+          ),
         };
       })
       .filter(Boolean) as Array<{ dispatch: Dispatch; usedWeight: number; cost: number }>;
-  }, [mine, dispatches]);
+  }, [mine, lots, dispatches]);
 
   // Combined activity list
   const activityList = useMemo(() => {
@@ -160,6 +171,10 @@ export default function MineLedger() {
       title: string;
       subtitle: string;
       isUsedInDispatch?: boolean;
+      isFullyAllocated?: boolean;
+      usedTons?: number;
+      remainingTons?: number;
+      allocationCount?: number;
       usedDispatchTruck?: string;
       usedPartyName?: string;
       linkedDispatchObj?: Dispatch;
@@ -173,21 +188,15 @@ export default function MineLedger() {
       const tons = lot.receivedWeight || lot.billedWeight || lot.tonnage || 0;
       const val = lot.totalValue ?? (tons * (lot.ratePerTon || mine?.ratePerTon || 0));
 
-      // Check if lot is used in any dispatch
-      let linkedD: Dispatch | undefined;
-      if (lot.usedInDispatchId) {
-        linkedD = dispatches.find((d) => d.id === lot.usedInDispatchId && !d.deleted);
-      }
-      if (!linkedD) {
-        linkedD = dispatches.find(
-          (d) => !d.deleted && (d.coalInputs || []).some((ci) => ci.lotId === lot.id)
-        );
-      }
-
-      const isUsed = Boolean(lot.usedInDispatchId || linkedD);
-      const usedTruck = lot.usedInDispatchTruck || linkedD?.truckNumber;
+      const linkedDispatches = dispatches.filter(
+        (d) => !d.deleted && (d.coalInputs || []).some((ci) => ci.lotId === lot.id)
+      );
+      const linkedD = linkedDispatches.find((d) => d.id === lot.usedInDispatchId) || linkedDispatches[0];
+      const lotStock = calculateLotStock(lot, dispatches);
+      const isUsed = lotStock.usedWeight > 0.001;
+      const usedTruck = linkedD?.truckNumber || lot.usedInDispatchTruck;
       const linkedParty = linkedD ? parties.find((p) => p.id === linkedD.partyId) : undefined;
-      const usedParty = lot.usedInPartyName || linkedParty?.name || linkedD?.factoryName;
+      const usedParty = linkedParty?.name || linkedD?.factoryName || lot.usedInPartyName;
 
       list.push({
         type: 'inflow',
@@ -199,6 +208,10 @@ export default function MineLedger() {
         title: lot.boughtFrom || lot.supplier ? `Bought from: ${lot.boughtFrom || lot.supplier}` : 'Stock Inflow',
         subtitle: lot.storedAt ? `Stored at: ${lot.storedAt}` : 'Yard stock entry',
         isUsedInDispatch: isUsed,
+        isFullyAllocated: isUsed && lotStock.remainingWeight <= 0.001,
+        usedTons: lotStock.usedWeight,
+        remainingTons: lotStock.remainingWeight,
+        allocationCount: linkedDispatches.length,
         usedDispatchTruck: usedTruck,
         usedPartyName: usedParty,
         linkedDispatchObj: linkedD,
@@ -266,20 +279,20 @@ export default function MineLedger() {
   const liveLandedRate = effectiveWeight > 0 ? Math.round((liveTotalValue / effectiveWeight) * 100) / 100 : parsedBaseRate;
 
   // Linked dispatch for editing notice
-  const linkedDispatchForEditing = useMemo(() => {
-    if (!editingLotId) return null;
-    const editingLot = lots.find((l) => l.id === editingLotId);
-    if (!editingLot) return null;
-    if (editingLot.usedInDispatchId) {
-      return dispatches.find((d) => d.id === editingLot.usedInDispatchId && !d.deleted) || null;
-    }
-    return dispatches.find((d) => !d.deleted && (d.coalInputs || []).some((ci) => ci.lotId === editingLotId)) || null;
-  }, [editingLotId, lots, dispatches]);
+  const linkedDispatchesForEditing = useMemo(() => {
+    if (!editingLotId) return [];
+    return dispatches.filter(
+      (candidate) => !candidate.deleted && (candidate.coalInputs || []).some((input) => input.lotId === editingLotId)
+    );
+  }, [editingLotId, dispatches]);
+  const linkedDispatchForEditing = linkedDispatchesForEditing[0] || null;
+  const isStockFinanciallyLocked = Boolean(linkedDispatchForEditing);
 
   // Open Add Stock Modal
   const handleOpenAddStock = () => {
     playPopSound();
     setEditingLotId(null);
+    setStockFormError(null);
     setStockForm({
       tonnage: '',
       receivedTonnage: '',
@@ -297,6 +310,7 @@ export default function MineLedger() {
   const handleOpenEditStock = (lot: InventoryLot) => {
     playPopSound();
     setEditingLotId(lot.id);
+    setStockFormError(null);
     setStockForm({
       tonnage: String(lot.billedWeight || lot.tonnage || ''),
       receivedTonnage: lot.receivedWeight && lot.receivedWeight !== lot.billedWeight ? String(lot.receivedWeight) : '',
@@ -313,20 +327,34 @@ export default function MineLedger() {
   // Submit Add / Edit Stock
   const handleSaveStock = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!mine) return;
+    if (!mine || isSavingStock) return;
 
     const boughtFrom = stockForm.boughtFrom.trim();
     if (!boughtFrom) {
-      alert("Please enter the seller or supplier name in 'Bought From'.");
+      setStockFormError("Please enter the seller or supplier name in 'Bought From'.");
       return;
     }
 
-    if (parsedTonnage <= 0) {
-      alert('Please enter a valid positive loaded tonnage.');
+    if (!Number.isFinite(parsedTonnage) || parsedTonnage <= 0) {
+      setStockFormError('Please enter a valid positive loaded tonnage.');
+      return;
+    }
+    if (stockForm.receivedTonnage.trim() && (!Number.isFinite(parsedReceivedTonnage) || parsedReceivedTonnage <= 0)) {
+      setStockFormError('Received quantity must be greater than zero.');
+      return;
+    }
+    if (!Number.isFinite(parsedBaseRate) || parsedBaseRate <= 0) {
+      setStockFormError('Coal rate per ton must be greater than zero.');
+      return;
+    }
+    if (!Number.isFinite(parsedLoading) || !Number.isFinite(parsedFare) || parsedLoading < 0 || parsedFare < 0) {
+      setStockFormError('Loading and freight amounts cannot be negative.');
       return;
     }
 
     try {
+      setIsSavingStock(true);
+      setStockFormError(null);
       const now = Date.now();
       const existingLot = editingLotId ? lots.find((l) => l.id === editingLotId) : undefined;
 
@@ -367,13 +395,15 @@ export default function MineLedger() {
       setIsAddingStock(false);
       setEditingLotId(null);
       if (linkedDisp) {
-        showToast(`Stock updated & synced with Dispatch #${linkedDisp.truckNumber || 'receipt'}`);
+        showToast(`Stock details updated · Dispatch #${linkedDisp.truckNumber || 'receipt'} snapshot preserved`);
       } else {
         showToast(editingLotId ? 'Stock entry updated' : `Added ${parsedTonnage.toFixed(2)} tons stock entry`);
       }
       loadData();
     } catch (err: any) {
-      alert(err?.message || 'Failed to save stock entry.');
+      setStockFormError(err?.message || 'Failed to save stock entry.');
+    } finally {
+      setIsSavingStock(false);
     }
   };
 
@@ -381,6 +411,7 @@ export default function MineLedger() {
   const handleOpenEditMine = () => {
     if (!mine) return;
     playPopSound();
+    setMineFormError(null);
     setMineForm({
       name: mine.name,
       ratePerTon: String(mine.ratePerTon),
@@ -393,20 +424,22 @@ export default function MineLedger() {
   // Save Edit Mine
   const handleSaveMine = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!mine) return;
+    if (!mine || isSavingMine) return;
 
     const name = mineForm.name.trim();
     const rate = parseFloat(mineForm.ratePerTon);
     if (!name) {
-      alert('Please enter mine name.');
+      setMineFormError('Please enter the mine name.');
       return;
     }
-    if (isNaN(rate) || rate <= 0) {
-      alert('Please enter valid rate per ton.');
+    if (!Number.isFinite(rate) || rate <= 0) {
+      setMineFormError('Please enter a valid rate per ton greater than zero.');
       return;
     }
 
     try {
+      setIsSavingMine(true);
+      setMineFormError(null);
       await saveMine({
         ...mine,
         name,
@@ -420,7 +453,9 @@ export default function MineLedger() {
       showToast('Mine updated');
       loadData();
     } catch (err: any) {
-      alert(err?.message || 'Failed to update mine.');
+      setMineFormError(err?.message || 'Failed to update mine.');
+    } finally {
+      setIsSavingMine(false);
     }
   };
 
@@ -876,7 +911,7 @@ export default function MineLedger() {
                                 color: 'var(--ios-purple, #af52de)',
                               }}
                             >
-                              Used in {item.usedDispatchTruck || 'Dispatch'}
+                              {item.isFullyAllocated ? 'Fully Used' : 'Partially Used'} · {item.usedTons?.toFixed(2)}t used · {Math.max(0, item.remainingTons || 0).toFixed(2)}t left
                             </span>
                           )}
                         </div>
@@ -983,17 +1018,19 @@ export default function MineLedger() {
               <button
                 type="button"
                 onClick={handleSaveStock}
+                disabled={isSavingStock}
                 style={{
                   background: 'none',
                   border: 'none',
                   color: 'var(--ios-blue)',
                   fontSize: 16,
                   fontWeight: 600,
-                  cursor: 'pointer',
+                  cursor: isSavingStock ? 'wait' : 'pointer',
+                  opacity: isSavingStock ? 0.55 : 1,
                   padding: 0,
                 }}
               >
-                Save
+                {isSavingStock ? 'Saving…' : 'Save'}
               </button>
             </div>
 
@@ -1019,10 +1056,11 @@ export default function MineLedger() {
                   <Lock size={16} style={{ flexShrink: 0 }} />
                   <div>
                     <span>
-                      Active in <strong>Dispatch #{linkedDispatchForEditing.truckNumber}</strong> ({linkedDispatchForEditing.factoryName}).
+                      Allocated across <strong>{linkedDispatchesForEditing.length} {linkedDispatchesForEditing.length === 1 ? 'dispatch' : 'dispatches'}</strong>
+                      {linkedDispatchesForEditing.length === 1 ? ` · #${linkedDispatchForEditing.truckNumber}` : ''}.
                     </span>
                     <div style={{ fontSize: 11, opacity: 0.85, marginTop: 2 }}>
-                      Changes to rate, loading, or freight will automatically update the purchase cost and profit in this dispatch.
+                      Stock-entry weight, rate, loading, freight, and date are locked so every allocation keeps its original accounting basis.
                     </div>
                   </div>
                 </div>
@@ -1049,6 +1087,7 @@ export default function MineLedger() {
                   value={stockForm.tonnage}
                   onChange={(val) => setStockForm((prev) => ({ ...prev, tonnage: val }))}
                   placeholder="e.g. 10.00"
+                  disabled={isStockFinanciallyLocked}
                 />
 
                 <FloatingField
@@ -1059,6 +1098,7 @@ export default function MineLedger() {
                   value={stockForm.receivedTonnage}
                   onChange={(val) => setStockForm((prev) => ({ ...prev, receivedTonnage: val }))}
                   placeholder="e.g. 9.80"
+                  disabled={isStockFinanciallyLocked}
                 />
               </div>
 
@@ -1071,6 +1111,7 @@ export default function MineLedger() {
                   value={stockForm.ratePerTon}
                   onChange={(val) => setStockForm((prev) => ({ ...prev, ratePerTon: val }))}
                   placeholder={`Default: ${mine.ratePerTon}`}
+                  disabled={isStockFinanciallyLocked}
                 />
               </div>
 
@@ -1083,6 +1124,7 @@ export default function MineLedger() {
                   value={stockForm.loadingCost}
                   onChange={(val) => setStockForm((prev) => ({ ...prev, loadingCost: val }))}
                   placeholder="e.g. 5000"
+                  disabled={isStockFinanciallyLocked}
                 />
 
                 <FloatingField
@@ -1092,6 +1134,7 @@ export default function MineLedger() {
                   value={stockForm.freightCost}
                   onChange={(val) => setStockForm((prev) => ({ ...prev, freightCost: val }))}
                   placeholder="e.g. 20000"
+                  disabled={isStockFinanciallyLocked}
                 />
               </div>
 
@@ -1176,12 +1219,33 @@ export default function MineLedger() {
                   value={stockForm.date}
                   onChange={(d) => setStockForm((prev) => ({ ...prev, date: d }))}
                   floating
+                  disabled={isStockFinanciallyLocked}
                 />
               </div>
+
+              {stockFormError && (
+                <div
+                  role="alert"
+                  style={{
+                    marginBottom: 14,
+                    padding: '11px 13px',
+                    borderRadius: 12,
+                    background: 'rgba(255, 59, 48, 0.1)',
+                    border: '0.5px solid rgba(255, 59, 48, 0.32)',
+                    color: 'var(--ios-red)',
+                    fontSize: 13,
+                    fontWeight: 550,
+                    lineHeight: 1.35,
+                  }}
+                >
+                  {stockFormError}
+                </div>
+              )}
 
               {/* Save Button */}
               <button
                 type="submit"
+                disabled={isSavingStock}
                 style={{
                   width: '100%',
                   height: 52,
@@ -1191,11 +1255,12 @@ export default function MineLedger() {
                   border: 'none',
                   fontSize: 16,
                   fontWeight: 600,
-                  cursor: 'pointer',
+                  cursor: isSavingStock ? 'wait' : 'pointer',
+                  opacity: isSavingStock ? 0.65 : 1,
                 }}
                 className="ios-btn-primary"
               >
-                {editingLotId ? 'Update Stock Entry' : 'Add Stock Entry'}
+                {isSavingStock ? 'Saving Stock…' : editingLotId ? 'Update Stock Entry' : 'Add Stock Entry'}
               </button>
             </form>
           </div>
@@ -1207,11 +1272,9 @@ export default function MineLedger() {
         <StockPreviewModal
           lot={previewLot}
           mine={mine}
-          linkedDispatch={
-            previewLot.usedInDispatchId
-              ? dispatches.find((d) => d.id === previewLot.usedInDispatchId && !d.deleted)
-              : dispatches.find((d) => !d.deleted && (d.coalInputs || []).some((ci) => ci.lotId === previewLot.id))
-          }
+          linkedDispatches={dispatches.filter(
+            (candidate) => !candidate.deleted && (candidate.coalInputs || []).some((input) => input.lotId === previewLot.id)
+          )}
           settings={settings}
           onClose={() => setPreviewLot(null)}
           onEdit={(lot) => {
@@ -1282,17 +1345,19 @@ export default function MineLedger() {
               <button
                 type="button"
                 onClick={handleSaveMine}
+                disabled={isSavingMine}
                 style={{
                   background: 'none',
                   border: 'none',
                   color: 'var(--ios-blue)',
                   fontSize: 16,
                   fontWeight: 600,
-                  cursor: 'pointer',
+                  cursor: isSavingMine ? 'wait' : 'pointer',
+                  opacity: isSavingMine ? 0.55 : 1,
                   padding: 0,
                 }}
               >
-                Save
+                {isSavingMine ? 'Saving…' : 'Save'}
               </button>
             </div>
 
@@ -1336,8 +1401,28 @@ export default function MineLedger() {
                 />
               </div>
 
+              {mineFormError && (
+                <div
+                  role="alert"
+                  style={{
+                    marginBottom: 14,
+                    padding: '11px 13px',
+                    borderRadius: 12,
+                    background: 'rgba(255, 59, 48, 0.1)',
+                    border: '0.5px solid rgba(255, 59, 48, 0.32)',
+                    color: 'var(--ios-red)',
+                    fontSize: 13,
+                    fontWeight: 550,
+                    lineHeight: 1.35,
+                  }}
+                >
+                  {mineFormError}
+                </div>
+              )}
+
               <button
                 type="submit"
+                disabled={isSavingMine}
                 style={{
                   width: '100%',
                   height: 52,
@@ -1347,11 +1432,12 @@ export default function MineLedger() {
                   border: 'none',
                   fontSize: 16,
                   fontWeight: 600,
-                  cursor: 'pointer',
+                  cursor: isSavingMine ? 'wait' : 'pointer',
+                  opacity: isSavingMine ? 0.65 : 1,
                 }}
                 className="ios-btn-primary"
               >
-                Update Mine Details
+                {isSavingMine ? 'Saving Mine…' : 'Update Mine Details'}
               </button>
             </form>
           </div>

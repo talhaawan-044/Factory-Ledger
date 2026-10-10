@@ -14,7 +14,6 @@ import {
   Plus,
   ArrowRight,
   Layers,
-  Sparkles,
   Lock,
 } from 'lucide-react';
 
@@ -74,7 +73,7 @@ export default function CoalSourceModal({
     playPopSound();
     setExpandedMineIds((prev) => ({
       ...prev,
-      [mineId]: !prev[mineId],
+      [mineId]: !(prev[mineId] ?? true),
     }));
   };
 
@@ -90,11 +89,6 @@ export default function CoalSourceModal({
     // If this lot is currently selected in THIS input field, keep it available
     if (currentLotId && lot.id === currentLotId) return true;
 
-    // If lot was already used in another dispatch
-    if (lot.usedInDispatchId && lot.usedInDispatchId !== currentDispatchId) {
-      return false;
-    }
-
     // If lot was already picked by another coal input in the current form
     if (excludeLotIds && excludeLotIds.includes(lot.id)) {
       return false;
@@ -107,7 +101,7 @@ export default function CoalSourceModal({
     }
 
     return true;
-  }, [currentLotId, currentDispatchId, excludeLotIds, otherDispatches]);
+  }, [currentLotId, excludeLotIds, otherDispatches]);
 
   // Group available and used lots by mineId
   const { availableLotsByMineId, usedLotsByMineId } = useMemo(() => {
@@ -338,9 +332,8 @@ export default function CoalSourceModal({
             filteredMines.map((mine) => {
               const mineLots = availableLotsByMineId.get(mine.id) || [];
               const usedLots = usedLotsByMineId.get(mine.id) || [];
-              const isExpanded = Boolean(expandedMineIds[mine.id]);
-              const stock = calculateMineStock(mine, lots, dispatches);
-              const isSelectedMineDirect = currentMineId === mine.id && !currentLotId;
+              const isExpanded = expandedMineIds[mine.id] ?? true;
+              const stock = calculateMineStock(mine, lots, otherDispatches);
 
               return (
                 <div
@@ -400,40 +393,6 @@ export default function CoalSourceModal({
                     </div>
 
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                      {/* Button to pick general mine stock */}
-                      <button
-                        type="button"
-                        onClick={() => {
-                          playPopSound();
-                          onClose();
-                          onSelect({
-                            mineId: mine.id,
-                            lotId: undefined,
-                            sourceName: mine.name,
-                            weight: stock.remainingTons > 0 ? stock.remainingTons : 0,
-                            rate: mine.ratePerTon,
-                          });
-                        }}
-                        style={{
-                          padding: '5px 10px',
-                          borderRadius: 8,
-                          background: isSelectedMineDirect ? 'var(--ios-blue)' : 'var(--fill-secondary)',
-                          color: isSelectedMineDirect ? '#ffffff' : 'var(--ios-blue)',
-                          border: 'none',
-                          fontSize: 12,
-                          fontWeight: 600,
-                          cursor: 'pointer',
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          gap: 4,
-                          whiteSpace: 'nowrap',
-                        }}
-                        title="Use General Yard Stock"
-                      >
-                        {isSelectedMineDirect ? <Check size={13} strokeWidth={2.5} /> : <Sparkles size={13} />}
-                        <span>Pick Mine</span>
-                      </button>
-
                       {/* Expand / Collapse toggle */}
                       <button
                         type="button"
@@ -473,10 +432,10 @@ export default function CoalSourceModal({
                           justifyContent: 'space-between',
                         }}
                       >
-                        <span>Available Stock Entries ({mineLots.length})</span>
+                        <span>Stock With Balance ({mineLots.length})</span>
                         {usedLots.length > 0 && (
                           <span style={{ fontSize: 10, fontWeight: 600, color: 'var(--label-tertiary)', textTransform: 'none' }}>
-                            {usedLots.length} in-use {usedLots.length === 1 ? 'entry' : 'entries'} hidden
+                            {usedLots.length} fully allocated
                           </span>
                         )}
                       </div>
@@ -484,16 +443,16 @@ export default function CoalSourceModal({
                       {mineLots.length === 0 ? (
                         <div style={{ padding: '12px 8px', fontSize: 13, color: 'var(--label-tertiary)', fontStyle: 'italic' }}>
                           {usedLots.length > 0
-                            ? `All stock entries for this mine (${usedLots.length}) are already used in other dispatches. Tap "Pick Mine" to source directly from yard.`
-                            : 'No stock entries recorded in this mine yet. Tap "Pick Mine" to source directly from yard.'}
+                            ? `All stock entries for this mine (${usedLots.length}) are fully allocated to dispatches.`
+                            : 'No stock entries recorded in this mine yet. Add stock in Inventory first, or use Manual / Custom Source.'}
                         </div>
                       ) : (
                         mineLots.map((lot) => {
                           const isSelectedLot = currentLotId === lot.id;
-                          const billed = lot.billedWeight || lot.tonnage || 0;
-                          const received = lot.receivedWeight || billed;
-                          const effectiveWeight = received > 0 ? received : billed;
+                          const stock = calculateLotStock(lot, otherDispatches);
+                          const availableWeight = Math.max(0, stock.remainingWeight);
                           const lotRate = lot.landedRate || lot.purchaseRate || lot.ratePerTon || mine.ratePerTon;
+                          const isPartiallyUsed = stock.usedWeight > 0.001 && availableWeight > 0.001;
 
                           return (
                             <div
@@ -505,7 +464,7 @@ export default function CoalSourceModal({
                                   mineId: mine.id,
                                   lotId: lot.id,
                                   sourceName: `${mine.name} - ${lot.boughtFrom || lot.supplier}`,
-                                  weight: effectiveWeight,
+                                  weight: availableWeight,
                                   rate: lotRate,
                                 });
                               }}
@@ -549,11 +508,11 @@ export default function CoalSourceModal({
                                         fontWeight: 700,
                                         padding: '2px 6px',
                                         borderRadius: 6,
-                                        background: 'rgba(52, 199, 89, 0.15)',
-                                        color: 'var(--ios-green)',
+                                        background: isPartiallyUsed ? 'rgba(255, 149, 0, 0.15)' : 'rgba(52, 199, 89, 0.15)',
+                                        color: isPartiallyUsed ? 'var(--ios-orange)' : 'var(--ios-green)',
                                       }}
                                     >
-                                      Available
+                                      {isPartiallyUsed ? 'Partially Used' : 'Available'}
                                     </span>
                                   )}
                                 </div>
@@ -568,7 +527,7 @@ export default function CoalSourceModal({
                               <div style={{ textAlign: 'right', flexShrink: 0, marginLeft: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
                                 <div>
                                   <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--label-primary)' }} className="tabular-nums">
-                                    {effectiveWeight.toFixed(2)}t
+                                    {availableWeight.toFixed(2)}t available
                                   </div>
                                   <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--ios-blue)' }} className="tabular-nums">
                                     {curSym} {formatAmountNumber(lotRate, settings)}/t
@@ -586,7 +545,7 @@ export default function CoalSourceModal({
                         })
                       )}
 
-                      {/* Optional expandable view for already-used entries */}
+                      {/* Optional expandable view for fully allocated entries */}
                       {usedLots.length > 0 && (
                         <div style={{ marginTop: 8 }}>
                           <button
@@ -614,8 +573,8 @@ export default function CoalSourceModal({
                             <Lock size={11} />
                             <span>
                               {expandedUsedMines[mine.id]
-                                ? `Hide ${usedLots.length} in-use entries`
-                                : `View ${usedLots.length} already-used entries (locked)`}
+                                ? `Hide ${usedLots.length} fully allocated entries`
+                                : `View ${usedLots.length} fully allocated entries`}
                             </span>
                           </button>
 
@@ -625,6 +584,9 @@ export default function CoalSourceModal({
                                 const billed = lot.billedWeight || lot.tonnage || 0;
                                 const received = lot.receivedWeight || billed;
                                 const effectiveWeight = received > 0 ? received : billed;
+                                const usedByDispatches = otherDispatches.filter((dispatch) =>
+                                  (dispatch.coalInputs || []).some((input) => input.lotId === lot.id)
+                                );
 
                                 return (
                                   <div
@@ -640,7 +602,7 @@ export default function CoalSourceModal({
                                       marginTop: 4,
                                       cursor: 'not-allowed',
                                     }}
-                                    title="This stock entry has already been dispatched and cannot be used"
+                                    title="This stock entry has no remaining balance"
                                   >
                                     <div style={{ minWidth: 0, flex: 1 }}>
                                       <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
@@ -661,11 +623,11 @@ export default function CoalSourceModal({
                                           }}
                                         >
                                           <Lock size={9} />
-                                          Used in {lot.usedInDispatchTruck || 'Dispatch'}
+                                          Fully Allocated
                                         </span>
                                       </div>
                                       <div style={{ fontSize: 11, color: 'var(--label-tertiary)', marginTop: 1 }}>
-                                        {formatDisplayDate(lot.date)} · Dispatched
+                                        {formatDisplayDate(lot.date)} · {usedByDispatches.length} {usedByDispatches.length === 1 ? 'dispatch' : 'dispatches'}
                                       </div>
                                     </div>
 

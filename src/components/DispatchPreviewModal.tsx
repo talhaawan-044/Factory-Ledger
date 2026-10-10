@@ -275,7 +275,7 @@ ${dispatch.notes ? `*Remarks:* ${dispatch.notes}\n\n` : ''}✓ E-Verified Dispat
                             onClick={(e) => {
                               e.stopPropagation();
                               handleClose();
-                              navigate(`/inventory/mines/${input.mineId}`);
+                              navigate(`/inventory/${input.mineId}`);
                             }}
                             style={{
                               background: 'rgba(0, 122, 255, 0.1)',

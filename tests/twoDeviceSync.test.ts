@@ -359,6 +359,7 @@ describe('Phase C: Two-Device Sync Scenarios & Settings Separation (Issues 21, 2
         labReceivedWeight: 20,
         notes: 'v1',
         updatedAt: 1000,
+        createdAt: 0
       });
 
       // 2. Sync starts: takes snapshot of dirty records
@@ -406,6 +407,7 @@ describe('Phase C: Two-Device Sync Scenarios & Settings Separation (Issues 21, 2
         phone: '03001234567',
         address: 'Site A',
         updatedAt: 1000,
+        createdAt: 0
       });
 
       const snapshot = await getLedgerForSync(true);
@@ -419,6 +421,7 @@ describe('Phase C: Two-Device Sync Scenarios & Settings Separation (Issues 21, 2
         contactPerson: 'Manager',
         phone: '03001234567',
         address: 'Site A',
+        createdAt: 0
       });
 
       // Upload v1 completes
@@ -453,6 +456,7 @@ describe('Phase C: Two-Device Sync Scenarios & Settings Separation (Issues 21, 2
         date: '2026-10-08',
         mode: 'bank',
         updatedAt: 1000,
+        createdAt: 0
       });
 
       const snapshot = await getLedgerForSync(true);
@@ -467,6 +471,7 @@ describe('Phase C: Two-Device Sync Scenarios & Settings Separation (Issues 21, 2
         type: 'received',
         date: '2026-10-08',
         mode: 'bank',
+        createdAt: 0
       });
 
       await markRecordsClean({
@@ -500,6 +505,7 @@ describe('Phase C: Two-Device Sync Scenarios & Settings Separation (Issues 21, 2
         commissionPerTon: 200,
         isActive: true,
         updatedAt: 1000,
+        createdAt: 0
       });
 
       const snapshot = await getLedgerForSync(true);
@@ -516,6 +522,7 @@ describe('Phase C: Two-Device Sync Scenarios & Settings Separation (Issues 21, 2
         targetGcv: 6000,
         commissionPerTon: 200,
         isActive: true,
+        createdAt: 0
       });
 
       await markRecordsClean({
@@ -589,6 +596,7 @@ describe('Phase C: Two-Device Sync Scenarios & Settings Separation (Issues 21, 2
         labReceivedWeight: 25,
         updatedAt: 1000, // 10:00 AM
         dirty: false,
+        createdAt: 0
       };
 
       // Device A already synced at 15:00 and has local record

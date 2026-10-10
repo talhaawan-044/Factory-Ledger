@@ -99,6 +99,8 @@ You followed the design closely. The core architecture is right. The misses are 
 | **47** | Inventory follow-ups (adjustments, supplier summary, reprice, stale stock) | Low-Medium | [Open] | per item |
 | **48** | Repo hygiene and small cleanups | Low | mixed | 2-3 h |
 | **49** | Inventory-only cloud data misclassified; recovery key bypassed lockout | High | [Code] / [Tested] | 1-2 h |
+| **50** | Partial stock-lot allocation, landed-cost valuation, and inventory iOS workflow | **High** (stock and profit integrity) | [Tested] | Resolved |
+| **51** | Bottom navigation looked like a frosted slab rather than iOS liquid glass | Medium (global UI quality) | [Browser tested] | Resolved |
 
 ---
 
@@ -467,7 +469,7 @@ None of these are defects. Do them after the pilot, in the order the client's fe
 | 47a | **Stock adjustments** (yard shrinkage, dust, count corrections) | Real yards lose coal; book stock drifts from physical stock | A `StockAdjustment { id, lotId, date, weight (+/-), reason, notes }` record; derived `remaining = received + adjustments - used`; synced like lots (rules, Dexie v3, merge, wipe) | High after pilot |
 | 47b | **Per-supplier summary** | Matches how traders talk ("Hashim: 120 t") and fixes the report claim | `useMemo` over lots: per supplier, remaining tons, average landed cost weighted by remaining tons, capital tied up; show above the lot cards | Medium (2 h) |
 | 47c | **Reprice linked dispatches** after a lot is corrected | Frozen rates protect history, but a wrong lot entry leaves wrong profit | "Reprice N dispatches to the corrected landed rate" with a confirm; never automatic | Low |
-| 47d | **Lot delete guard** | Deleting a lot with linked dispatches is allowed with a warning | Show the linked count in the dialog; offer archive instead of delete | Low |
+| 47d | **Lot delete guard** | A linked voucher must not disappear from dispatch history | Resolved: persistence rejects deletion while any active dispatch references the voucher | Done |
 | 47e | **Stale stock in the form** | `allDispatches` is loaded once at mount | Reload on the `ledger_data_changed` event | Low (with Issue 38) |
 | 47f | **Landed-rate precision** | Rate is rounded to paisa; consuming a whole lot costs 599,999.955 instead of 600,000 (about Rs 0.045) | Store `totalCost` on the lot and derive cost per ton from it; optional | Very low |
 | 47g | **Inventory in exports** | Accountant may want a stock report | Pure builder plus Excel sheet; test against `calculateLotStock` | Low |
@@ -486,6 +488,64 @@ None of these are defects. Do them after the pilot, in the order the client's fe
 | 48e | Very large files | `Inventory.tsx` (about 1,180 lines), `DispatchForm.tsx` (grew by about 370 lines) | Split the lot card, lot sheet and blend modal into components when you next touch them |
 | 48f | README does not mention inventory, landed cost or pro-rata | `README.md` | Add them to Features and "Business rules" (after Issue 44) |
 | 48g | Test report says "98" in one place and "87" in another | `NEW_FEATURES_IMPLEMENTATION.md` | State "87 unit + 11 rules" |
+
+---
+
+### Issue 50: Stock-Lot Allocation, Landed-Cost Valuation, and iOS Workflow
+
+- **Severity:** High (inventory value and historical profit integrity)
+- **Status:** Resolved on 2026-10-10
+- **Where:** `src/lib/db.ts`, `src/utils/calculations.ts`, inventory/dispatch screens, shared form controls
+
+**What was found**
+
+1. The inventory dashboard valued every lot using the mine's current global rate and billed tons. It therefore ignored entry-specific loading/freight and received-weight shortages.
+2. A lot's single "used" marker could not represent the real workflow where one 20-ton lot supplies a 15-ton dispatch and leaves 5 tons for later dispatches.
+3. Dispatch fields populated from a lot did not clearly separate editable allocation weight from the locked landed-rate snapshot.
+4. Editing a used lot could silently change historical dispatch profitability; direct-mine edit availability also counted the draft dispatch against itself.
+5. Several relevant forms still used browser-style validation/controls rather than the app's iOS interaction language.
+
+**Fix**
+
+- Value inflow from each lot's landed cost and received weight; value outflow from each dispatch row's frozen purchase-rate snapshot.
+- Treat a stock entry as a divisible lot. Allow multiple dispatch allocations while transactionally enforcing `sum(active allocations) <= received weight`.
+- Keep the lot source and landed rate locked, but let the user enter the required allocation weight up to the live balance. Lock used-lot financial fields so all allocations retain one accounting basis.
+- Make dispatch deletion/replacement restore availability atomically; keep legacy single-dispatch marker fields as compatibility/display helpers only; surface missing, overdrawn and stale-marker relations in an inventory audit banner.
+- Show Available, Partially Used and Fully Used states, remaining tons in the picker, and every linked dispatch in the stock preview sheet.
+- Replace remaining inline browser alerts in this workflow with iOS sheets, inline errors, disabled/read-only states, helper text, and reusable iOS date/dropdown controls.
+- Add repository-level `AGENTS.md` UI rules so future chats default to the established iOS components and avoid raw browser controls, gradients, glows and emoji icons.
+
+**Verification**
+
+- 120/120 unit tests pass, including 20 t → 15 t + 5 t allocation, allocation exhaustion, deletion restoring balance/marker, locked rate snapshots, relation audit, edit availability and transaction rollback.
+- Browser walkthrough confirmed a 20 t / Rs. 680,000 lot allocated 15 t to TK-15 leaves 5 t / Rs. 170,000; the picker keeps the partial lot selectable, weight stays editable, rate stays locked, and the preview lists its dispatch allocations.
+- TypeScript, lint (zero errors) and production build pass.
+
+---
+
+### Issue 51: Bottom Navigation Liquid-Glass Treatment
+
+- **Severity:** Medium (global navigation appears on every screen)
+- **Status:** Resolved on 2026-10-10
+- **Where:** `src/components/Layout.tsx`, `src/index.css`, `src/hooks/useRefraction.ts`
+
+**What was found**
+
+The bar had backdrop blur, but most of its visual weight came from a nearly opaque frosted surface and five separate active backgrounds. It read as a white rounded dock rather than one piece of curved liquid glass, and the selected tab did not move as a continuous lens.
+
+**Fix**
+
+- Lowered the glass tint and blur dominance so background refraction remains visible.
+- Added one shared, accent-tinted liquid selection lens that springs horizontally between the five tabs.
+- Added solid rim/top-edge highlights, restrained structural depth, rounded 44px+ hit areas and tuned light/dark materials without gradients or glow effects.
+- Kept the existing Chromium/Android displacement-map refraction and tuned its bezel, shift, blur and saturation for a clearer lens.
+- Added reduced-transparency and reduced-motion fallbacks.
+
+**Verification**
+
+- Browser-checked Inventory → Settings: the lens moved from index 2 to index 4, the active route and icon matched, the bar remained 390×64 px, and no horizontal overflow appeared.
+- Light and dark material styles were inspected in the iPhone simulator viewport.
+- TypeScript, lint (zero errors) and production build pass.
 
 ---
 
@@ -580,6 +640,11 @@ graph TD
 - [x] **#49** Apply escalating lockout to failed offline recovery-key verification; add security regression coverage (2026-10-09)
 - [x] **#49 stability** Bound the optional persistent-storage permission request and provide Summary load failure/retry UI; add a pending-permission regression test (2026-10-09)
 - [x] **#42 truth correction** Relabel the built-in fixture and tests as synthetic scenarios; real-slip validation remains open (2026-10-09)
+- [x] **#50** Correct received-weight/landed-cost valuation and dispatch snapshot outflow values (2026-10-10)
+- [x] **#50** Enforce atomic partial allocations, aggregate overdraw protection and historical landed-rate locks (2026-10-10)
+- [x] **#50** Add relation auditing, stale-marker recovery, contextual edit availability and iOS-native linked-field UX (2026-10-10)
+- [x] **#50** Add persistent repository UI guidance in `AGENTS.md` and `.agents/rules/ui-guidelines.md` (2026-10-10)
+- [x] **#51** Rebuild the bottom tab bar with a refractive surface, moving liquid lens, dark-mode tuning and accessibility fallbacks (2026-10-10)
 - [ ] **#48a, b, e, f, g** Remaining hygiene; tag `v1.0.0` when the gates pass
 
 ---
@@ -651,6 +716,10 @@ Record anything new here as you work, so nothing gets lost.
 | 2026-10-09 | `AndroidManifest.xml` | Clear-text HTTP traffic was not explicitly prohibited, leaving policy dependent on platform defaults. | Medium | Fixed — `android:usesCleartextTraffic="false"` is now explicit; verify real Google sign-in/export flows in the release APK |
 | 2026-10-09 | Release process | The repository documented release assembly but had no one-command gate for JDK version, signing material, unit/build checks, or signature verification. | High | Fixed — `npm run verify:release` performs the release checks without deploying to a device |
 | 2026-10-09 | `src/lib/dexieDb.ts`, `src/pages/Summary.tsx` | An optional `navigator.storage.persist()` request was awaited during database startup with no upper bound. A browser/WebView that left it pending could leave the dashboard at “Loading overview…” indefinitely; any rejected initial data read had the same permanent-spinner result. | High | Fixed — persistence request times out after 3 seconds; Summary now exposes a retryable local-ledger load error. Regression test covers the pending permission request. Browser headless capture remains environment-inconclusive and does not replace real-device validation. |
+| 2026-10-10 | `src/utils/calculations.ts`, `src/pages/MineLedger.tsx` | Mine stock/value and activity outflow used the mine's current global rate and billed tons instead of each voucher's landed cost, received tons and the dispatch's frozen rate. | High | Fixed — inventory is valued voucher-by-voucher and the activity feed uses captured dispatch cost. |
+| 2026-10-10 | `src/lib/db.ts`, dispatch/inventory UI | The initial hardening treated each stock entry as a one-use voucher, but real yards routinely consume one lot across several dispatches (for example, 15 t from a 20 t receipt). | High | Corrected — stock entries are divisible lots; aggregate allocations are validated transactionally, partial balances stay selectable, deletion restores balance, and landed rate remains locked. |
+| 2026-10-10 | Shared UI controls and inventory/dispatch screens | Linked fields and validation did not consistently communicate immutable financial state in the established iOS style. | Medium | Fixed — disabled/read-only control states, helper copy, inline errors, reusable iOS controls, Lucide icons and persistent repo UI instructions. |
+| 2026-10-10 | `Layout.tsx`, `index.css` bottom navigation | Heavy tint/blur made the global tab bar read almost entirely as frosted glass; selected tabs behaved as separate buttons instead of one liquid material. | Medium | Fixed — clearer refractive shell, shared springing selection lens, solid edge highlights, light/dark tuning and reduced-transparency/motion fallbacks. |
 
 ---
 

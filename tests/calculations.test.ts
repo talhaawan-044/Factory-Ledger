@@ -373,6 +373,11 @@ describe('Issue 37: Pro-Rata Quality Adjustments Transparency (T30 & T31)', () =
       commissionPerTon: 0,
       createdAt: Date.now(),
       updatedAt: Date.now(),
+      factoryName: '',
+      coalInputs: [],
+      overheads: { loading: 0, freight: 0, crush: 0, royalty: 0, other: 0 },
+      labSulphur: 0,
+      //overheads: undefined
     };
 
     const adj = getEffectiveAdjustments(prorataDeductionDispatch);
@@ -426,6 +431,13 @@ describe('Issue 37: Pro-Rata Quality Adjustments Transparency (T30 & T31)', () =
       commissionPerTon: 0,
       createdAt: Date.now(),
       updatedAt: Date.now(),
+      factoryName: '',
+      targetGcv: 0,
+      coalInputs: [],
+      //overheads: undefined,
+      labActualGcv: 0,
+      labSulphur: 0,
+      overheads: { loading: 0, freight: 0, crush: 0, royalty: 0, other: 0 }
     };
 
     const adj = getEffectiveAdjustments(manualDispatch);
