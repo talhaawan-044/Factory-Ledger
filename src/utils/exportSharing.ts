@@ -3,7 +3,7 @@ import { Filesystem, Directory } from '@capacitor/filesystem';
 import { Capacitor } from '@capacitor/core';
 import type ExcelJS from 'exceljs';
 import type { Dispatch, Party, Payment, PurchaseOrder, AppSettings } from '../types';
-import { calculateSettlement, calculatePartyBalance, calculateTransitLoss, calculateLedgerTotals, isDispatchPending, getEffectiveAdjustments } from './calculations';
+import { calculateSettlement, calculatePartyBalance, calculateTransitLoss, calculateLedgerTotals, isDispatchPending, getEffectiveAdjustments, roundPartyLedgerAmount } from './calculations';
 import { getSettings, getExportBackupData } from '../lib/db';
 import { getTodayDateString, formatDisplayDate } from './dateUtils';
 import { getCurrencySymbol, formatAmountNumber, getCurrencyExcelFormat } from './currency';
@@ -245,7 +245,7 @@ export function buildPartyStatementData(
       const d = entry.data;
       const s = calculateSettlement(d);
       const isPending = isDispatchPending(d);
-      const invoiced = isPending ? 0 : Math.round(s.totalRevenue);
+      const invoiced = isPending ? 0 : roundPartyLedgerAmount(s.totalRevenue);
       runningBal += invoiced;
       const po = pos?.find((p) => p.id === d.poId);
 
@@ -259,14 +259,14 @@ export function buildPartyStatementData(
         ratePerTon: s.payableRate,
         debit: invoiced,
         credit: 0,
-        runningBalance: Math.round(runningBal),
+        runningBalance: runningBal,
         isPending,
         notes: d.notes,
       });
     } else {
       const p = entry.data;
       const isReceived = p.type === 'received';
-      const amount = Math.round(p.amount);
+      const amount = roundPartyLedgerAmount(p.amount);
       if (isReceived) {
         runningBal -= amount;
       } else {
@@ -283,7 +283,7 @@ export function buildPartyStatementData(
         ratePerTon: 0,
         debit: !isReceived ? amount : 0,
         credit: isReceived ? amount : 0,
-        runningBalance: Math.round(runningBal),
+        runningBalance: runningBal,
         isPending: false,
         notes: p.referenceNote,
       });
@@ -600,7 +600,7 @@ async function exportPartyStatementPdf(options: ExportDispatchesPdfOptions & { s
       const s = calculateSettlement(d);
       const adj = getEffectiveAdjustments(d, settings);
       const isPending = isDispatchPending(d);
-      const invoiced = isPending ? 0 : Math.round(s.totalRevenue);
+      const invoiced = isPending ? 0 : roundPartyLedgerAmount(s.totalRevenue);
       runningBal += invoiced;
       const po = pos?.find((p) => p.id === d.poId);
       const transit = calculateTransitLoss(d);
@@ -670,12 +670,12 @@ async function exportPartyStatementPdf(options: ExportDispatchesPdfOptions & { s
         (d.labReceivedWeight || 0).toFixed(2),
         invoiced.toLocaleString('en-PK'),
         '-',
-        Math.round(runningBal).toLocaleString('en-PK'),
+        runningBal.toLocaleString('en-PK'),
       ]);
     } else {
       const p = entry.data;
       const isReceived = p.type === 'received';
-      const amount = Math.round(p.amount);
+      const amount = roundPartyLedgerAmount(p.amount);
       if (isReceived) {
         runningBal -= amount;
       } else {
@@ -696,7 +696,7 @@ async function exportPartyStatementPdf(options: ExportDispatchesPdfOptions & { s
         '-',
         !isReceived ? amount.toLocaleString('en-PK') : '-',
         isReceived ? amount.toLocaleString('en-PK') : '-',
-        Math.round(runningBal).toLocaleString('en-PK'),
+        runningBal.toLocaleString('en-PK'),
       ]);
     }
   });
@@ -1753,7 +1753,7 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
         const d = entry.data;
         const s = calculateSettlement(d);
         const isPending = isDispatchPending(d);
-        const invoiced = isPending ? 0 : Math.round(s.totalRevenue);
+        const invoiced = isPending ? 0 : roundPartyLedgerAmount(s.totalRevenue);
         runBal += invoiced;
         const po = pos.find((p) => p.id === d.poId);
 
@@ -1808,7 +1808,7 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
       } else {
         const p = entry.data;
         const isRec = p.type === 'received';
-        const amt = Math.round(p.amount);
+        const amt = roundPartyLedgerAmount(p.amount);
         if (isRec) runBal -= amt;
         else runBal += amt;
 
@@ -1885,9 +1885,9 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
       '',
       totalTons,
       '',
-      Math.round(totalBilled),
-      Math.round(totalReceived),
-      Math.round(netBalance),
+      totalBilled,
+      totalReceived,
+      netBalance,
       '',
     ];
 
@@ -3034,4 +3034,3 @@ export async function exportDatabaseBackupJson(): Promise<{
     },
   };
 }
-

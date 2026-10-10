@@ -15,7 +15,7 @@ import {
   clearSyncConflictHistory,
 } from '../src/lib/db';
 import { sanitizeForFirestore, type CloudSyncResult } from '../src/lib/firebase';
-import { getCloudRecordCount, syncManager, isDeviceAuthorized, setDeviceAuthorized } from '../src/lib/syncManager';
+import { getCloudRecordCount, syncManager, isRestoreConfirmed, setRestoreConfirmed } from '../src/lib/syncManager';
 import type { AppSettings, Dispatch, Party } from '../src/types';
 
 describe('Phase C: Two-Device Sync Scenarios & Settings Separation (Issues 21, 22, 28)', () => {
@@ -675,13 +675,13 @@ describe('Phase C: Two-Device Sync Scenarios & Settings Separation (Issues 21, 2
       localStorage.clear();
       const mockUser = { uid: 'user-999', email: 'owner@example.com', displayName: 'Owner' };
 
-      expect(isDeviceAuthorized(mockUser.uid)).toBe(false);
+      expect(isRestoreConfirmed(mockUser.uid)).toBe(false);
 
-      setDeviceAuthorized(mockUser.uid, true);
-      expect(isDeviceAuthorized(mockUser.uid)).toBe(true);
+      setRestoreConfirmed(mockUser.uid, true);
+      expect(isRestoreConfirmed(mockUser.uid)).toBe(true);
 
-      setDeviceAuthorized(mockUser.uid, false);
-      expect(isDeviceAuthorized(mockUser.uid)).toBe(false);
+      setRestoreConfirmed(mockUser.uid, false);
+      expect(isRestoreConfirmed(mockUser.uid)).toBe(false);
     });
   });
 

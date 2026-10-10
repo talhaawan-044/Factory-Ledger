@@ -137,6 +137,34 @@ describe('Issue 25 (T12): Pure Export Data Functions Match Canonical Totals', ()
     expect(pendingRow?.weightTons).toBe(0);
   });
 
+  it('posts whole rupees per transaction so statement rows and totals reconcile', () => {
+    const halfRupeeDispatches = [
+      createMockDispatch('half-1', { date: '2026-10-01', baseRate: 100.5, labReceivedWeight: 1 }),
+      createMockDispatch('half-2', { date: '2026-10-02', baseRate: 100.5, labReceivedWeight: 1 }),
+    ];
+    const halfRupeePayments: Payment[] = [{
+      id: 'half-payment',
+      partyId: 'party-test-1',
+      date: '2026-10-03',
+      amount: 50.5,
+      type: 'received',
+      mode: 'bank',
+      createdAt: Date.now(),
+    }];
+
+    const statement = buildPartyStatementData(halfRupeeDispatches, halfRupeePayments, [], mockSettings);
+
+    expect(statement.rows.map((row) => [row.debit, row.credit, row.runningBalance])).toEqual([
+      [101, 0, 101],
+      [101, 0, 202],
+      [0, 51, 151],
+    ]);
+    expect(statement.totalBilled).toBe(202);
+    expect(statement.totalReceived).toBe(51);
+    expect(statement.outstandingBalance).toBe(151);
+    expect(statement.rows[statement.rows.length - 1].runningBalance).toBe(statement.outstandingBalance);
+  });
+
   it('buildFleetExportData totals match calculateLedgerTotals exactly', () => {
     const canonical = calculateLedgerTotals(dispatches, mockSettings);
     const fleet = buildFleetExportData(dispatches, parties, [], mockSettings);

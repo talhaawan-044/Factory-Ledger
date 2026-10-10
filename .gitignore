@@ -55,6 +55,7 @@ Solved-Code_reviewer_issue.md
 AGENTS.md
 Gemini*
 PRODUCTION_READINESS_FIXES.md
+PRODUCTION_READINESS_AUDIT_*.md
 
 # Python cache & virtual environments
 __pycache__/

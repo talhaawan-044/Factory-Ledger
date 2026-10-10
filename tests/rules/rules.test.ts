@@ -11,6 +11,9 @@ import { deleteDoc, doc, setDoc, getDoc } from 'firebase/firestore';
 
 describe('Issue 29: Firestore Security Rules Unit Tests', () => {
   let testEnv: RulesTestEnvironment;
+  const mfaFirestore = (uid: string) => testEnv.authenticatedContext(uid, {
+    firebase: { sign_in_second_factor: 'totp' },
+  }).firestore();
 
   beforeAll(async () => {
     testEnv = await initializeTestEnvironment({
@@ -36,7 +39,7 @@ describe('Issue 29: Firestore Security Rules Unit Tests', () => {
   });
 
   it('owner can create records in their own subcollections', async () => {
-    const alice = testEnv.authenticatedContext('alice').firestore();
+    const alice = mfaFirestore('alice');
     await assertSucceeds(
       setDoc(doc(alice, 'users/alice/dispatches/d1'), { id: 'd1', updatedAt: 200 })
     );
@@ -48,8 +51,20 @@ describe('Issue 29: Firestore Security Rules Unit Tests', () => {
     );
   });
 
+  it('denies an owner with only the Google first factor', async () => {
+    const firstFactorOnly = testEnv.authenticatedContext('alice').firestore();
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), 'users/alice/dispatches/secured'), { id: 'secured', updatedAt: 200 });
+    });
+
+    await assertFails(getDoc(doc(firstFactorOnly, 'users/alice/dispatches/secured')));
+    await assertFails(
+      setDoc(doc(firstFactorOnly, 'users/alice/dispatches/new-record'), { id: 'new-record', updatedAt: 200 })
+    );
+  });
+
   it('stale update is denied when updatedAt is older than stored document', async () => {
-    const alice = testEnv.authenticatedContext('alice').firestore();
+    const alice = mfaFirestore('alice');
     await assertSucceeds(
       setDoc(doc(alice, 'users/alice/dispatches/d1'), { id: 'd1', updatedAt: 200 })
     );
@@ -59,7 +74,7 @@ describe('Issue 29: Firestore Security Rules Unit Tests', () => {
   });
 
   it('equal timestamp is allowed (idempotent write/retry)', async () => {
-    const alice = testEnv.authenticatedContext('alice').firestore();
+    const alice = mfaFirestore('alice');
     await assertSucceeds(
       setDoc(doc(alice, 'users/alice/dispatches/d1'), { id: 'd1', updatedAt: 200 })
     );
@@ -69,7 +84,7 @@ describe('Issue 29: Firestore Security Rules Unit Tests', () => {
   });
 
   it('newer timestamp is allowed', async () => {
-    const alice = testEnv.authenticatedContext('alice').firestore();
+    const alice = mfaFirestore('alice');
     await assertSucceeds(
       setDoc(doc(alice, 'users/alice/dispatches/d1'), { id: 'd1', updatedAt: 200 })
     );
@@ -79,7 +94,7 @@ describe('Issue 29: Firestore Security Rules Unit Tests', () => {
   });
 
   it('requires a numeric updatedAt and rejects a timestamp more than five minutes ahead', async () => {
-    const alice = testEnv.authenticatedContext('alice').firestore();
+    const alice = mfaFirestore('alice');
     const now = Date.now();
 
     await assertFails(setDoc(doc(alice, 'users/alice/dispatches/missing-time'), { id: 'missing-time' }));
@@ -89,7 +104,7 @@ describe('Issue 29: Firestore Security Rules Unit Tests', () => {
   });
 
   it('does not allow a replacement update without updatedAt to bypass the stale-write guard', async () => {
-    const alice = testEnv.authenticatedContext('alice').firestore();
+    const alice = mfaFirestore('alice');
     await assertSucceeds(
       setDoc(doc(alice, 'users/alice/dispatches/d1'), { id: 'd1', updatedAt: Date.now() })
     );
@@ -99,7 +114,7 @@ describe('Issue 29: Firestore Security Rules Unit Tests', () => {
   });
 
   it('requires entity ids to match their document path', async () => {
-    const alice = testEnv.authenticatedContext('alice').firestore();
+    const alice = mfaFirestore('alice');
     await assertFails(
       setDoc(doc(alice, 'users/alice/lots/lot-a'), { id: 'lot-b', updatedAt: Date.now() })
     );
@@ -109,7 +124,7 @@ describe('Issue 29: Firestore Security Rules Unit Tests', () => {
     await testEnv.withSecurityRulesDisabled(async (context) => {
       await setDoc(doc(context.firestore(), 'users/alice/ledger/backup'), { legacy: true });
     });
-    const alice = testEnv.authenticatedContext('alice').firestore();
+    const alice = mfaFirestore('alice');
 
     await assertSucceeds(getDoc(doc(alice, 'users/alice/ledger/backup')));
     await assertFails(setDoc(doc(alice, 'users/alice/ledger/backup'), { legacy: false }));
@@ -117,13 +132,13 @@ describe('Issue 29: Firestore Security Rules Unit Tests', () => {
   });
 
   it('denies writes to the unused top-level user document', async () => {
-    const alice = testEnv.authenticatedContext('alice').firestore();
+    const alice = mfaFirestore('alice');
     await assertFails(setDoc(doc(alice, 'users/alice'), { unexpected: true }));
   });
 
   it('other user is denied reading another user private documents', async () => {
-    const alice = testEnv.authenticatedContext('alice').firestore();
-    const bob = testEnv.authenticatedContext('bob').firestore();
+    const alice = mfaFirestore('alice');
+    const bob = mfaFirestore('bob');
     await assertSucceeds(
       setDoc(doc(alice, 'users/alice/dispatches/d1'), { id: 'd1', updatedAt: 200 })
     );
@@ -139,12 +154,12 @@ describe('Issue 29: Firestore Security Rules Unit Tests', () => {
   });
 
   it('unknown arbitrary root path is denied', async () => {
-    const alice = testEnv.authenticatedContext('alice').firestore();
+    const alice = mfaFirestore('alice');
     await assertFails(setDoc(doc(alice, 'random/x'), { a: 1 }));
   });
 
   it('stale settings update is denied', async () => {
-    const alice = testEnv.authenticatedContext('alice').firestore();
+    const alice = mfaFirestore('alice');
     await assertSucceeds(
       setDoc(doc(alice, 'users/alice/settings/config'), { businessName: 'Coal Corp', updatedAt: 500 })
     );
@@ -154,7 +169,7 @@ describe('Issue 29: Firestore Security Rules Unit Tests', () => {
   });
 
   it('Scenario S1: soft delete with newer timestamp rejects stale resurrection update', async () => {
-    const alice = testEnv.authenticatedContext('alice').firestore();
+    const alice = mfaFirestore('alice');
     // Device A soft-deletes dispatch at timestamp 500
     await assertSucceeds(
       setDoc(doc(alice, 'users/alice/dispatches/d1'), { id: 'd1', deleted: true, updatedAt: 500 })
@@ -170,7 +185,7 @@ describe('Issue 29: Firestore Security Rules Unit Tests', () => {
   });
 
   it('Scenario S2: stale settings write is denied without blocking valid dispatches', async () => {
-    const alice = testEnv.authenticatedContext('alice').firestore();
+    const alice = mfaFirestore('alice');
     // Device A updated business settings at timestamp 500
     await assertSucceeds(
       setDoc(doc(alice, 'users/alice/settings/config'), { businessName: 'Factory HQ', updatedAt: 500 })
@@ -186,7 +201,7 @@ describe('Issue 29: Firestore Security Rules Unit Tests', () => {
   });
 
   it('Scenario S3: concurrent offline dispatch edits - higher updatedAt wins', async () => {
-    const alice = testEnv.authenticatedContext('alice').firestore();
+    const alice = mfaFirestore('alice');
     await assertSucceeds(
       setDoc(doc(alice, 'users/alice/dispatches/d_conflict'), { id: 'd_conflict', note: 'Initial', updatedAt: 100 })
     );

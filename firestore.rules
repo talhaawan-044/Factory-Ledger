@@ -23,6 +23,19 @@ service cloud.firestore {
       return isAuthenticated() && request.auth.uid == userId;
     }
 
+    // Firebase Auth puts the verified second-factor type in the signed ID
+    // token. Client-side checks improve UX, but this rule is the actual cloud
+    // access boundary: a stolen Google first factor alone cannot read or alter
+    // ledger data.
+    function hasSecondFactor() {
+      return isAuthenticated() &&
+             request.auth.token.firebase.sign_in_second_factor is string;
+    }
+
+    function canAccessLedger(userId) {
+      return isOwner(userId) && hasSecondFactor();
+    }
+
     // Keep clock-skewed clients from freezing a record and ensure old clients
     // cannot bypass the stale-write guard by omitting updatedAt.
     function hasValidUpdatedAt() {
@@ -47,54 +60,54 @@ service cloud.firestore {
     match /users/{userId} {
       // Granular subcollections with stale-write protection
       match /parties/{partyId} {
-        allow read, delete: if isOwner(userId);
-        allow create: if isOwner(userId) && hasValidUpdatedAt() && idMatchesPath(partyId);
-        allow update: if isOwner(userId) && hasValidUpdatedAt() && idMatchesPath(partyId) && isNotStaleUpdate();
+        allow read, delete: if canAccessLedger(userId);
+        allow create: if canAccessLedger(userId) && hasValidUpdatedAt() && idMatchesPath(partyId);
+        allow update: if canAccessLedger(userId) && hasValidUpdatedAt() && idMatchesPath(partyId) && isNotStaleUpdate();
       }
 
       match /dispatches/{dispatchId} {
-        allow read, delete: if isOwner(userId);
-        allow create: if isOwner(userId) && hasValidUpdatedAt() && idMatchesPath(dispatchId);
-        allow update: if isOwner(userId) && hasValidUpdatedAt() && idMatchesPath(dispatchId) && isNotStaleUpdate();
+        allow read, delete: if canAccessLedger(userId);
+        allow create: if canAccessLedger(userId) && hasValidUpdatedAt() && idMatchesPath(dispatchId);
+        allow update: if canAccessLedger(userId) && hasValidUpdatedAt() && idMatchesPath(dispatchId) && isNotStaleUpdate();
       }
 
       match /payments/{paymentId} {
-        allow read, delete: if isOwner(userId);
-        allow create: if isOwner(userId) && hasValidUpdatedAt() && idMatchesPath(paymentId);
-        allow update: if isOwner(userId) && hasValidUpdatedAt() && idMatchesPath(paymentId) && isNotStaleUpdate();
+        allow read, delete: if canAccessLedger(userId);
+        allow create: if canAccessLedger(userId) && hasValidUpdatedAt() && idMatchesPath(paymentId);
+        allow update: if canAccessLedger(userId) && hasValidUpdatedAt() && idMatchesPath(paymentId) && isNotStaleUpdate();
       }
 
       match /pos/{poId} {
-        allow read, delete: if isOwner(userId);
-        allow create: if isOwner(userId) && hasValidUpdatedAt() && idMatchesPath(poId);
-        allow update: if isOwner(userId) && hasValidUpdatedAt() && idMatchesPath(poId) && isNotStaleUpdate();
+        allow read, delete: if canAccessLedger(userId);
+        allow create: if canAccessLedger(userId) && hasValidUpdatedAt() && idMatchesPath(poId);
+        allow update: if canAccessLedger(userId) && hasValidUpdatedAt() && idMatchesPath(poId) && isNotStaleUpdate();
       }
 
       match /lots/{lotId} {
-        allow read, delete: if isOwner(userId);
-        allow create: if isOwner(userId) && hasValidUpdatedAt() && idMatchesPath(lotId);
-        allow update: if isOwner(userId) && hasValidUpdatedAt() && idMatchesPath(lotId) && isNotStaleUpdate();
+        allow read, delete: if canAccessLedger(userId);
+        allow create: if canAccessLedger(userId) && hasValidUpdatedAt() && idMatchesPath(lotId);
+        allow update: if canAccessLedger(userId) && hasValidUpdatedAt() && idMatchesPath(lotId) && isNotStaleUpdate();
       }
 
       match /mines/{mineId} {
-        allow read, delete: if isOwner(userId);
-        allow create: if isOwner(userId) && hasValidUpdatedAt() && idMatchesPath(mineId);
-        allow update: if isOwner(userId) && hasValidUpdatedAt() && idMatchesPath(mineId) && isNotStaleUpdate();
+        allow read, delete: if canAccessLedger(userId);
+        allow create: if canAccessLedger(userId) && hasValidUpdatedAt() && idMatchesPath(mineId);
+        allow update: if canAccessLedger(userId) && hasValidUpdatedAt() && idMatchesPath(mineId) && isNotStaleUpdate();
       }
 
       match /settings/{settingId} {
-        allow read, delete: if isOwner(userId);
-        allow create: if isOwner(userId) && hasValidUpdatedAt();
-        allow update: if isOwner(userId) && hasValidUpdatedAt() && isNotStaleUpdate();
+        allow read, delete: if canAccessLedger(userId);
+        allow create: if canAccessLedger(userId) && hasValidUpdatedAt();
+        allow update: if canAccessLedger(userId) && hasValidUpdatedAt() && isNotStaleUpdate();
       }
 
       match /meta/{metaId} {
-        allow read, write: if isOwner(userId);
+        allow read, write: if canAccessLedger(userId);
       }
 
       // Legacy single-document backup path (migration/cleanup only)
       match /ledger/{document} {
-        allow read, delete: if isOwner(userId);
+        allow read, delete: if canAccessLedger(userId);
       }
     }
 

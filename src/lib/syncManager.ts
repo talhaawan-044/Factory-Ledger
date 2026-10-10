@@ -7,8 +7,10 @@ import {
   subscribeToAuth,
   logoutUser,
   purgeLegacySecurityFieldsFromCloud,
+  getCloudMfaStatus,
   type GoogleUserData,
   type CloudSyncResult,
+  type CloudMfaStatus,
 } from './firebase';
 import {
   getAllBackupData,
@@ -39,13 +41,15 @@ export interface SyncState {
   isAutoSyncEnabled: boolean;
   currentUser: GoogleUserData | null;
   unresolvedCount?: number;
+  cloudMfaStatus?: CloudMfaStatus;
 }
 
 export type LoginScenarioType =
   | 'ready'
   | 'anonymous_conflict'
   | 'account_switch'
-  | 'untrusted_restore_confirmation';
+  | 'restore_confirmation'
+  | 'mfa_required';
 
 export interface LoginScenarioResult {
   type: LoginScenarioType;
@@ -56,24 +60,29 @@ export interface LoginScenarioResult {
   newEmail?: string;
   user: GoogleUserData;
   cloudData?: any;
+  mfaStatus?: CloudMfaStatus;
 }
 
 const STORAGE_KEY_LAST_SYNC = 'coal_last_cloud_sync';
 const STORAGE_KEY_AUTO_SYNC = 'coal_auto_sync_cloud';
-const STORAGE_KEY_DEVICE_ENROLLED = 'coal_device_authorized';
+const STORAGE_KEY_RESTORE_CONFIRMED = 'coal_restore_confirmed';
 
-export function isDeviceAuthorized(uid?: string): boolean {
+/**
+ * A device-local restore acknowledgement. It only prevents accidental ledger
+ * download on a shared browser; it is never used as cloud authorization.
+ */
+export function isRestoreConfirmed(uid?: string): boolean {
   if (typeof localStorage === 'undefined') return true;
   if (!uid) return true;
-  return localStorage.getItem(`${STORAGE_KEY_DEVICE_ENROLLED}_${uid}`) === 'true';
+  return localStorage.getItem(`${STORAGE_KEY_RESTORE_CONFIRMED}_${uid}`) === 'true';
 }
 
-export function setDeviceAuthorized(uid: string, authorized: boolean = true): void {
+export function setRestoreConfirmed(uid: string, confirmed: boolean = true): void {
   if (typeof localStorage === 'undefined' || !uid) return;
-  if (authorized) {
-    localStorage.setItem(`${STORAGE_KEY_DEVICE_ENROLLED}_${uid}`, 'true');
+  if (confirmed) {
+    localStorage.setItem(`${STORAGE_KEY_RESTORE_CONFIRMED}_${uid}`, 'true');
   } else {
-    localStorage.removeItem(`${STORAGE_KEY_DEVICE_ENROLLED}_${uid}`);
+    localStorage.removeItem(`${STORAGE_KEY_RESTORE_CONFIRMED}_${uid}`);
   }
 }
 
@@ -87,11 +96,27 @@ const CLOUD_RECORD_COLLECTIONS = ['parties', 'dispatches', 'payments', 'pos', 'l
 export function getCloudRecordCount(cloudData: Record<string, unknown> | null | undefined): number {
   return CLOUD_RECORD_COLLECTIONS.reduce((count, collectionName) => {
     const records = cloudData?.[collectionName];
-    return count + (Array.isArray(records) ? records.length : 0);
+    return count + (Array.isArray(records)
+      ? records.filter((record) => !record || typeof record !== 'object' || !(record as { deleted?: boolean }).deleted).length
+      : 0);
   }, 0);
 }
 
-class SyncManager {
+function hasLedgerEntityRecords(data: {
+  parties?: unknown[];
+  dispatches?: unknown[];
+  payments?: unknown[];
+  pos?: unknown[];
+  lots?: unknown[];
+  mines?: unknown[];
+}): boolean {
+  return CLOUD_RECORD_COLLECTIONS.some((collectionName) => {
+    const records = data[collectionName];
+    return Array.isArray(records) && records.length > 0;
+  });
+}
+
+export class SyncManager {
   private state: SyncState;
   private listeners: Set<(state: SyncState) => void> = new Set();
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -137,22 +162,42 @@ class SyncManager {
       this.broadcast();
 
       if (user) {
-        purgeLegacySecurityFieldsFromCloud(user.uid).catch((err) => {
-          console.warn('[SyncManager] Legacy PIN security purge warning:', err);
-        });
-
-        const owner = getLedgerOwner();
-        // If owner is not set or matches current user, safe startup reconcile
-        if (!owner.uid || owner.uid === user.uid) {
-          setLedgerOwner(user.uid, user.email);
-          this.reconcileWithCloud(user.uid).catch((err) => {
-            console.warn('[SyncManager] Startup reconciliation warning:', err);
+        this.handleAuthenticatedUser(user).catch((err) => {
+          console.warn('[SyncManager] Authenticated cloud-access check warning:', err);
+          this.updateState({
+            status: 'error',
+            lastError: err?.message || 'Could not verify cloud account security.',
           });
-        }
+        });
       } else {
-        this.updateState({ status: 'idle' });
+        this.updateState({ status: 'idle', cloudMfaStatus: undefined });
       }
     });
+  }
+
+  private async handleAuthenticatedUser(user: GoogleUserData): Promise<void> {
+    const mfaStatus = await getCloudMfaStatus();
+    this.updateState({ cloudMfaStatus: mfaStatus });
+    if (!mfaStatus.isSecondFactorVerified) {
+      this.updateState({
+        status: 'error',
+        lastError: 'Cloud ledger access is locked until this Google account completes authenticator-based two-factor sign-in.',
+      });
+      return;
+    }
+
+    purgeLegacySecurityFieldsFromCloud(user.uid).catch((err) => {
+      console.warn('[SyncManager] Legacy PIN security purge warning:', err);
+    });
+
+    const owner = getLedgerOwner();
+    // If owner is not set or matches current user, safe startup reconcile.
+    if (!owner.uid || owner.uid === user.uid) {
+      setLedgerOwner(user.uid, user.email);
+      this.reconcileWithCloud(user.uid).catch((err) => {
+        console.warn('[SyncManager] Startup reconciliation warning:', err);
+      });
+    }
   }
 
   public getState(): SyncState {
@@ -275,6 +320,14 @@ class SyncManager {
       return { success: false, timestamp: new Date().toISOString(), message: 'User is not signed in.' };
     }
 
+    const mfaStatus = await getCloudMfaStatus();
+    this.updateState({ cloudMfaStatus: mfaStatus });
+    if (!mfaStatus.isSecondFactorVerified) {
+      const message = 'Cloud sync is locked until you complete authenticator-based two-factor sign-in.';
+      this.updateState({ status: 'error', hasPendingChanges: true, lastError: message });
+      return { success: false, timestamp: new Date().toISOString(), message };
+    }
+
     if (!this.state.isOnline) {
       this.updateState({ status: 'offline', hasPendingChanges: true });
       return { success: false, timestamp: new Date().toISOString(), message: 'Device is offline. Changes saved locally.' };
@@ -364,16 +417,25 @@ class SyncManager {
     if (!isFirebaseConfigured || !this.state.isOnline) return;
 
     try {
+      const mfaStatus = await getCloudMfaStatus();
+      this.updateState({ cloudMfaStatus: mfaStatus });
+      if (!mfaStatus.isSecondFactorVerified) {
+        this.updateState({
+          status: 'error',
+          lastError: 'Cloud reconciliation is locked until you complete authenticator-based two-factor sign-in.',
+        });
+        return;
+      }
+
       this.updateState({ status: 'syncing' });
-      const cloudData = await fetchLedgerFromCloud(uid);
+      let cloudData = await fetchLedgerFromCloud(uid);
 
       if (!cloudData) {
         // Cloud is empty. If local has data, upload it as initial backup.
-        const local = await getAllBackupData();
-        const localCounts = await getLocalRecordCounts();
+        const local = await getLedgerForSync();
 
-        if (localCounts.total > 0) {
-          const syncRes = await syncLedgerToCloud(uid, local, { tombstones: getTombstones() });
+        if (hasLedgerEntityRecords(local)) {
+          const syncRes = await syncLedgerToCloud(uid, local);
           if (syncRes.success) {
             localStorage.setItem(STORAGE_KEY_LAST_SYNC, syncRes.timestamp);
             this.updateState({
@@ -381,11 +443,45 @@ class SyncManager {
               lastSyncTime: syncRes.timestamp,
               hasPendingChanges: false,
             });
+          } else {
+            this.updateState({
+              status: 'error',
+              hasPendingChanges: true,
+              lastError: syncRes.message || 'Initial cloud backup failed',
+              unresolvedCount: syncRes.unresolvedCount || 0,
+            });
           }
         } else {
           this.updateState({ status: 'synced' });
         }
         return;
+      }
+
+      // A startup/login merge must never discard local dirty records or soft
+      // deletes. Push the dirty queue first, then fetch the resulting remote
+      // state for reconciliation. In particular, getAllBackupData() omits
+      // soft-deleted rows, so it is only safe after this flush has succeeded.
+      const pendingLocal = await getLedgerForSync(true);
+      if (hasLedgerEntityRecords(pendingLocal)) {
+        const syncRes = await syncLedgerToCloud(uid, pendingLocal, { deltaOnly: true });
+        if (!syncRes.success) {
+          this.updateState({
+            status: 'error',
+            hasPendingChanges: true,
+            lastError: syncRes.message || 'Pending local changes could not sync before reconciliation.',
+            unresolvedCount: syncRes.unresolvedCount || 0,
+          });
+          return;
+        }
+        cloudData = await fetchLedgerFromCloud(uid);
+        if (!cloudData) {
+          this.updateState({
+            status: 'error',
+            hasPendingChanges: true,
+            lastError: 'Cloud data could not be reloaded after syncing pending local changes.',
+          });
+          return;
+        }
       }
 
       // Cloud document exists. Check local counts.
@@ -396,13 +492,14 @@ class SyncManager {
       const cloudCount = getCloudRecordCount(cloudData);
 
       if (localCount === 0 && cloudCount > 0) {
-        if (!isDeviceAuthorized(uid)) {
-          console.warn('[SyncManager] Unverified device with empty local database. Skipping auto-restore for security.');
+        if (!isRestoreConfirmed(uid)) {
+          console.warn('[SyncManager] Fresh device has not confirmed the local restore action. Skipping auto-restore.');
           this.updateState({ status: 'idle' });
           return;
         }
-        // Local is completely empty (fresh install, new device, or cleared browser data) on authorized device
-        console.log(`[SyncManager] Empty local database on authorized device. Restoring ${cloudCount} records from cloud...`);
+        // Cloud access is already guarded by MFA; this local confirmation only
+        // prevents an accidental restore on a shared browser.
+        console.log(`[SyncManager] Empty local database on confirmed device. Restoring ${cloudCount} records from cloud...`);
         const restoreRes = await restoreBackup(cloudData);
         if (restoreRes.success) {
           const timestamp = cloudData.lastCloudSync || new Date().toISOString();
@@ -473,9 +570,22 @@ class SyncManager {
    * 2. Same user -> auto reconcile
    * 3. Anonymous offline user with empty cloud -> auto claim & initial backup
    * 4. Anonymous offline user with existing cloud -> prompts merge or use cloud
-   * 5. Different Google account (e.g. Brother logs in) -> prompts safe account switch
-   */
+  * 5. Different Google account (e.g. Brother logs in) -> prompts safe account switch
+  */
   public async checkLoginScenario(user: GoogleUserData): Promise<LoginScenarioResult> {
+    const mfaStatus = await getCloudMfaStatus();
+    this.updateState({ cloudMfaStatus: mfaStatus });
+    if (!mfaStatus.isSecondFactorVerified) {
+      return {
+        type: 'mfa_required',
+        user,
+        mfaStatus,
+        message: mfaStatus.enrolledFactorCount > 0
+          ? 'Enter an authenticator code to unlock cloud ledger access.'
+          : 'Set up an authenticator before this account can access cloud ledger data.',
+      };
+    }
+
     purgeLegacySecurityFieldsFromCloud(user.uid).catch(() => {});
     const owner = getLedgerOwner();
     const localCounts = await getLocalRecordCounts();
@@ -496,14 +606,15 @@ class SyncManager {
     // Scenario 1: Clean local storage (0 records)
     if (localCount === 0) {
       if (cloudCount > 0 && cloudData) {
-        // Enforce trusted-device authorization check (Issue F-01)
-        if (!isDeviceAuthorized(user.uid)) {
+        // Account access has already passed MFA. Keep one local confirmation to
+        // avoid an accidental restore on a shared browser.
+        if (!isRestoreConfirmed(user.uid)) {
           return {
-            type: 'untrusted_restore_confirmation',
+            type: 'restore_confirmation',
             cloudCount,
             user,
             cloudData,
-            message: `Google Account connected with ${cloudCount} cloud records. Authorize this device to restore your ledger.`,
+            message: `Google Account connected with ${cloudCount} cloud records. Confirm this browser should restore your ledger.`,
           };
         }
         await restoreBackup(cloudData, { silent: false });
@@ -513,7 +624,6 @@ class SyncManager {
         }
       }
       setLedgerOwner(user.uid, user.email);
-      setDeviceAuthorized(user.uid, true);
       this.updateState({ status: 'synced', currentUser: user });
       return {
         type: 'ready',
@@ -658,6 +768,14 @@ class SyncManager {
     }
 
     try {
+      const mfaStatus = await getCloudMfaStatus();
+      this.updateState({ cloudMfaStatus: mfaStatus });
+      if (!mfaStatus.isSecondFactorVerified) {
+        const message = 'Cloud restore is locked until you complete authenticator-based two-factor sign-in.';
+        this.updateState({ status: 'error', lastError: message });
+        return { success: false, message };
+      }
+
       this.updateState({ status: 'syncing' });
       const cloudData = await fetchLedgerFromCloud(user.uid);
       if (!cloudData) {

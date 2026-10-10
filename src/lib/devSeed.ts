@@ -16,7 +16,7 @@ import { toLocalDateString } from '../utils/dateUtils';
  * Includes multiple mines, varied inventory lots, industrial cement factories, purchase orders,
  * linked dispatches with real lab metrics & tax formulas, and historical payments.
  */
-export async function seedTestData(): Promise<void> {
+export async function seedTestData(options: { reload?: boolean } = {}): Promise<void> {
   console.log('[DevSeed] Seeding comprehensive real-world dataset into IndexedDB...');
 
   const today = new Date();
@@ -574,7 +574,7 @@ export async function seedTestData(): Promise<void> {
           mineId: 'mine-islam-duki',
           sourceName: 'Islam Coal Mine - Gul Khan Deep Shaft',
           weight: 34.6,
-          purchaseRate: 21528.57,
+          purchaseRate: 21777.46,
         },
       ],
       overheads: { loading: 0, freight: 0, crush: 0, royalty: 0, other: 0 },
@@ -641,7 +641,7 @@ export async function seedTestData(): Promise<void> {
           mineId: 'mine-chamalang',
           sourceName: 'Chamalang Coal Field - North Ridge Pit',
           weight: 31.2,
-          purchaseRate: 24539.47,
+          purchaseRate: 24866.67,
         },
       ],
       overheads: { freight: 45000, loading: 3000, crush: 0, royalty: 0, other: 0 },
@@ -812,7 +812,7 @@ export async function seedTestData(): Promise<void> {
           mineId: 'mine-sorange-degari',
           sourceName: 'Sorange Degari Colliery - Selected Lumps Incline 1',
           weight: 27.0,
-          purchaseRate: 26378.13,
+          purchaseRate: 26544.03,
         },
       ],
       overheads: { freight: 35000, loading: 2500, crush: 0, royalty: 0, other: 0 },
@@ -841,7 +841,7 @@ export async function seedTestData(): Promise<void> {
           mineId: 'mine-makerwal',
           sourceName: 'Makerwal Collieries - Tunnel Seam B',
           weight: 30.0,
-          purchaseRate: 22237.5,
+          purchaseRate: 22518.99,
         },
       ],
       overheads: { freight: 45000, loading: 3000, crush: 0, royalty: 0, other: 0 },
@@ -877,7 +877,7 @@ export async function seedTestData(): Promise<void> {
           mineId: 'mine-mach-bolan',
           sourceName: 'Mach Bolan Mines - Lower Tunnel Pit',
           weight: 28.0,
-          purchaseRate: 21510.42,
+          purchaseRate: 21782.70,
         },
       ],
       overheads: { freight: 38000, loading: 2800, crush: 0, royalty: 0, other: 0 },
@@ -907,7 +907,7 @@ export async function seedTestData(): Promise<void> {
           mineId: 'mine-islam-duki',
           sourceName: 'Islam Coal Mine - Yard Stockpile A',
           weight: 28.0,
-          purchaseRate: 21990.91,
+          purchaseRate: 22071.17,
         },
       ],
       overheads: { freight: 40000, loading: 3000, crush: 0, royalty: 0, other: 0 },
@@ -1085,7 +1085,7 @@ export async function seedTestData(): Promise<void> {
   console.log('   - Company Settings profile');
 
   // Trigger page reload if running in browser window
-  if (typeof window !== 'undefined' && window.location) {
+  if (options.reload !== false && typeof window !== 'undefined' && window.location) {
     window.location.reload();
   }
 }
@@ -1093,7 +1093,7 @@ export async function seedTestData(): Promise<void> {
 /**
  * Resets the IndexedDB database to empty state.
  */
-export async function clearAllData(): Promise<void> {
+export async function clearAllData(options: { reload?: boolean } = {}): Promise<void> {
   console.log('[DevSeed] Clearing all IndexedDB tables...');
   await idb.parties.clear();
   await idb.dispatches.clear();
@@ -1102,7 +1102,7 @@ export async function clearAllData(): Promise<void> {
   await idb.mines.clear();
   await idb.lots.clear();
   console.log('[DevSeed] Database cleared!');
-  if (typeof window !== 'undefined' && window.location) {
+  if (options.reload !== false && typeof window !== 'undefined' && window.location) {
     window.location.reload();
   }
 }

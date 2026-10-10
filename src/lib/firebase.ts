@@ -6,9 +6,17 @@ import {
   signInWithRedirect,
   signInWithCredential,
   getRedirectResult,
+  getIdTokenResult,
+  getMultiFactorResolver,
+  multiFactor,
+  TotpMultiFactorGenerator,
+  reauthenticateWithCredential,
+  reauthenticateWithPopup,
   signOut,
   onAuthStateChanged,
-  type User as FirebaseUser
+  type User as FirebaseUser,
+  type MultiFactorResolver,
+  type TotpSecret,
 } from 'firebase/auth';
 import {
   initializeFirestore,
@@ -94,6 +102,169 @@ export interface GoogleUserData {
 }
 
 /**
+ * Account-level cloud-access state. `isSecondFactorVerified` comes from the
+ * Firebase ID token, which Firestore Rules also enforce. It is deliberately
+ * separate from phone-local App Lock and restore-confirmation state.
+ */
+export interface CloudMfaStatus {
+  isSignedIn: boolean;
+  isSecondFactorVerified: boolean;
+  signInSecondFactor: string | null;
+  enrolledFactorCount: number;
+}
+
+export interface TotpEnrollmentSetup {
+  secretKey: string;
+  qrCodeUrl: string;
+  expiresAt: string;
+}
+
+export interface TotpSignInChallenge {
+  enrollmentId: string;
+  displayName: string;
+}
+
+/** Raised when Firebase has accepted the first factor and now requires TOTP. */
+export class TotpSignInRequiredError extends Error {
+  readonly challenge: TotpSignInChallenge;
+
+  constructor(challenge: TotpSignInChallenge) {
+    super('Your Factory Ledger authenticator code is required to continue.');
+    this.name = 'TotpSignInRequiredError';
+    this.challenge = challenge;
+  }
+}
+
+let pendingTotpEnrollment: { uid: string; secret: TotpSecret } | null = null;
+let pendingTotpSignIn: { resolver: MultiFactorResolver; enrollmentId: string } | null = null;
+
+function toGoogleUserData(user: FirebaseUser): GoogleUserData {
+  return {
+    displayName: user.displayName || user.email?.split('@')[0] || 'Google User',
+    email: user.email || '',
+    photoUrl: user.photoURL || '',
+    uid: user.uid,
+  };
+}
+
+function toTotpSignInRequiredError(error: any): TotpSignInRequiredError | null {
+  if (error?.code !== 'auth/multi-factor-auth-required') return null;
+
+  const resolver = getMultiFactorResolver(auth, error);
+  const factor = resolver.hints.find((hint) => hint.factorId === TotpMultiFactorGenerator.FACTOR_ID);
+  if (!factor?.uid) {
+    throw new Error('This account requires a second factor that Factory Ledger does not support. Use a TOTP authenticator factor for cloud access.');
+  }
+
+  pendingTotpSignIn = { resolver, enrollmentId: factor.uid };
+  return new TotpSignInRequiredError({
+    enrollmentId: factor.uid,
+    displayName: factor.displayName || 'Factory Ledger authenticator',
+  });
+}
+
+/**
+ * Reads the MFA assertion from Firebase's signed ID token. This is a client
+ * UX check only; Firestore rules independently reject requests without it.
+ */
+export async function getCloudMfaStatus(): Promise<CloudMfaStatus> {
+  const user = isFirebaseConfigured ? auth.currentUser as FirebaseUser | null : null;
+  if (!user) {
+    return {
+      isSignedIn: false,
+      isSecondFactorVerified: false,
+      signInSecondFactor: null,
+      enrolledFactorCount: 0,
+    };
+  }
+
+  const tokenResult = await getIdTokenResult(user);
+  const signInSecondFactor = tokenResult.signInSecondFactor || null;
+  return {
+    isSignedIn: true,
+    isSecondFactorVerified: Boolean(signInSecondFactor),
+    signInSecondFactor,
+    enrolledFactorCount: multiFactor(user).enrolledFactors.length,
+  };
+}
+
+/**
+ * Starts a TOTP enrollment after a fresh Google reauthentication. The secret
+ * stays in memory only until it is confirmed or cancelled; it is never put in
+ * IndexedDB, localStorage, Firestore, or an export.
+ */
+export async function beginTotpEnrollment(): Promise<TotpEnrollmentSetup> {
+  if (!isFirebaseConfigured || !auth.currentUser) {
+    throw new Error('Sign in with Google before setting up cloud two-factor authentication.');
+  }
+
+  const user = auth.currentUser as FirebaseUser;
+  if (Capacitor.isNativePlatform()) {
+    const result = await FirebaseAuthentication.signInWithGoogle();
+    if (!result.credential?.idToken) {
+      throw new Error('Google did not provide a credential for the required account-security check.');
+    }
+    const credential = GoogleAuthProvider.credential(result.credential.idToken);
+    await reauthenticateWithCredential(user, credential);
+  } else {
+    await reauthenticateWithPopup(user, googleProvider);
+  }
+
+  const enrollmentSession = await multiFactor(user).getSession();
+  const secret = await TotpMultiFactorGenerator.generateSecret(enrollmentSession);
+  pendingTotpEnrollment = { uid: user.uid, secret };
+
+  return {
+    secretKey: secret.secretKey,
+    qrCodeUrl: secret.generateQrCodeUrl(user.email || user.uid, 'Factory Ledger'),
+    expiresAt: secret.enrollmentCompletionDeadline,
+  };
+}
+
+export async function confirmTotpEnrollment(code: string): Promise<CloudMfaStatus> {
+  const user = isFirebaseConfigured ? auth.currentUser as FirebaseUser | null : null;
+  const normalizedCode = code.replace(/\s/g, '');
+  if (!user || !pendingTotpEnrollment || pendingTotpEnrollment.uid !== user.uid) {
+    throw new Error('Authenticator setup expired. Start setup again.');
+  }
+  if (!/^\d{6,10}$/.test(normalizedCode)) {
+    throw new Error('Enter the current numeric code from your authenticator app.');
+  }
+
+  const assertion = TotpMultiFactorGenerator.assertionForEnrollment(pendingTotpEnrollment.secret, normalizedCode);
+  await multiFactor(user).enroll(assertion, 'Factory Ledger authenticator');
+  pendingTotpEnrollment = null;
+  await getIdTokenResult(user, true);
+  return getCloudMfaStatus();
+}
+
+export function cancelTotpEnrollment(): void {
+  pendingTotpEnrollment = null;
+}
+
+export async function completeTotpSignIn(code: string): Promise<GoogleUserData> {
+  const normalizedCode = code.replace(/\s/g, '');
+  if (!pendingTotpSignIn) {
+    throw new Error('Authenticator sign-in expired. Start Google sign-in again.');
+  }
+  if (!/^\d{6,10}$/.test(normalizedCode)) {
+    throw new Error('Enter the current numeric code from your authenticator app.');
+  }
+
+  const assertion = TotpMultiFactorGenerator.assertionForSignIn(
+    pendingTotpSignIn.enrollmentId,
+    normalizedCode,
+  );
+  const result = await pendingTotpSignIn.resolver.resolveSignIn(assertion);
+  pendingTotpSignIn = null;
+  return toGoogleUserData(result.user);
+}
+
+export function cancelTotpSignIn(): void {
+  pendingTotpSignIn = null;
+}
+
+/**
  * Friendly error parser for Firebase Auth error codes
  */
 export function getFriendlyAuthErrorMessage(error: any): string {
@@ -107,10 +278,13 @@ export function getFriendlyAuthErrorMessage(error: any): string {
   if (msg.includes('12501') || code === 'auth/popup-closed-by-user' || msg.includes('cancel')) {
     return 'Sign-in was cancelled.';
   }
+  if (error instanceof TotpSignInRequiredError || code === 'auth/multi-factor-auth-required') {
+    return 'Enter the current code from your Factory Ledger authenticator to finish sign-in.';
+  }
   switch (code) {
     case 'auth/operation-not-allowed':
     case 'auth/configuration-not-found':
-      return 'Google Sign-In is not enabled yet in your Firebase Console. Go to Firebase Console > Build > Authentication > Sign-in method, click Google, and enable it.';
+      return 'Cloud two-factor authentication is not enabled for this Firebase project. Enable Identity Platform TOTP MFA before using cloud sync.';
     case 'auth/unauthorized-domain':
       return 'Domain not authorized. Please add this domain or localhost in Firebase Console > Authentication > Settings > Authorized domains.';
     case 'auth/cancelled-popup-request':
@@ -155,6 +329,8 @@ export async function loginWithGoogle(): Promise<GoogleUserData> {
         uid: user.uid,
       };
     } catch (err: any) {
+      const mfaError = toTotpSignInRequiredError(err);
+      if (mfaError) throw mfaError;
       console.error('Native Google Sign-In error:', err);
       if (err.message && (err.message.includes('12501') || err.message.includes('cancel'))) {
         throw new Error('Sign-in cancelled.');
@@ -174,6 +350,8 @@ export async function loginWithGoogle(): Promise<GoogleUserData> {
       uid: user.uid,
     };
   } catch (error: any) {
+    const mfaError = toTotpSignInRequiredError(error);
+    if (mfaError) throw mfaError;
     if (error.code === 'auth/popup-blocked') {
       await signInWithRedirect(auth, googleProvider);
       throw new Error('Redirecting to Google sign in...');
@@ -223,6 +401,8 @@ export async function checkRedirectAuth(): Promise<GoogleUserData | null> {
     }
     return null;
   } catch (error) {
+    const mfaError = toTotpSignInRequiredError(error);
+    if (mfaError) throw mfaError;
     console.error('Redirect sign-in error:', error);
     return null;
   }
@@ -282,6 +462,12 @@ export interface CloudSyncResult {
   unresolvedCount?: number;
   unresolvedPaths?: string[];
   unresolvedIds?: string[];
+}
+
+export interface CloudWipeResult {
+  success: boolean;
+  message: string;
+  failedPaths?: string[];
 }
 
 export interface FirestoreBatchOp {
@@ -910,25 +1096,31 @@ export async function deleteSingleEntityFromCloud(
 }
 
 /**
- * Issue 17: Fully wipe user's ledger data from Cloud Firestore
+ * Fully wipe a user's ledger data from Cloud Firestore.
+ *
+ * This operation fails closed: an unreadable collection, rejected deletion,
+ * or remaining document is reported as failure. Callers must not clear the
+ * device ledger or sign the user out until success is returned.
  */
-export async function wipeCloudUserData(uid: string): Promise<{ success: boolean; message: string }> {
+export async function wipeCloudUserData(uid: string): Promise<CloudWipeResult> {
   if (!uid) return { success: false, message: 'No authenticated user ID provided' };
   if (!isFirebaseConfigured || !db) return { success: true, message: 'Offline mode: no cloud database to wipe.' };
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    return { success: false, message: 'Connect to the internet before deleting cloud data.' };
+  }
+  if (!auth.currentUser || auth.currentUser.uid !== uid) {
+    return { success: false, message: 'Cloud deletion requires the currently signed-in account.' };
+  }
 
   try {
-    const subcollections = ['parties', 'dispatches', 'payments', 'pos', 'lots', 'mines'];
-    const operations: Array<{ type: 'set' | 'delete'; ref: DocumentReference }> = [];
+    const subcollections = ['parties', 'dispatches', 'payments', 'pos', 'lots', 'mines'] as const;
+    const operations: FirestoreBatchOp[] = [];
 
     for (const sub of subcollections) {
-      try {
-        const snap = await getDocs(collection(db, 'users', uid, sub));
-        snap.forEach((docSnap) => {
-          operations.push({ type: 'delete', ref: docSnap.ref });
-        });
-      } catch (err) {
-        console.warn(`[CloudWipe] Warning querying subcollection ${sub}:`, err);
-      }
+      const snap = await getDocs(collection(db, 'users', uid, sub));
+      snap.forEach((docSnap) => {
+        operations.push({ type: 'delete', ref: docSnap.ref, collectionName: sub });
+      });
     }
 
     // Also delete config, meta, and legacy backup
@@ -936,7 +1128,39 @@ export async function wipeCloudUserData(uid: string): Promise<{ success: boolean
     operations.push({ type: 'delete', ref: doc(db, 'users', uid, 'meta', 'sync') });
     operations.push({ type: 'delete', ref: doc(db, 'users', uid, 'ledger', 'backup') });
 
-    await commitResilient(operations as any);
+    const { rejected } = await commitResilient(operations);
+    if (rejected.length > 0) {
+      const failedPaths = rejected.map(({ op }) => op.ref.path);
+      console.error('[CloudWipe] Cloud deletion rejected for:', failedPaths);
+      return {
+        success: false,
+        message: `Cloud deletion was incomplete. ${failedPaths.length} record(s) could not be deleted.`,
+        failedPaths,
+      };
+    }
+
+    const [
+      ...collectionChecks
+    ] = await Promise.all(subcollections.map((sub) => getDocs(collection(db, 'users', uid, sub))));
+    const [settings, meta, legacy] = await Promise.all([
+      getDoc(doc(db, 'users', uid, 'settings', 'config')),
+      getDoc(doc(db, 'users', uid, 'meta', 'sync')),
+      getDoc(doc(db, 'users', uid, 'ledger', 'backup')),
+    ]);
+    const remainingPaths = collectionChecks.flatMap((snap) => snap.docs.map((docSnap) => docSnap.ref.path));
+    if (settings.exists()) remainingPaths.push(settings.ref.path);
+    if (meta.exists()) remainingPaths.push(meta.ref.path);
+    if (legacy.exists()) remainingPaths.push(legacy.ref.path);
+
+    if (remainingPaths.length > 0) {
+      console.error('[CloudWipe] Cloud deletion verification found remaining records:', remainingPaths);
+      return {
+        success: false,
+        message: `Cloud deletion could not be verified. ${remainingPaths.length} record(s) remain.`,
+        failedPaths: remainingPaths,
+      };
+    }
+
     return { success: true, message: 'Cloud database wiped cleanly.' };
   } catch (err: any) {
     console.error('[CloudWipe] Error wiping cloud database:', err);

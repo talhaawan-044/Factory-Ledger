@@ -23,12 +23,13 @@
 - [Issue 49: Cloud Inventory Classification and Recovery-Key Lockout](#issue-49)
 - [Issue 50: Stock-Lot Allocation, Landed-Cost Valuation, and iOS Workflow](#issue-50)
 - [Issue 51: Bottom Navigation Liquid-Glass Treatment](#issue-51)
-- [Issue 52 (F-01): Untrusted Device Cloud Restore Authorization Gate](#issue-52)
+- [Issue 52 (F-01): Local Restore Confirmation (superseded as security control)](#issue-52)
 - [Issue 53 (F-02): Sync Conflict Audit Logging and Non-Silent Merge Tracking](#issue-53)
 - [Issue 54 (F-04): Complete Elimination of Browser Dialogs](#issue-54)
 - [Issue 55 (F-05): Complete Purge of Gradients and Emojis](#issue-55)
 - [Issue 56 (F-06): Native iOS 404 Catch-All Route](#issue-56)
 - [Issue 57 (F-07): Production Chunk Size Warning Limit Tuning](#issue-57)
+- [Issue 58 (F-01 follow-up): MFA-Gated Cloud Ledger Access](#issue-58)
 
 ---
 
@@ -419,10 +420,10 @@ The Firebase console must still receive this rules deployment, and a user-facing
 
 ---
 
-### Issue 52 (F-01): Untrusted Device Cloud Restore Authorization Gate
+### Issue 52 (F-01): Local Restore Confirmation (superseded as security control)
 
 - **Severity:** Critical (Confidentiality & Ledger Data Governance)
-- **Status:** RESOLVED
+- **Status:** Implemented as an accidental-restore confirmation only; superseded by the server-enforced MFA work in Issue 58 for cloud authorization.
 - **Files Modified:**
   - `src/lib/syncManager.ts`
   - `src/pages/Settings.tsx`
@@ -434,13 +435,13 @@ When an employee or unauthorized user signed into Google / Firebase on a seconda
 
 #### How It Was Solved
 
-1. Added `isDeviceAuthorized()` and `setDeviceAuthorized(authorized: boolean)` helpers in `src/lib/syncManager.ts`.
-2. Modified `checkLoginScenario`: When a clean local database connects to a non-empty cloud ledger, if the device is not marked authorized, the system halts auto-restore and sets the scenario to `untrusted_restore_confirmation`.
-3. Background reconciliation (`reconcileWithCloud`) checks `isDeviceAuthorized()` and skips downloading cloud collections to local storage if the device is unauthorized.
+1. The original `isDeviceAuthorized()` / `setDeviceAuthorized()` browser-local helpers were removed. The replacement `isRestoreConfirmed()` / `setRestoreConfirmed()` only avoids accidental restore on a shared browser.
+2. `checkLoginScenario` and background reconciliation require a local restore confirmation before downloading a non-empty cloud ledger to an empty browser.
+3. This local confirmation is explicitly not claimed as authorization. An attacker who owns the cloud credential could click it, so it cannot protect against a compromised account.
 4. Added an explicit `IOSConfirmModal` in `src/pages/Settings.tsx`:
-   - Title: "Authorize Cloud Ledger Restore"
-   - Message: Explicitly warns that the device will download the remote ledger and requires the owner to authorize this phone.
-   - On confirmation: Invokes `setDeviceAuthorized(true)` and triggers restore.
+   - Title: "Restore Ledger on This Browser?"
+   - Message: States that account authentication protects cloud access and asks only whether to download the ledger to this browser.
+   - On confirmation: Invokes `setRestoreConfirmed(true)` and triggers restore.
    - On cancellation: Keeps local database isolated and secure.
 
 #### Verification Performed
@@ -591,3 +592,38 @@ Adjusted `chunkSizeWarningLimit: 1000` in `vite.config.ts`. Verified that `excel
 #### Verification Performed
 
 - `npm run build` executes in under 2 seconds with 0 warnings.
+
+---
+
+### Issue 58 (F-01 follow-up): MFA-Gated Cloud Ledger Access
+
+- **Severity:** Critical (Cloud Account Authorization)
+- **Status:** Partially resolved in source and Firestore emulator. Deployment and live-account validation remain release blockers.
+- **Files Modified:**
+  - `src/lib/firebase.ts`
+  - `src/lib/syncManager.ts`
+  - `src/pages/Settings.tsx`
+  - `src/components/IOSTotpMfaModal.tsx`
+  - `firestore.rules`
+  - `tests/rules/rules.test.ts`
+  - `tests/syncReconciliation.test.ts`
+  - `docs/CLOUD_MFA_ROLLOUT.md`
+
+#### What Changed
+
+1. Added Firebase TOTP authenticator enrollment and second-factor sign-in flows. Enrollment reauthenticates the Google account, keeps the TOTP secret only in memory, and requires the current authenticator code before it is enrolled.
+2. `getCloudMfaStatus()` reads the signed Firebase ID-token MFA assertion. `SyncManager` refuses startup reconciliation, sync, restore and login scenarios until a second factor is present.
+3. Firestore rules now require both the owner UID and `request.auth.token.firebase.sign_in_second_factor` for every ledger collection. This is the cloud authorization boundary; the Settings UI is only the user experience around it.
+4. The old per-browser device flag was removed. The remaining restore confirmation is deliberately named and documented as a local convenience choice, not account authorization.
+5. Added an iOS-style Settings flow for TOTP setup and TOTP challenge completion, with the setup key shown only while the in-memory enrollment is open.
+
+#### Verification Performed
+
+- `npm run lint`: passed.
+- `npm test`: 12 files, 133 tests passed, including the sync-manager first-factor block.
+- `npm run test:rules` with the local Firestore emulator: 17 tests passed, including an owner-without-MFA denial test.
+- `npm run build`: passed.
+
+#### Deployment and Validation Still Required
+
+Identity Platform TOTP MFA must be enabled in the Firebase project before these rules are deployed. Then run the clean-browser, enrollment, first-factor denial, valid-TOTP access, cancellation, account-recovery and account-switch tests in `docs/CLOUD_MFA_ROLLOUT.md`. This change does not yet provide an admin-approved device registry, remote device revocation, immutable audit history, or protection from a compromised device.

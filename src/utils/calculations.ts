@@ -74,6 +74,15 @@ function cleanNum(val: any, fallback = 0): number {
   return isNaN(p) || !isFinite(p) ? fallback : p;
 }
 
+/**
+ * Factory Ledger posts party statements in whole rupees. Apply this at the
+ * transaction boundary (each invoice/payment), not only to an aggregate, so
+ * a statement's rows, running balance, and totals always reconcile.
+ */
+export function roundPartyLedgerAmount(amount: unknown): number {
+  return Math.round(cleanNum(amount));
+}
+
 export function calculateSettlement(dispatch: Dispatch, settings?: AppSettings | null): SettlementResult {
   if (!dispatch) {
     return {
@@ -387,20 +396,24 @@ export function calculatePartyBalance(dispatches: Dispatch[], payments: Payment[
 
   const totals = calculateLedgerTotals(safeDispatches);
 
-  const totalBilled = totals.revenue;
+  // Party ledgers are posted at whole rupees per document. Do not sum precise
+  // fractions and round afterwards: PDF/Excel rows already show posted values.
+  const totalBilled = safeDispatches
+    .filter((d) => !d?.deleted && !isDispatchPending(d))
+    .reduce((sum, d) => sum + roundPartyLedgerAmount(calculateSettlement(d).totalRevenue), 0);
   const totalProfit = totals.profit;
   const totalTons = totals.receivedTons;
 
   const totalPaymentsReceived = safePayments
     .filter((p) => !p?.deleted && (p.type === 'received' || (p as any).paymentType === 'received'))
-    .reduce((sum, p) => sum + cleanNum(p.amount), 0);
+    .reduce((sum, p) => sum + roundPartyLedgerAmount(p.amount), 0);
 
   const totalPaymentsPaid = safePayments
     .filter((p) => !p?.deleted && (p.type === 'paid' || (p as any).paymentType === 'paid'))
-    .reduce((sum, p) => sum + cleanNum(p.amount), 0);
+    .reduce((sum, p) => sum + roundPartyLedgerAmount(p.amount), 0);
 
   const netPaymentsReceived = totalPaymentsReceived - totalPaymentsPaid;
-  const outstandingBalance = Math.round(totalBilled - netPaymentsReceived);
+  const outstandingBalance = totalBilled - netPaymentsReceived;
 
   const nonDeletedDispatches = safeDispatches.filter((d) => !d?.deleted);
   const nonDeletedPayments = safePayments.filter((p) => !p?.deleted);

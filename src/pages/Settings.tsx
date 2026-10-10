@@ -64,6 +64,7 @@ import IOSVerifyPasscodeModal from '../components/IOSVerifyPasscodeModal';
 import IOSRecoveryKeyViewerModal from '../components/IOSRecoveryKeyViewerModal';
 import IOSImportConfirmModal from '../components/IOSImportConfirmModal';
 import IOSTaxFormulaModal from '../components/IOSTaxFormulaModal';
+import IOSTotpMfaModal from '../components/IOSTotpMfaModal';
 import IOSSelect, { type IOSSelectOption } from '../components/IOSSelect';
 import {
   loginWithGoogle,
@@ -72,8 +73,16 @@ import {
   getFriendlyAuthErrorMessage,
   wipeCloudUserData,
   isFirebaseConfigured,
+  beginTotpEnrollment,
+  cancelTotpEnrollment,
+  cancelTotpSignIn,
+  completeTotpSignIn,
+  confirmTotpEnrollment,
+  TotpSignInRequiredError,
+  type TotpEnrollmentSetup,
+  type TotpSignInChallenge,
 } from '../lib/firebase';
-import { useSyncStatus, setDeviceAuthorized, type LoginScenarioResult } from '../lib/syncManager';
+import { useSyncStatus, setRestoreConfirmed, type LoginScenarioResult } from '../lib/syncManager';
 import { useLedgerListener } from '../hooks/useLedgerListener';
 import {
   AccountSwitchModal,
@@ -219,6 +228,7 @@ export default function Settings() {
     unresolvedCount,
     isAutoSyncEnabled: autoSyncEnabled,
     currentUser: googleUser,
+    cloudMfaStatus,
     syncNow,
     restoreFromCloud,
     setAutoSyncEnabled,
@@ -232,8 +242,11 @@ export default function Settings() {
   const [isRestoringFromCloud, setIsRestoringFromCloud] = useState(false);
   const [switchScenario, setSwitchScenario] = useState<LoginScenarioResult | null>(null);
   const [conflictScenario, setConflictScenario] = useState<LoginScenarioResult | null>(null);
-  const [untrustedRestoreScenario, setUntrustedRestoreScenario] = useState<LoginScenarioResult | null>(null);
+  const [restoreConfirmationScenario, setRestoreConfirmationScenario] = useState<LoginScenarioResult | null>(null);
   const [isSignOutSheetOpen, setIsSignOutSheetOpen] = useState(false);
+  const [totpEnrollment, setTotpEnrollment] = useState<TotpEnrollmentSetup | null>(null);
+  const [totpSignInChallenge, setTotpSignInChallenge] = useState<TotpSignInChallenge | null>(null);
+  const [isStartingTotpEnrollment, setIsStartingTotpEnrollment] = useState(false);
 
   // Modal triggers
   const [showRemoveLogoConfirm, setShowRemoveLogoConfirm] = useState(false);
@@ -349,7 +362,14 @@ export default function Settings() {
           showToast('Signed in with Google!');
         }
       })
-      .catch((err) => console.error('Redirect auth check error:', err));
+      .catch((err) => {
+        if (err instanceof TotpSignInRequiredError) {
+          setTotpSignInChallenge(err.challenge);
+          showToast('Enter your authenticator code to finish Google sign-in.');
+          return;
+        }
+        console.error('Redirect auth check error:', err);
+      });
   }, []);
 
   useEffect(() => {
@@ -388,29 +408,51 @@ export default function Settings() {
     setTimeout(() => setSaved(false), 2500);
   };
 
+  const startTotpEnrollment = async () => {
+    setIsStartingTotpEnrollment(true);
+    try {
+      const setup = await beginTotpEnrollment();
+      setTotpEnrollment(setup);
+    } catch (err: any) {
+      showToast(getFriendlyAuthErrorMessage(err));
+    } finally {
+      setIsStartingTotpEnrollment(false);
+    }
+  };
+
+  const finishGoogleLogin = async (user: NonNullable<typeof googleUser>) => {
+    localStorage.setItem('coal_google_user', JSON.stringify(user));
+    const scenario = await checkLoginScenario(user);
+    if (scenario.type === 'account_switch') {
+      setSwitchScenario(scenario);
+    } else if (scenario.type === 'anonymous_conflict') {
+      setConflictScenario(scenario);
+    } else if (scenario.type === 'restore_confirmation') {
+      setRestoreConfirmationScenario(scenario);
+    } else if (scenario.type === 'mfa_required') {
+      showToast(scenario.message || 'Set up an authenticator to unlock cloud access.');
+    } else {
+      playSuccessSound();
+      triggerConfetti();
+      showToast(scenario.message || 'Signed in with Google successfully!');
+      loadAllData();
+    }
+  };
+
   // Google Sign-In & Sync handlers
   const handleGoogleSignIn = async () => {
     setIsSigningIn(true);
     playPopSound();
     try {
       const user = await loginWithGoogle();
-      localStorage.setItem('coal_google_user', JSON.stringify(user));
-
-      const scenario = await checkLoginScenario(user);
-      if (scenario.type === 'account_switch') {
-        setSwitchScenario(scenario);
-      } else if (scenario.type === 'anonymous_conflict') {
-        setConflictScenario(scenario);
-      } else if (scenario.type === 'untrusted_restore_confirmation') {
-        setUntrustedRestoreScenario(scenario);
-      } else {
-        playSuccessSound();
-        triggerConfetti();
-        showToast(scenario.message || 'Signed in with Google successfully!');
-        loadAllData();
-      }
+      await finishGoogleLogin(user);
     } catch (err: any) {
       console.error('Google Sign-in error:', err);
+      if (err instanceof TotpSignInRequiredError) {
+        setTotpSignInChallenge(err.challenge);
+        showToast('Enter your authenticator code to finish Google sign-in.');
+        return;
+      }
       if (err.message && err.message.includes('Redirecting to Google sign in')) {
         showToast('Redirecting to Google Sign-In...');
         return;
@@ -421,6 +463,27 @@ export default function Settings() {
     } finally {
       setIsSigningIn(false);
     }
+  };
+
+  const handleConfirmTotpEnrollment = async (code: string) => {
+    const status = await confirmTotpEnrollment(code);
+    setTotpEnrollment(null);
+    if (status.isSecondFactorVerified) {
+      showToast('Authenticator enabled. Cloud access is protected.');
+      return;
+    }
+
+    // Firebase requires a fresh sign-in for the newly enrolled factor to be
+    // asserted in the ID token. Signing out avoids leaving a first-factor-only
+    // session looking like it can reach ledger data.
+    await handleSignOut('keep_data');
+    showToast('Authenticator enabled. Sign in again and enter its code to unlock cloud access.');
+  };
+
+  const handleCompleteTotpSignIn = async (code: string) => {
+    const user = await completeTotpSignIn(code);
+    setTotpSignInChallenge(null);
+    await finishGoogleLogin(user);
   };
 
   const handleGoogleSignOut = () => {
@@ -832,7 +895,11 @@ export default function Settings() {
   const handleClearCloudAndDevice = async () => {
     setShowSignedInClearModal(false);
     if (googleUser?.uid) {
-      await wipeCloudUserData(googleUser.uid);
+      const wipeResult = await wipeCloudUserData(googleUser.uid);
+      if (!wipeResult.success) {
+        showToast(`Cloud data was not deleted. Your device ledger has been kept safe: ${wipeResult.message}`);
+        return;
+      }
     }
     await clearAllData({ resetSettings: true, resetOwner: true });
     await logoutUser();
@@ -1244,6 +1311,44 @@ export default function Settings() {
                         {googleUser.email}
                       </div>
                     </div>
+                    <div className="ios-separator with-glyph" />
+                  </div>
+
+                  <div className="ios-cell" style={{ alignItems: 'flex-start', padding: '14px 16px' }}>
+                    <div className="ios-glyph-badge" style={{ background: cloudMfaStatus?.isSecondFactorVerified ? 'var(--ios-green)' : 'var(--ios-orange)', marginTop: 1 }}>
+                      <ShieldCheck size={18} color="#FFFFFF" />
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <span className="ios-cell-label">Cloud Account Security</span>
+                      <div style={{ fontSize: 12, color: 'var(--label-secondary)', lineHeight: 1.4, marginTop: 2 }}>
+                        {cloudMfaStatus?.isSecondFactorVerified
+                          ? 'Authenticator verified. Firestore accepts this signed-in session.'
+                          : cloudMfaStatus?.enrolledFactorCount
+                            ? 'Authenticator is enrolled, but this session must sign in again with its current code.'
+                            : 'Cloud reads and writes stay locked until you set up an authenticator.'}
+                      </div>
+                    </div>
+                    {cloudMfaStatus?.isSecondFactorVerified ? (
+                      <Check size={20} color="var(--ios-green)" style={{ marginTop: 2 }} />
+                    ) : cloudMfaStatus?.enrolledFactorCount ? (
+                      <button
+                        type="button"
+                        onClick={() => handleGoogleSignOut()}
+                        style={{ minHeight: 44, border: 0, borderRadius: 12, padding: '0 12px', background: 'var(--fill-tertiary)', color: 'var(--ios-blue)', fontWeight: 650, cursor: 'pointer' }}
+                      >
+                        Sign In Again
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => { void startTotpEnrollment(); }}
+                        disabled={isStartingTotpEnrollment}
+                        style={{ minHeight: 44, border: 0, borderRadius: 12, padding: '0 12px', background: 'var(--ios-blue)', color: '#FFFFFF', fontWeight: 650, cursor: isStartingTotpEnrollment ? 'default' : 'pointer', display: 'inline-flex', alignItems: 'center', gap: 7 }}
+                      >
+                        {isStartingTotpEnrollment && <Loader2 size={16} className="animate-spin" />}
+                        Set Up
+                      </button>
+                    )}
                     <div className="ios-separator with-glyph" />
                   </div>
 
@@ -2763,38 +2868,62 @@ export default function Settings() {
       />
 
       <IOSConfirmModal
-        isOpen={Boolean(untrustedRestoreScenario)}
-        title="Authorize Device & Restore?"
+        isOpen={Boolean(restoreConfirmationScenario)}
+        title="Restore Ledger on This Browser?"
         message={
-          untrustedRestoreScenario
-            ? `Google account ${untrustedRestoreScenario.user.email} has ${untrustedRestoreScenario.cloudCount} cloud records. Authorize this device and download your business ledger?`
-            : 'Authorize this device and download your cloud records?'
+          restoreConfirmationScenario
+            ? `Google account ${restoreConfirmationScenario.user.email} has ${restoreConfirmationScenario.cloudCount} cloud records. Authenticator sign-in has already protected cloud access. Download this ledger to this browser?`
+            : 'Download your protected cloud records to this browser?'
         }
-        confirmText="Authorize & Restore"
+        confirmText="Restore Ledger"
         cancelText="Keep Offline"
         destructive={false}
         countdownSeconds={0}
         icon="none"
         onConfirm={async () => {
-          if (!untrustedRestoreScenario) return;
-          const { user, cloudData } = untrustedRestoreScenario;
-          setDeviceAuthorized(user.uid, true);
+          if (!restoreConfirmationScenario) return;
+          const { user, cloudData } = restoreConfirmationScenario;
+          setRestoreConfirmed(user.uid, true);
           setLedgerOwner(user.uid, user.email);
           if (cloudData) {
             await restoreBackup(cloudData, { silent: false });
           }
-          setUntrustedRestoreScenario(null);
+          setRestoreConfirmationScenario(null);
           playSuccessSound();
           triggerConfetti();
-          showToast(`Device authorized. Restored ${untrustedRestoreScenario.cloudCount} records.`);
+          showToast(`Restored ${restoreConfirmationScenario.cloudCount} cloud records.`);
           loadAllData();
         }}
         onCancel={() => {
-          if (untrustedRestoreScenario) {
-            setDeviceAuthorized(untrustedRestoreScenario.user.uid, false);
+          if (restoreConfirmationScenario) {
+            setRestoreConfirmed(restoreConfirmationScenario.user.uid, false);
           }
-          setUntrustedRestoreScenario(null);
-          showToast('Device authorization skipped. Ledger kept offline.');
+          setRestoreConfirmationScenario(null);
+          showToast('Cloud restore skipped. Ledger kept offline.');
+        }}
+      />
+
+      <IOSTotpMfaModal
+        isOpen={Boolean(totpEnrollment)}
+        mode="enrollment"
+        secretKey={totpEnrollment?.secretKey}
+        accountEmail={googleUser?.email}
+        onVerify={handleConfirmTotpEnrollment}
+        onCancel={() => {
+          cancelTotpEnrollment();
+          setTotpEnrollment(null);
+        }}
+      />
+
+      <IOSTotpMfaModal
+        isOpen={Boolean(totpSignInChallenge)}
+        mode="sign-in"
+        accountEmail={googleUser?.email}
+        onVerify={handleCompleteTotpSignIn}
+        onCancel={() => {
+          cancelTotpSignIn();
+          setTotpSignInChallenge(null);
+          showToast('Authenticator sign-in cancelled. Cloud ledger access remains locked.');
         }}
       />
 
