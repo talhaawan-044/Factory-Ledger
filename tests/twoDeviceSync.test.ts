@@ -10,9 +10,12 @@ import {
   getLedgerForSync,
   markRecordsClean,
   clearAllData,
+  recordSyncConflicts,
+  getSyncConflictHistory,
+  clearSyncConflictHistory,
 } from '../src/lib/db';
 import { sanitizeForFirestore, type CloudSyncResult } from '../src/lib/firebase';
-import { getCloudRecordCount, syncManager } from '../src/lib/syncManager';
+import { getCloudRecordCount, syncManager, isDeviceAuthorized, setDeviceAuthorized } from '../src/lib/syncManager';
 import type { AppSettings, Dispatch, Party } from '../src/types';
 
 describe('Phase C: Two-Device Sync Scenarios & Settings Separation (Issues 21, 22, 28)', () => {
@@ -664,6 +667,59 @@ describe('Phase C: Two-Device Sync Scenarios & Settings Separation (Issues 21, 2
       // so UI never shows "Synced" while a record is stuck
       const stateBefore = syncManager.getState();
       expect(stateBefore).toBeDefined();
+    });
+  });
+
+  describe('Issue 52 (F-01): Trusted-Device Authorization on Clean Installs', () => {
+    it('unauthorized devices on clean install require user confirmation before restoring cloud data', async () => {
+      localStorage.clear();
+      const mockUser = { uid: 'user-999', email: 'owner@example.com', displayName: 'Owner' };
+
+      expect(isDeviceAuthorized(mockUser.uid)).toBe(false);
+
+      setDeviceAuthorized(mockUser.uid, true);
+      expect(isDeviceAuthorized(mockUser.uid)).toBe(true);
+
+      setDeviceAuthorized(mockUser.uid, false);
+      expect(isDeviceAuthorized(mockUser.uid)).toBe(false);
+    });
+  });
+
+  describe('Issue 53 (F-02): Conflict Audit Logging & Non-Silent Resolution', () => {
+    it('captures concurrent multi-device mutations in conflict audit history', () => {
+      clearSyncConflictHistory();
+
+      const localParty: Party = {
+        id: 'party-test-1',
+        name: 'Local Party Name',
+        updatedAt: 1000,
+        createdAt: 1000,
+      };
+
+      const cloudParty: Party = {
+        id: 'party-test-1',
+        name: 'Cloud Party Name',
+        updatedAt: 2000,
+        createdAt: 1000,
+      };
+
+      const { merged, conflicts } = mergeLedgerData(
+        { parties: [localParty], dispatches: [], payments: [], pos: [], lots: [], mines: [] } as any,
+        { parties: [cloudParty], dispatches: [], payments: [], pos: [], lots: [], mines: [] } as any
+      );
+
+      expect(merged.parties[0].name).toBe('Cloud Party Name');
+      expect(conflicts.length).toBe(1);
+      expect(conflicts[0].entityId).toBe('party-test-1');
+      expect(conflicts[0].winner).toBe('cloud');
+
+      recordSyncConflicts(conflicts);
+      const history = getSyncConflictHistory();
+      expect(history.length).toBe(1);
+      expect(history[0].entityId).toBe('party-test-1');
+
+      clearSyncConflictHistory();
+      expect(getSyncConflictHistory().length).toBe(0);
     });
   });
 });

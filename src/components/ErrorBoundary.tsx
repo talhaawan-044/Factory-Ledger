@@ -12,6 +12,7 @@ interface State {
   errorInfo: ErrorInfo | null;
   isExporting: boolean;
   exportDone: boolean;
+  exportError: string | null;
   copied: boolean;
 }
 
@@ -24,6 +25,7 @@ export default class ErrorBoundary extends Component<Props, State> {
       errorInfo: null,
       isExporting: false,
       exportDone: false,
+      exportError: null,
       copied: false,
     };
   }
@@ -43,12 +45,14 @@ export default class ErrorBoundary extends Component<Props, State> {
 
   handleEmergencyExport = async () => {
     try {
-      this.setState({ isExporting: true });
+      this.setState({ isExporting: true, exportError: null });
       await exportDatabaseBackupJson();
       this.setState({ exportDone: true });
     } catch (err) {
       console.error('[ErrorBoundary] Emergency export failed:', err);
-      alert('Emergency export failed: ' + (err instanceof Error ? err.message : String(err)));
+      this.setState({
+        exportError: 'Emergency export failed: ' + (err instanceof Error ? err.message : String(err)),
+      });
     } finally {
       this.setState({ isExporting: false });
     }
@@ -190,6 +194,22 @@ export default class ErrorBoundary extends Component<Props, State> {
                   {isExporting ? 'Exporting…' : exportDone ? 'Backup Downloaded!' : 'Emergency JSON Export'}
                 </span>
               </button>
+
+              {this.state.exportError && (
+                <div
+                  style={{
+                    fontSize: 12,
+                    color: '#ff453a',
+                    padding: '8px 12px',
+                    backgroundColor: 'rgba(255, 69, 58, 0.1)',
+                    borderRadius: 8,
+                    textAlign: 'left',
+                    wordBreak: 'break-word',
+                  }}
+                >
+                  {this.state.exportError}
+                </div>
+              )}
 
               <button
                 type="button"

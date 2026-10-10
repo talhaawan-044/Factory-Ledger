@@ -20,6 +20,7 @@ import {
   getLedgerOwner,
   setLedgerOwner,
   getLocalRecordCounts,
+  recordSyncConflicts,
   type LedgerMutationDetail,
 } from './db';
 import {
@@ -43,7 +44,8 @@ export interface SyncState {
 export type LoginScenarioType =
   | 'ready'
   | 'anonymous_conflict'
-  | 'account_switch';
+  | 'account_switch'
+  | 'untrusted_restore_confirmation';
 
 export interface LoginScenarioResult {
   type: LoginScenarioType;
@@ -58,6 +60,23 @@ export interface LoginScenarioResult {
 
 const STORAGE_KEY_LAST_SYNC = 'coal_last_cloud_sync';
 const STORAGE_KEY_AUTO_SYNC = 'coal_auto_sync_cloud';
+const STORAGE_KEY_DEVICE_ENROLLED = 'coal_device_authorized';
+
+export function isDeviceAuthorized(uid?: string): boolean {
+  if (typeof localStorage === 'undefined') return true;
+  if (!uid) return true;
+  return localStorage.getItem(`${STORAGE_KEY_DEVICE_ENROLLED}_${uid}`) === 'true';
+}
+
+export function setDeviceAuthorized(uid: string, authorized: boolean = true): void {
+  if (typeof localStorage === 'undefined' || !uid) return;
+  if (authorized) {
+    localStorage.setItem(`${STORAGE_KEY_DEVICE_ENROLLED}_${uid}`, 'true');
+  } else {
+    localStorage.removeItem(`${STORAGE_KEY_DEVICE_ENROLLED}_${uid}`);
+  }
+}
+
 const CLOUD_RECORD_COLLECTIONS = ['parties', 'dispatches', 'payments', 'pos', 'lots', 'mines'] as const;
 
 /**
@@ -377,9 +396,13 @@ class SyncManager {
       const cloudCount = getCloudRecordCount(cloudData);
 
       if (localCount === 0 && cloudCount > 0) {
-        // Local is completely empty (fresh install, new device, or cleared browser data)
-        // Auto-restore immediately from cloud!
-        console.log(`[SyncManager] Empty local database. Auto-restoring ${cloudCount} records from cloud...`);
+        if (!isDeviceAuthorized(uid)) {
+          console.warn('[SyncManager] Unverified device with empty local database. Skipping auto-restore for security.');
+          this.updateState({ status: 'idle' });
+          return;
+        }
+        // Local is completely empty (fresh install, new device, or cleared browser data) on authorized device
+        console.log(`[SyncManager] Empty local database on authorized device. Restoring ${cloudCount} records from cloud...`);
         const restoreRes = await restoreBackup(cloudData);
         if (restoreRes.success) {
           const timestamp = cloudData.lastCloudSync || new Date().toISOString();
@@ -395,7 +418,11 @@ class SyncManager {
 
       // Both local and cloud have entries: Smart 2-way merge
       const tombstones = getTombstones();
-      const { merged, hasLocalChanges, hasCloudChanges } = mergeLedgerData(local, cloudData, tombstones);
+      const { merged, hasLocalChanges, hasCloudChanges, conflicts } = mergeLedgerData(local, cloudData, tombstones);
+
+      if (conflicts && conflicts.length > 0) {
+        recordSyncConflicts(conflicts);
+      }
 
       if (hasLocalChanges) {
         console.log('[SyncManager] Applying cloud updates to local storage...');
@@ -469,6 +496,16 @@ class SyncManager {
     // Scenario 1: Clean local storage (0 records)
     if (localCount === 0) {
       if (cloudCount > 0 && cloudData) {
+        // Enforce trusted-device authorization check (Issue F-01)
+        if (!isDeviceAuthorized(user.uid)) {
+          return {
+            type: 'untrusted_restore_confirmation',
+            cloudCount,
+            user,
+            cloudData,
+            message: `Google Account connected with ${cloudCount} cloud records. Authorize this device to restore your ledger.`,
+          };
+        }
         await restoreBackup(cloudData, { silent: false });
         const timestamp = cloudData.lastCloudSync || new Date().toISOString();
         if (typeof localStorage !== 'undefined') {
@@ -476,6 +513,7 @@ class SyncManager {
         }
       }
       setLedgerOwner(user.uid, user.email);
+      setDeviceAuthorized(user.uid, true);
       this.updateState({ status: 'synced', currentUser: user });
       return {
         type: 'ready',

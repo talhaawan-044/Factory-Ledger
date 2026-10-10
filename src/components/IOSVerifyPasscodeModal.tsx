@@ -30,12 +30,19 @@ export default function IOSVerifyPasscodeModal({
   const [isAuthenticatingDevice, setIsAuthenticatingDevice] = useState(false);
   const pinLength = getPinLength();
 
-  useEffect(() => {
+  const [prevIsOpen, setPrevIsOpen] = useState(isOpen);
+  if (isOpen !== prevIsOpen) {
+    setPrevIsOpen(isOpen);
     if (isOpen) {
       setPin('');
       setErrorMessage('');
       setIsShaking(false);
       setIsAuthenticatingDevice(false);
+    }
+  }
+
+  useEffect(() => {
+    if (isOpen) {
       isDeviceLockAvailable().then(setDeviceLockAvailable).catch(() => setDeviceLockAvailable(false));
     }
   }, [isOpen]);

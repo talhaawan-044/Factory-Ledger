@@ -1,6 +1,7 @@
 import type { Dispatch, Party, AppSettings, Payment, PurchaseOrder, BackupPayload, InventoryLot, Mine } from "../types";
 import { getTodayDateString } from "../utils/dateUtils";
 import { idb, requestPersistentStorage } from "./dexieDb";
+import { v4 as uuidv4 } from 'uuid';
 
 const SETTINGS_KEY = "app_settings";
 const DATA_VERSION_KEY = "coal_ledger_version";
@@ -1600,17 +1601,60 @@ export async function clearAllData(options?: { resetSettings?: boolean; resetOwn
   notifyLedgerMutation('all', undefined, 'delete');
 }
 
+export interface ConflictAuditEntry {
+  id: string;
+  collection: string;
+  entityId: string;
+  localUpdatedAt: number;
+  cloudUpdatedAt: number;
+  winner: 'cloud' | 'local';
+  timestamp: number;
+}
+
+const STORAGE_KEY_CONFLICT_AUDIT = 'coal_sync_conflicts';
+
+export function getSyncConflictHistory(): ConflictAuditEntry[] {
+  if (typeof localStorage === 'undefined') return [];
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_CONFLICT_AUDIT);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function recordSyncConflicts(entries: ConflictAuditEntry[]): void {
+  if (typeof localStorage === 'undefined' || !entries || entries.length === 0) return;
+  try {
+    const existing = getSyncConflictHistory();
+    const combined = [...entries, ...existing].slice(0, 100);
+    localStorage.setItem(STORAGE_KEY_CONFLICT_AUDIT, JSON.stringify(combined));
+  } catch (err) {
+    console.warn('[SyncAudit] Failed to record conflict history:', err);
+  }
+}
+
+export function clearSyncConflictHistory(): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    localStorage.removeItem(STORAGE_KEY_CONFLICT_AUDIT);
+  } catch {}
+}
+
 /**
  * Helper to reconcile a single entity collection between local and remote datasets:
  * - Honors soft deletes (deleted: true, deletedAt) across both local and remote.
  * - Compares deletion timestamps vs edit timestamps (newer edit can undelete).
  * - Honors tombstones for backward compatibility.
  * - Uses immutable record ID as key (Issue 12).
+ * - Records non-silent conflict audit entries when both versions exist with differing timestamps.
  */
 function mergeCollection<T extends { id: string; updatedAt?: number; createdAt?: number; deleted?: boolean; deletedAt?: number }>(
   localList: T[] = [],
   cloudList: T[] = [],
-  tombstones: Record<string, number> = {}
+  tombstones: Record<string, number> = {},
+  collectionName: string = 'records',
+  conflicts: ConflictAuditEntry[] = []
 ): { mergedList: T[]; localChanges: boolean; cloudChanges: boolean } {
   let localChanges = false;
   let cloudChanges = false;
@@ -1674,8 +1718,26 @@ function mergeCollection<T extends { id: string; updatedAt?: number; createdAt?:
       if (cloudTime > localTime) {
         itemMap.set(cItem.id, cItem);
         localChanges = true;
+        conflicts.push({
+          id: uuidv4(),
+          collection: collectionName,
+          entityId: cItem.id,
+          localUpdatedAt: localTime,
+          cloudUpdatedAt: cloudTime,
+          winner: 'cloud',
+          timestamp: Date.now(),
+        });
       } else if (localTime > cloudTime) {
         cloudChanges = true;
+        conflicts.push({
+          id: uuidv4(),
+          collection: collectionName,
+          entityId: cItem.id,
+          localUpdatedAt: localTime,
+          cloudUpdatedAt: cloudTime,
+          winner: 'local',
+          timestamp: Date.now(),
+        });
       }
     }
   }
@@ -1692,6 +1754,7 @@ function mergeCollection<T extends { id: string; updatedAt?: number; createdAt?:
  * - Issue 12: Uses immutable record ID as unique key (NO name-based party merge).
  * - Issue 11: Reconciles soft deletes (deleted: true) and tombstones bidirectionally.
  * - Uses timestamps (updatedAt / createdAt) to resolve conflicts (Last Write Wins).
+ * - Surfaces all resolved conflicts in audit log to eliminate silent financial overwrite.
  */
 export function mergeLedgerData(
   local: BackupPayload,
@@ -1701,24 +1764,27 @@ export function mergeLedgerData(
   merged: BackupPayload;
   hasLocalChanges: boolean;
   hasCloudChanges: boolean;
+  conflicts: ConflictAuditEntry[];
 } {
+  const conflicts: ConflictAuditEntry[] = [];
+
   // 1. Parties
-  const partiesRes = mergeCollection(local.parties || [], cloud.parties || [], tombstones);
+  const partiesRes = mergeCollection(local.parties || [], cloud.parties || [], tombstones, 'parties', conflicts);
 
   // 2. Dispatches
-  const dispatchesRes = mergeCollection(local.dispatches || [], cloud.dispatches || [], tombstones);
+  const dispatchesRes = mergeCollection(local.dispatches || [], cloud.dispatches || [], tombstones, 'dispatches', conflicts);
 
   // 3. Payments
-  const paymentsRes = mergeCollection(local.payments || [], cloud.payments || [], tombstones);
+  const paymentsRes = mergeCollection(local.payments || [], cloud.payments || [], tombstones, 'payments', conflicts);
 
   // 4. Purchase Orders
-  const posRes = mergeCollection(local.pos || [], cloud.pos || [], tombstones);
+  const posRes = mergeCollection(local.pos || [], cloud.pos || [], tombstones, 'pos', conflicts);
 
   // 5. Lots
-  const lotsRes = mergeCollection(local.lots || [], cloud.lots || [], tombstones);
+  const lotsRes = mergeCollection(local.lots || [], cloud.lots || [], tombstones, 'lots', conflicts);
 
   // 6. Mines
-  const minesRes = mergeCollection(local.mines || [], cloud.mines || [], tombstones);
+  const minesRes = mergeCollection(local.mines || [], cloud.mines || [], tombstones, 'mines', conflicts);
 
   let hasLocalChanges =
     partiesRes.localChanges ||
@@ -1778,5 +1844,5 @@ export function mergeLedgerData(
     settings: mergedSettings,
   };
 
-  return { merged, hasLocalChanges, hasCloudChanges };
+  return { merged, hasLocalChanges, hasCloudChanges, conflicts };
 }

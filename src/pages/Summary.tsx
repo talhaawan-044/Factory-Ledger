@@ -72,8 +72,34 @@ export default function Summary() {
     }, []);
 
     useEffect(() => {
-        void loadData();
-    }, [loadData]);
+        let active = true;
+        Promise.all([
+            getDispatches(),
+            getParties(),
+            getPayments(),
+            getPurchaseOrders(),
+            getSettings(),
+        ]).then(([d, p, pay, poList, s]) => {
+            if (active) {
+                setDispatches(d);
+                setParties(p);
+                setPayments(pay);
+                setPos(poList);
+                setSettings(s);
+                setLoadError(null);
+                setLoading(false);
+            }
+        }).catch((error) => {
+            if (active) {
+                console.error('[Summary] Could not load the overview:', error);
+                setLoadError('Could not load your local ledger. Please try again.');
+                setLoading(false);
+            }
+        });
+        return () => {
+            active = false;
+        };
+    }, []);
 
     useLedgerListener(() => {
         void loadData();

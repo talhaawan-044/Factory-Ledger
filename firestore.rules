@@ -3,24 +3,11 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // ===============================================================
-    // Assumed Data Model
-    // ===============================================================
-    //
-    // Collection: users/{userId}/ledger
-    // Document ID: 'backup' (or individual ledger snapshot documents)
-    // Fields:
-    //   - version: string (optional, data schema version)
-    //   - exportDate: string (optional, ISO date string)
-    //   - parties: list of map (party profiles)
-    //   - dispatches: list of map (dispatch records)
-    //   - payments: list of map (payment transactions)
-    //   - pos: list of map (purchase orders)
-    //   - settings: map (business and app configurations)
-    //   - lastCloudSync: string (optional, ISO timestamp)
-    //   - updatedAt: timestamp (optional, server timestamp)
-    //
-    // ===============================================================
+    // Data model:
+    // users/{uid}/parties|dispatches|payments|pos|lots|mines/{id}
+    //   one entity per document; each has an id and updatedAt (epoch ms).
+    // users/{uid}/settings/config stores app settings; meta/sync stores the
+    // server sync timestamp. ledger/backup is read/delete-only legacy data.
 
     // ===============================================================
     // Helper Functions
@@ -36,11 +23,20 @@ service cloud.firestore {
       return isAuthenticated() && request.auth.uid == userId;
     }
 
-    // Guard against stale writes: incoming update must not have an older timestamp than existing document
+    // Keep clock-skewed clients from freezing a record and ensure old clients
+    // cannot bypass the stale-write guard by omitting updatedAt.
+    function hasValidUpdatedAt() {
+      return request.resource.data.updatedAt is number &&
+             request.resource.data.updatedAt <= request.time.toMillis() + 300000;
+    }
+
     function isNotStaleUpdate() {
       return !('updatedAt' in resource.data) ||
-             !('updatedAt' in request.resource.data) ||
              request.resource.data.updatedAt >= resource.data.updatedAt;
+    }
+
+    function idMatchesPath(documentId) {
+      return request.resource.data.id == documentId;
     }
 
     // ===============================================================
@@ -49,59 +45,56 @@ service cloud.firestore {
 
     // Strictly isolate data per authenticated Google user
     match /users/{userId} {
-      // Allow user to read and manage their top-level record
-      allow read, write: if isOwner(userId);
-
       // Granular subcollections with stale-write protection
       match /parties/{partyId} {
         allow read, delete: if isOwner(userId);
-        allow create: if isOwner(userId);
-        allow update: if isOwner(userId) && isNotStaleUpdate();
+        allow create: if isOwner(userId) && hasValidUpdatedAt() && idMatchesPath(partyId);
+        allow update: if isOwner(userId) && hasValidUpdatedAt() && idMatchesPath(partyId) && isNotStaleUpdate();
       }
 
       match /dispatches/{dispatchId} {
         allow read, delete: if isOwner(userId);
-        allow create: if isOwner(userId);
-        allow update: if isOwner(userId) && isNotStaleUpdate();
+        allow create: if isOwner(userId) && hasValidUpdatedAt() && idMatchesPath(dispatchId);
+        allow update: if isOwner(userId) && hasValidUpdatedAt() && idMatchesPath(dispatchId) && isNotStaleUpdate();
       }
 
       match /payments/{paymentId} {
         allow read, delete: if isOwner(userId);
-        allow create: if isOwner(userId);
-        allow update: if isOwner(userId) && isNotStaleUpdate();
+        allow create: if isOwner(userId) && hasValidUpdatedAt() && idMatchesPath(paymentId);
+        allow update: if isOwner(userId) && hasValidUpdatedAt() && idMatchesPath(paymentId) && isNotStaleUpdate();
       }
 
       match /pos/{poId} {
         allow read, delete: if isOwner(userId);
-        allow create: if isOwner(userId);
-        allow update: if isOwner(userId) && isNotStaleUpdate();
+        allow create: if isOwner(userId) && hasValidUpdatedAt() && idMatchesPath(poId);
+        allow update: if isOwner(userId) && hasValidUpdatedAt() && idMatchesPath(poId) && isNotStaleUpdate();
       }
 
       match /lots/{lotId} {
         allow read, delete: if isOwner(userId);
-        allow create: if isOwner(userId);
-        allow update: if isOwner(userId) && isNotStaleUpdate();
+        allow create: if isOwner(userId) && hasValidUpdatedAt() && idMatchesPath(lotId);
+        allow update: if isOwner(userId) && hasValidUpdatedAt() && idMatchesPath(lotId) && isNotStaleUpdate();
       }
 
       match /mines/{mineId} {
         allow read, delete: if isOwner(userId);
-        allow create: if isOwner(userId);
-        allow update: if isOwner(userId) && isNotStaleUpdate();
+        allow create: if isOwner(userId) && hasValidUpdatedAt() && idMatchesPath(mineId);
+        allow update: if isOwner(userId) && hasValidUpdatedAt() && idMatchesPath(mineId) && isNotStaleUpdate();
       }
 
       match /settings/{settingId} {
         allow read, delete: if isOwner(userId);
-        allow create: if isOwner(userId);
-        allow update: if isOwner(userId) && isNotStaleUpdate();
+        allow create: if isOwner(userId) && hasValidUpdatedAt();
+        allow update: if isOwner(userId) && hasValidUpdatedAt() && isNotStaleUpdate();
       }
 
       match /meta/{metaId} {
         allow read, write: if isOwner(userId);
       }
 
-      // Legacy single-document backup path (for backward compatibility & migration)
+      // Legacy single-document backup path (migration/cleanup only)
       match /ledger/{document} {
-        allow read, write: if isOwner(userId);
+        allow read, delete: if isOwner(userId);
       }
     }
 

@@ -280,7 +280,7 @@ export const PaymentReceipt = React.forwardRef<HTMLDivElement, PaymentReceiptPro
                 letterSpacing: 0.5,
               }}
             >
-              ✓ E-VERIFIED VOUCHER
+              E-VERIFIED VOUCHER
             </div>
             <div style={{ fontSize: 8.5, color: '#94A3B8', marginTop: 4 }}>
               Record Date: {payment.date}

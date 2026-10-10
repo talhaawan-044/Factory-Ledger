@@ -200,7 +200,8 @@ export default function PartyLedger() {
     if (!partyId) return;
     const amt = cleanNumber(paymentForm.amount);
     if (!amt || amt <= 0) {
-      alert('Please enter a valid payment amount.');
+      playPopSound();
+      showToast('Please enter a valid payment amount.');
       return;
     }
 
@@ -251,7 +252,8 @@ export default function PartyLedger() {
   const handleSavePO = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (!partyId || !poForm.poNumber.trim()) {
-      alert('Please enter a PO Number');
+      playPopSound();
+      showToast('Please enter a valid PO number.');
       return;
     }
 

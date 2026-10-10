@@ -21,6 +21,13 @@ if [[ ! -f android/keystore.properties ]]; then
 fi
 
 if ! command -v apksigner >/dev/null 2>&1; then
+  candidate_apksigner="$(find "${ANDROID_HOME:-$HOME/Android/Sdk}"/build-tools -name apksigner 2>/dev/null | sort -V | tail -n 1 || true)"
+  if [[ -n "$candidate_apksigner" && -x "$candidate_apksigner" ]]; then
+    export PATH="$(dirname "$candidate_apksigner"):$PATH"
+  fi
+fi
+
+if ! command -v apksigner >/dev/null 2>&1; then
   echo "apksigner is required. Add your Android SDK build-tools directory to PATH." >&2
   exit 1
 fi

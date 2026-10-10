@@ -34,20 +34,20 @@ export default function IOSConfirmModal({
   const initialCountdown = singleButton ? 0 : countdownSeconds;
   const [countdown, setCountdown] = useState(initialCountdown);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [prevIsOpen, setPrevIsOpen] = useState(isOpen);
+  if (isOpen !== prevIsOpen) {
+    setPrevIsOpen(isOpen);
+    setCountdown(initialCountdown);
+    setIsSubmitting(false);
+  }
+
   const modalRef = useRef<HTMLDivElement>(null);
   const GLASS_RADIUS = 24;
 
   useRefraction(modalRef, isOpen, { radius: GLASS_RADIUS, blur: 12, saturate: 1.5 });
 
   useEffect(() => {
-    if (!isOpen) {
-      setCountdown(countdownSeconds);
-      setIsSubmitting(false);
-      return;
-    }
-
-    setCountdown(countdownSeconds);
-    if (countdownSeconds <= 0) return;
+    if (!isOpen || initialCountdown <= 0) return;
 
     const timer = setInterval(() => {
       setCountdown((prev) => {
@@ -60,7 +60,7 @@ export default function IOSConfirmModal({
     }, 1000);
 
     return () => clearInterval(timer);
-  }, [isOpen, countdownSeconds]);
+  }, [isOpen, initialCountdown]);
 
   if (!isOpen) return null;
 

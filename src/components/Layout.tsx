@@ -270,7 +270,7 @@ export default function Layout() {
     setSoundEnabled(nextVal);
     localStorage.setItem('coal_sound_enabled', String(nextVal));
     if (nextVal) playSuccessSound();
-    showToast(nextVal ? 'Sound Feedback Enabled 🔔' : 'Sound Muted 🔕');
+    showToast(nextVal ? 'Sound Feedback Enabled' : 'Sound Muted');
   };
 
   const showToast = (msg: string) => {

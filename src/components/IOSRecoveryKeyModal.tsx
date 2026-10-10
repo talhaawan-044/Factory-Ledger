@@ -26,13 +26,20 @@ export default function IOSRecoveryKeyModal({
   const [deviceLockAvailable, setDeviceLockAvailable] = useState(false);
   const [isAuthenticating, setIsAuthenticating] = useState(false);
 
+  const [prevIsOpen, setPrevIsOpen] = useState(isOpen);
+  if (isOpen && !prevIsOpen) {
+    setPrevIsOpen(true);
+    setKeyInput('');
+    setErrorMessage('');
+    setIsShaking(false);
+    setLockoutRemaining(getLockoutRemainingSeconds());
+    setIsAuthenticating(false);
+  } else if (!isOpen && prevIsOpen) {
+    setPrevIsOpen(false);
+  }
+
   useEffect(() => {
     if (isOpen) {
-      setKeyInput('');
-      setErrorMessage('');
-      setIsShaking(false);
-      setLockoutRemaining(getLockoutRemainingSeconds());
-      setIsAuthenticating(false);
       isDeviceLockAvailable().then(setDeviceLockAvailable).catch(() => setDeviceLockAvailable(false));
     }
   }, [isOpen]);

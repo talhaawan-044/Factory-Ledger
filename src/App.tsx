@@ -10,6 +10,7 @@ const AllEntries = lazy(() => import('./pages/AllEntries'));
 const Inventory = lazy(() => import('./pages/Inventory'));
 const MineLedger = lazy(() => import('./pages/MineLedger'));
 const Settings = lazy(() => import('./pages/Settings'));
+const NotFound = lazy(() => import('./pages/NotFound'));
 
 function RouteLoadingFallback() {
   return (
@@ -33,6 +34,7 @@ export default function App() {
             <Route path="inventory/:mineId" element={<MineLedger />} />
             <Route path="entries" element={<AllEntries />} />
             <Route path="settings" element={<Settings />} />
+            <Route path="*" element={<NotFound />} />
           </Route>
         </Routes>
       </Suspense>

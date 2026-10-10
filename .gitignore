@@ -50,6 +50,11 @@ SOLVED_ISSUES_PART_3.*
 SOLVED_ISSUES_PART_4.*
 NEW_FEATURES_IMPLEMENTATION.*
 CODEX_CHANGE_PLAN.md
+CODE_Reviewer-Report.md
+Solved-Code_reviewer_issue.md
+AGENTS.md
+Gemini*
+PRODUCTION_READINESS_FIXES.md
 
 # Python cache & virtual environments
 __pycache__/

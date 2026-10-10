@@ -186,8 +186,6 @@ export default function DispatchForm() {
         }
         setIsLoading(false);
       });
-    } else {
-      setIsLoading(false);
     }
 
     return () => {

@@ -118,7 +118,7 @@ ${dispatch.commissionPerTon ? `• Commission: - ${curSym} ${dispatch.commission
 *PAYABLE RATE:* ${curSym} ${settlement.payableRate.toFixed(2)} / ton
 *TOTAL PAYABLE:* ${curSym} ${formatAmountNumber(settlement.totalRevenue, settings)}
 ----------------------------------------
-${dispatch.notes ? `*Remarks:* ${dispatch.notes}\n\n` : ''}✓ E-Verified Dispatch Voucher`;
+${dispatch.notes ? `*Remarks:* ${dispatch.notes}\n\n` : ''}E-Verified Dispatch Voucher`;
 
     try {
       if (Capacitor.isNativePlatform()) {

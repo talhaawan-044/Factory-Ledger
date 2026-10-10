@@ -7,7 +7,7 @@ import {
   assertSucceeds,
   type RulesTestEnvironment,
 } from '@firebase/rules-unit-testing';
-import { doc, setDoc, getDoc } from 'firebase/firestore';
+import { deleteDoc, doc, setDoc, getDoc } from 'firebase/firestore';
 
 describe('Issue 29: Firestore Security Rules Unit Tests', () => {
   let testEnv: RulesTestEnvironment;
@@ -76,6 +76,49 @@ describe('Issue 29: Firestore Security Rules Unit Tests', () => {
     await assertSucceeds(
       setDoc(doc(alice, 'users/alice/dispatches/d1'), { id: 'd1', updatedAt: 300 }, { merge: true })
     );
+  });
+
+  it('requires a numeric updatedAt and rejects a timestamp more than five minutes ahead', async () => {
+    const alice = testEnv.authenticatedContext('alice').firestore();
+    const now = Date.now();
+
+    await assertFails(setDoc(doc(alice, 'users/alice/dispatches/missing-time'), { id: 'missing-time' }));
+    await assertFails(setDoc(doc(alice, 'users/alice/dispatches/text-time'), { id: 'text-time', updatedAt: 'now' }));
+    await assertSucceeds(setDoc(doc(alice, 'users/alice/dispatches/near-future'), { id: 'near-future', updatedAt: now + 60_000 }));
+    await assertFails(setDoc(doc(alice, 'users/alice/dispatches/far-future'), { id: 'far-future', updatedAt: now + 10 * 60_000 }));
+  });
+
+  it('does not allow a replacement update without updatedAt to bypass the stale-write guard', async () => {
+    const alice = testEnv.authenticatedContext('alice').firestore();
+    await assertSucceeds(
+      setDoc(doc(alice, 'users/alice/dispatches/d1'), { id: 'd1', updatedAt: Date.now() })
+    );
+    await assertFails(
+      setDoc(doc(alice, 'users/alice/dispatches/d1'), { id: 'd1', note: 'missing updatedAt' })
+    );
+  });
+
+  it('requires entity ids to match their document path', async () => {
+    const alice = testEnv.authenticatedContext('alice').firestore();
+    await assertFails(
+      setDoc(doc(alice, 'users/alice/lots/lot-a'), { id: 'lot-b', updatedAt: Date.now() })
+    );
+  });
+
+  it('allows legacy backup reads and deletes, but not creates or updates', async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await setDoc(doc(context.firestore(), 'users/alice/ledger/backup'), { legacy: true });
+    });
+    const alice = testEnv.authenticatedContext('alice').firestore();
+
+    await assertSucceeds(getDoc(doc(alice, 'users/alice/ledger/backup')));
+    await assertFails(setDoc(doc(alice, 'users/alice/ledger/backup'), { legacy: false }));
+    await assertSucceeds(deleteDoc(doc(alice, 'users/alice/ledger/backup')));
+  });
+
+  it('denies writes to the unused top-level user document', async () => {
+    const alice = testEnv.authenticatedContext('alice').firestore();
+    await assertFails(setDoc(doc(alice, 'users/alice'), { unexpected: true }));
   });
 
   it('other user is denied reading another user private documents', async () => {

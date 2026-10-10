@@ -434,7 +434,7 @@ export const DispatchReceipt = React.forwardRef<HTMLDivElement, DispatchReceiptP
                 letterSpacing: 0.5,
               }}
             >
-              ✓ E-VERIFIED DISPATCH VOUCHER
+              E-VERIFIED DISPATCH VOUCHER
             </div>
             <div style={{ fontSize: 8.5, color: '#94A3B8', marginTop: 4 }}>
               System Ref: {voucherId} • Date: {dispatch.date}

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import {
   enableAppLock,
   updatePin,
@@ -38,7 +38,9 @@ export default function IOSSetPasscodeModal({
   const [keyCopied, setKeyCopied] = useState(false);
   const currentPinLen = getPinLength();
 
-  useEffect(() => {
+  const [prevIsOpen, setPrevIsOpen] = useState(isOpen);
+  if (isOpen !== prevIsOpen) {
+    setPrevIsOpen(isOpen);
     if (isOpen) {
       setStep(isChangingExisting ? 'verify_current' : 'enter_new');
       setCurrentPin('');
@@ -49,7 +51,7 @@ export default function IOSSetPasscodeModal({
       setShowRecoveryModal(false);
       setKeyCopied(false);
     }
-  }, [isOpen, isChangingExisting]);
+  }
 
   if (!isOpen) return null;
 

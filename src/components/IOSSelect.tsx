@@ -93,21 +93,19 @@ export default function IOSSelect<T extends string | number = string>({
 
   // Focus search input when sheet opens
   useEffect(() => {
-    if (isOpen) {
-      setSearchQuery('');
-      if (showSearch) {
-        // Small delay to allow sheet animation to initiate smoothly
-        const t = setTimeout(() => {
-          searchInputRef.current?.focus();
-        }, 120);
-        return () => clearTimeout(t);
-      }
+    if (isOpen && showSearch) {
+      // Small delay to allow sheet animation to initiate smoothly
+      const t = setTimeout(() => {
+        searchInputRef.current?.focus();
+      }, 120);
+      return () => clearTimeout(t);
     }
   }, [isOpen, showSearch]);
 
   const handleOpen = () => {
     if (disabled) return;
     playPopSound();
+    setSearchQuery('');
     setIsOpen(true);
   };
 

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, type CSSProperties } from 'react';
+import { useState, useRef, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 import { Calculator, Check, Percent, FileText } from 'lucide-react';
 import { useRefraction } from '../hooks/useRefraction';
@@ -27,19 +27,27 @@ export default function IOSTaxFormulaModal({
   const [incomePercent, setIncomePercent] = useState<string>(String(initialIncomePercent));
   const [isSaving, setIsSaving] = useState(false);
 
+  const [prevProps, setPrevProps] = useState({ isOpen, initialMethod, initialSalesPercent, initialIncomePercent });
+  if (
+    isOpen &&
+    (!prevProps.isOpen ||
+      prevProps.initialMethod !== initialMethod ||
+      prevProps.initialSalesPercent !== initialSalesPercent ||
+      prevProps.initialIncomePercent !== initialIncomePercent)
+  ) {
+    setPrevProps({ isOpen, initialMethod, initialSalesPercent, initialIncomePercent });
+    setSelectedMethod(initialMethod || 'formula_18_5');
+    setSalesPercent(String(typeof initialSalesPercent === 'number' ? initialSalesPercent : 18));
+    setIncomePercent(String(typeof initialIncomePercent === 'number' ? initialIncomePercent : 5));
+    setIsSaving(false);
+  } else if (!isOpen && prevProps.isOpen) {
+    setPrevProps({ isOpen, initialMethod, initialSalesPercent, initialIncomePercent });
+  }
+
   const modalRef = useRef<HTMLDivElement>(null);
   const GLASS_RADIUS = 24;
 
   useRefraction(modalRef, isOpen, { radius: GLASS_RADIUS, blur: 12, saturate: 1.5 });
-
-  useEffect(() => {
-    if (isOpen) {
-      setSelectedMethod(initialMethod || 'formula_18_5');
-      setSalesPercent(String(typeof initialSalesPercent === 'number' ? initialSalesPercent : 18));
-      setIncomePercent(String(typeof initialIncomePercent === 'number' ? initialIncomePercent : 5));
-      setIsSaving(false);
-    }
-  }, [isOpen, initialMethod, initialSalesPercent, initialIncomePercent]);
 
   if (!isOpen) return null;
 

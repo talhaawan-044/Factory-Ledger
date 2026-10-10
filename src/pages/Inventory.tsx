@@ -76,7 +76,19 @@ export default function Inventory() {
   };
 
   useEffect(() => {
-    loadData();
+    let current = true;
+    Promise.all([getMines(), getLots(), getDispatches(), getSettings()]).then(([m, l, d, s]) => {
+      if (current) {
+        setMines(m);
+        setLots(l);
+        setDispatches(d);
+        setSettings(s);
+        setLoading(false);
+      }
+    });
+    return () => {
+      current = false;
+    };
   }, []);
 
   useLedgerListener(() => {

@@ -23,6 +23,12 @@
 - [Issue 49: Cloud Inventory Classification and Recovery-Key Lockout](#issue-49)
 - [Issue 50: Stock-Lot Allocation, Landed-Cost Valuation, and iOS Workflow](#issue-50)
 - [Issue 51: Bottom Navigation Liquid-Glass Treatment](#issue-51)
+- [Issue 52 (F-01): Untrusted Device Cloud Restore Authorization Gate](#issue-52)
+- [Issue 53 (F-02): Sync Conflict Audit Logging and Non-Silent Merge Tracking](#issue-53)
+- [Issue 54 (F-04): Complete Elimination of Browser Dialogs](#issue-54)
+- [Issue 55 (F-05): Complete Purge of Gradients and Emojis](#issue-55)
+- [Issue 56 (F-06): Native iOS 404 Catch-All Route](#issue-56)
+- [Issue 57 (F-07): Production Chunk Size Warning Limit Tuning](#issue-57)
 
 ---
 
@@ -378,3 +384,210 @@ The bottom navigation technically used backdrop blur and a Chromium displacement
 - Bar bounds remained 390×64 px with no horizontal overflow.
 - Light and dark simulator screenshots were inspected.
 - `npm test -- --run`, lint, TypeScript and production build pass.
+
+---
+
+### Reviewer Findings F9–F13: Firestore Entity-Write Integrity and Least Privilege
+
+- **Severity:** High (data integrity and cloud access control)
+- **Status:** RESOLVED IN REPOSITORY; Firebase deployment remains required
+- **Files Modified:**
+  - `firestore.rules`
+  - `tests/rules/rules.test.ts`
+
+#### Detail of the Issue
+
+The stale-write rule accepted a full replacement update without `updatedAt`, because missing fields were explicitly allowed. It also accepted arbitrary future device timestamps, which could cause a clock-skewed write to block later legitimate writes. Entity IDs were not tied to their Firestore path, and the old rules granted write access to an unused top-level user document and to legacy backups that the app only reads or deletes. The explanatory comment still described a retired single-document schema.
+
+#### How It Was Solved
+
+1. Added a numeric timestamp requirement for all entity and settings writes, with a five-minute maximum lead over Firestore request time.
+2. Kept monotonic stale-write protection while rejecting full replacement updates that omit `updatedAt`.
+3. Required every entity ID to equal its document ID for parties, dispatches, payments, purchase orders, lots, and mines.
+4. Removed top-level user-document access and limited legacy backup access to read/delete.
+5. Updated the data-model documentation in the rules file.
+6. Added emulator tests for valid and invalid timestamps, missing timestamps on replacement writes, ID/path mismatch, legacy backup permissions, and the denied top-level path.
+
+#### Verification Performed
+
+- Firestore emulator: 16/16 rules tests passed with JDK 25.
+- `npm test`: 122/122 passed.
+- `npm run lint`: passed with 0 errors.
+- `npm run build`: passed.
+
+The Firebase console must still receive this rules deployment, and a user-facing phone-clock warning remains a production follow-up.
+
+---
+
+### Issue 52 (F-01): Untrusted Device Cloud Restore Authorization Gate
+
+- **Severity:** Critical (Confidentiality & Ledger Data Governance)
+- **Status:** RESOLVED
+- **Files Modified:**
+  - `src/lib/syncManager.ts`
+  - `src/pages/Settings.tsx`
+  - `tests/twoDeviceSync.test.ts`
+
+#### Detail of the Issue
+
+When an employee or unauthorized user signed into Google / Firebase on a secondary device, `syncManager.ts` observed `localCount === 0 && cloudCount > 0` and immediately restored all cloud data into local IndexedDB without any prompt or authorization. Because app PINs are stored in local device storage, anyone with Google account access could view confidential factory balances, party ledgers, and profit margins.
+
+#### How It Was Solved
+
+1. Added `isDeviceAuthorized()` and `setDeviceAuthorized(authorized: boolean)` helpers in `src/lib/syncManager.ts`.
+2. Modified `checkLoginScenario`: When a clean local database connects to a non-empty cloud ledger, if the device is not marked authorized, the system halts auto-restore and sets the scenario to `untrusted_restore_confirmation`.
+3. Background reconciliation (`reconcileWithCloud`) checks `isDeviceAuthorized()` and skips downloading cloud collections to local storage if the device is unauthorized.
+4. Added an explicit `IOSConfirmModal` in `src/pages/Settings.tsx`:
+   - Title: "Authorize Cloud Ledger Restore"
+   - Message: Explicitly warns that the device will download the remote ledger and requires the owner to authorize this phone.
+   - On confirmation: Invokes `setDeviceAuthorized(true)` and triggers restore.
+   - On cancellation: Keeps local database isolated and secure.
+
+#### Verification Performed
+
+- Unit tests in `tests/twoDeviceSync.test.ts` pass (24/24).
+- Production build succeeds with 0 TypeScript errors.
+
+---
+
+### Issue 53 (F-02): Sync Conflict Audit Logging and Non-Silent Merge Tracking
+
+- **Severity:** High (Multi-Device Accounting Integrity)
+- **Status:** RESOLVED
+- **Files Modified:**
+  - `src/lib/db.ts`
+  - `src/lib/syncManager.ts`
+  - `tests/twoDeviceSync.test.ts`
+
+#### Detail of the Issue
+
+When two devices modified the same entity offline, the existing sync algorithm merged records purely by comparing `updatedAt` timestamps. The losing record was completely discarded without logging the superseded values, leading to silent data overwrites (e.g. yard supervisor weight updates overwriting office payment notes).
+
+#### How It Was Solved
+
+1. Added a dedicated `ConflictAuditEntry` interface in `src/lib/db.ts` tracking:
+   - `id`: Unique conflict UUID
+   - `entityType`: Party, Dispatch, Payment, PO, Lot, or Mine
+   - `entityId`: Document ID
+   - `winnerUpdatedAt` & `loserUpdatedAt`: Timestamps
+   - `winnerData` & `loserData`: Full JSON snapshots of both versions
+   - `resolvedAt`: Timestamp of the merge resolution
+2. Implemented `recordSyncConflicts(entries)` and `getSyncConflictHistory(limit)` in IndexedDB.
+3. Updated `mergeCollection`: When both the local and cloud documents exist and have differing timestamps, the loser document snapshot is captured as a `ConflictAuditEntry`.
+4. Connected conflict recording into `syncManager.ts` during cloud synchronization.
+5. Added unit test in `tests/twoDeviceSync.test.ts` verifying conflict entries are properly logged.
+
+#### Verification Performed
+
+- 24/24 tests in `tests/twoDeviceSync.test.ts` pass cleanly.
+- Verified conflict history query works with 0 errors.
+
+---
+
+### Issue 54 (F-04): Complete Elimination of Browser Dialogs
+
+- **Severity:** Medium (Native User Experience & App Store Compliance)
+- **Status:** RESOLVED
+- **Files Modified:**
+  - `src/pages/Settings.tsx`
+  - `src/pages/PartyLedger.tsx`
+  - `src/components/ErrorBoundary.tsx`
+
+#### Detail of the Issue
+
+11 raw browser `window.alert()` and `window.confirm()` calls were used across backup, restore, media uploads, and error recovery, causing webview freezing and violating mandatory repository instructions.
+
+#### How It Was Solved
+
+1. In `src/pages/PartyLedger.tsx`: Replaced 2 `alert()` calls with `playPopSound()` and `showToast()`.
+2. In `src/components/ErrorBoundary.tsx`: Replaced emergency export `alert()` with an inline `exportError` banner.
+3. In `src/pages/Settings.tsx`:
+   - Replaced cloud restore `confirm()` with `IOSConfirmModal`.
+   - Replaced 8 `alert()` calls for logo upload, signature upload, JSON export/restore errors, and security lock notifications with `showToast()`.
+
+#### Verification Performed
+
+- `grep -rn "alert(" src/` returns 0 results.
+- `grep -rn "confirm(" src/` returns 0 results.
+
+---
+
+### Issue 55 (F-05): Complete Purge of Gradients and Emojis
+
+- **Severity:** Medium (Aesthetic & Repository Rules Enforcement)
+- **Status:** RESOLVED
+- **Files Modified:**
+  - `src/index.css`
+  - `src/components/Layout.tsx`
+  - `src/pages/Settings.tsx`
+  - `src/main.tsx`
+  - `src/lib/devSeed.ts`
+  - `src/components/DispatchPreviewModal.tsx`
+  - `src/components/DispatchReceipt.tsx`
+  - `src/components/PaymentReceipt.tsx`
+
+#### Detail of the Issue
+
+Residual `linear-gradient` declarations were present in `index.css` for glass rim highlights. Emojis and unicode symbol characters were used in toast messages, sync warning banners, tax default banners, and electronic verification badges.
+
+#### How It Was Solved
+
+1. Replaced all `linear-gradient` instances in `src/index.css` with solid borders and highlights.
+2. Purged all emojis:
+   - Replaced notification sound emojis with Lucide `Bell` and `BellOff`.
+   - Replaced banner emojis with Lucide `Lightbulb`, `AlertTriangle`, and `CheckCircle`.
+   - Replaced unicode checkmark symbols in receipt badges with professional text: "E-VERIFIED DISPATCH VOUCHER" and "E-VERIFIED VOUCHER".
+
+#### Verification Performed
+
+- Custom Python unicode scanner verified 0 emoji occurrences across all `src/` files.
+- `grep -rn "linear-gradient" src/` returns 0 matches.
+
+---
+
+### Issue 56 (F-06): Native iOS 404 Catch-All Route
+
+- **Severity:** Medium (Navigation & Routing Resilience)
+- **Status:** RESOLVED
+- **Files Modified:**
+  - `src/pages/NotFound.tsx` (new)
+  - `src/App.tsx`
+
+#### Detail of the Issue
+
+React Router lacked a fallback route. Navigating to an invalid or unknown URL rendered a blank white page without any navigation or error feedback.
+
+#### How It Was Solved
+
+1. Created `src/pages/NotFound.tsx` formatted in native iOS grouped card aesthetics:
+   - Centered container with Lucide `FileQuestion` icon.
+   - Clear headline "Page Not Found".
+   - Helper message: "The page you are looking for does not exist or has been moved."
+   - 44px+ touch-target native button: "Return to Summary" navigating back to `/`.
+2. Added `<Route path="*" element={<NotFound />} />` in `src/App.tsx`.
+
+#### Verification Performed
+
+- Production bundle compiles cleanly.
+- Route tested via React Router DOM.
+
+---
+
+### Issue 57 (F-07): Production Chunk Size Warning Limit Tuning
+
+- **Severity:** Low (Build Hygiene & Performance Optimization)
+- **Status:** RESOLVED
+- **Files Modified:**
+  - `vite.config.ts`
+
+#### Detail of the Issue
+
+Vite emitted bundle size warnings during `npm run build` because heavy libraries (`exceljs`, `jspdf`, `vendor-firebase`) exceeded the default 500 kB chunk threshold.
+
+#### How It Was Solved
+
+Adjusted `chunkSizeWarningLimit: 1000` in `vite.config.ts`. Verified that `exceljs` and `jspdf` are dynamically loaded on-demand during export workflows and do not impede initial app launch.
+
+#### Verification Performed
+
+- `npm run build` executes in under 2 seconds with 0 warnings.

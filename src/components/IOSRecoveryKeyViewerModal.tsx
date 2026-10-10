@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { hasRecoveryKey, regenerateRecoveryKey } from '../utils/securityLock';
 import { playPopSound, playSuccessSound } from '../utils/delight';
 import { Check, Copy, KeyRound, RefreshCw, ShieldCheck, X } from 'lucide-react';
@@ -18,7 +18,9 @@ export default function IOSRecoveryKeyViewerModal({ isOpen, onClose }: IOSRecove
   const [showAuthentication, setShowAuthentication] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
 
-  useEffect(() => {
+  const [prevIsOpen, setPrevIsOpen] = useState(isOpen);
+  if (isOpen !== prevIsOpen) {
+    setPrevIsOpen(isOpen);
     if (isOpen) {
       setConfigured(hasRecoveryKey());
       setRecoveryKey('');
@@ -27,7 +29,7 @@ export default function IOSRecoveryKeyViewerModal({ isOpen, onClose }: IOSRecove
       setShowAuthentication(false);
       setIsGenerating(false);
     }
-  }, [isOpen]);
+  }
 
   if (!isOpen) return null;
 

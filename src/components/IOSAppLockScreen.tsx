@@ -60,6 +60,8 @@ export default function IOSAppLockScreen({ onUnlocked }: IOSAppLockScreenProps) 
       const success = await authenticateWithBiometrics();
       if (success) {
         playCashChime();
+        setPin('');
+        setErrorMessage('');
         setIsLocked(false);
         onUnlocked?.();
       }
@@ -73,11 +75,8 @@ export default function IOSAppLockScreen({ onUnlocked }: IOSAppLockScreenProps) 
     if (isLocked && isBiometricEnabled() && !bioTriggeredRef.current && lockoutRemaining <= 0) {
       bioTriggeredRef.current = true;
       triggerBiometrics();
-    }
-    if (!isLocked) {
+    } else if (!isLocked) {
       bioTriggeredRef.current = false;
-      setPin('');
-      setErrorMessage('');
     }
   }, [isLocked, lockoutRemaining, triggerBiometrics]);
 
@@ -93,6 +92,8 @@ export default function IOSAppLockScreen({ onUnlocked }: IOSAppLockScreenProps) 
       const isValid = await verifyPin(nextPin);
       if (isValid) {
         playCashChime();
+        setPin('');
+        setErrorMessage('');
         setIsLocked(false);
         onUnlocked?.();
       } else {
@@ -413,6 +414,8 @@ export default function IOSAppLockScreen({ onUnlocked }: IOSAppLockScreenProps) 
           isChangingExisting={false}
           onSuccess={() => {
             setShowSetNewPasscodeModal(false);
+            setPin('');
+            setErrorMessage('');
             setIsLocked(false);
             onUnlocked?.();
           }}

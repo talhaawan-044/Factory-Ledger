@@ -5,7 +5,7 @@ import { Building2, Factory, Warehouse, Briefcase } from 'lucide-react';
  * Authentic Apple iOS Solid System Tones
  * (Strictly compliant with Apple HIG & workspace rules: 100% flat solid colors, NO gradients, NO neon glow)
  */
-export const APPLE_BUSINESS_PALETTE = [
+const APPLE_BUSINESS_PALETTE = [
   '#007AFF', // System Blue
   '#5856D6', // System Indigo
   '#30B0C7', // System Teal
@@ -17,7 +17,7 @@ export const APPLE_BUSINESS_PALETTE = [
   '#2C2C2E', // System Obsidian
 ];
 
-export function getPartyGlyphData(name: string) {
+function getPartyGlyphData(name: string) {
   const lower = (name || '').trim().toLowerCase();
 
   // Deterministic hash based on party name

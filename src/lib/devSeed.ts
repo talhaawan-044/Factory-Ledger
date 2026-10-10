@@ -1075,7 +1075,7 @@ export async function seedTestData(): Promise<void> {
     await savePayment(pay);
   }
 
-  console.log('✅ Comprehensive test data successfully seeded into IndexedDB!');
+  console.log('[DevSeed] Comprehensive test data successfully seeded into IndexedDB!');
   console.log('   - 5 Mines (Islam, Chamalang, Sorange, Mach, Makerwal)');
   console.log('   - 14 Stock Lots with realistic weights, costs & landed rates');
   console.log('   - 6 Commercial Cement Plants (Maple Leaf, Bestway, Lucky, Fauji, DG Khan, Pioneer)');
@@ -1101,7 +1101,7 @@ export async function clearAllData(): Promise<void> {
   await idb.pos.clear();
   await idb.mines.clear();
   await idb.lots.clear();
-  console.log('✅ Database cleared!');
+  console.log('[DevSeed] Database cleared!');
   if (typeof window !== 'undefined' && window.location) {
     window.location.reload();
   }

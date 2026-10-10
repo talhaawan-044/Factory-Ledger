@@ -616,6 +616,7 @@ graph TD
 - [x] **#40** Replace the 4 UTC dates with `getTodayDateString()`; add the CI guard and T34 (2026-10-09)
 
 ### Phase I: truth and trust
+- [x] **Reviewer F9–F13** Harden Firestore entity rules (validated timestamps and entity IDs, least-privilege legacy paths, current data-model comment) with emulator coverage — `firestore.rules`, `tests/rules/rules.test.ts` (2026-10-10; deployment and in-app clock warning remain operational follow-ups)
 - [ ] **#44** Phone the client with the confirmation sheet; write down his six answers
 - [ ] **#44** Make the rounding defaults agree
 - [ ] **#42** Collect real slips; fill `paper` values from the paper; rename the synthetic file
@@ -645,6 +646,12 @@ graph TD
 - [x] **#50** Add relation auditing, stale-marker recovery, contextual edit availability and iOS-native linked-field UX (2026-10-10)
 - [x] **#50** Add persistent repository UI guidance in `AGENTS.md` and `.agents/rules/ui-guidelines.md` (2026-10-10)
 - [x] **#51** Rebuild the bottom tab bar with a refractive surface, moving liquid lens, dark-mode tuning and accessibility fallbacks (2026-10-10)
+- [x] **#52 (F-01)** Untrusted-device cloud restore authorization gate (`src/lib/syncManager.ts`, `src/pages/Settings.tsx`) (2026-10-10)
+- [x] **#53 (F-02)** Sync conflict audit logging and non-silent merge tracking (`src/lib/db.ts`, `src/lib/syncManager.ts`, `tests/twoDeviceSync.test.ts`) (2026-10-10)
+- [x] **#54 (F-04)** Replaced all browser alert() and confirm() dialogs with IOSConfirmModal, inline error states, and iOS toasts (`src/pages/Settings.tsx`, `src/pages/PartyLedger.tsx`, `src/components/ErrorBoundary.tsx`) (2026-10-10)
+- [x] **#55 (F-05)** Full emoji and gradient purge across styling and code (`src/index.css`, `src/components/Layout.tsx`, `src/pages/Settings.tsx`, `src/main.tsx`, `src/lib/devSeed.ts`, receipts) (2026-10-10)
+- [x] **#56 (F-06)** 404 Catch-All Route with native iOS grouped card layout (`src/pages/NotFound.tsx`, `src/App.tsx`) (2026-10-10)
+- [x] **#57 (F-07)** Production chunk warning limit tuning for lazy-loaded modules (`vite.config.ts`) (2026-10-10)
 - [ ] **#48a, b, e, f, g** Remaining hygiene; tag `v1.0.0` when the gates pass
 
 ---
@@ -720,6 +727,13 @@ Record anything new here as you work, so nothing gets lost.
 | 2026-10-10 | `src/lib/db.ts`, dispatch/inventory UI | The initial hardening treated each stock entry as a one-use voucher, but real yards routinely consume one lot across several dispatches (for example, 15 t from a 20 t receipt). | High | Corrected — stock entries are divisible lots; aggregate allocations are validated transactionally, partial balances stay selectable, deletion restores balance, and landed rate remains locked. |
 | 2026-10-10 | Shared UI controls and inventory/dispatch screens | Linked fields and validation did not consistently communicate immutable financial state in the established iOS style. | Medium | Fixed — disabled/read-only control states, helper copy, inline errors, reusable iOS controls, Lucide icons and persistent repo UI instructions. |
 | 2026-10-10 | `Layout.tsx`, `index.css` bottom navigation | Heavy tint/blur made the global tab bar read almost entirely as frosted glass; selected tabs behaved as separate buttons instead of one liquid material. | Medium | Fixed — clearer refractive shell, shared springing selection lens, solid edge highlights, light/dark tuning and reduced-transparency/motion fallbacks. |
+| 2026-10-10 | `firestore.rules` | Entity writes accepted missing/non-numeric timestamps, timestamps far ahead of server time, mismatched entity IDs, and unnecessary top-level/legacy path writes. | High | Fixed — rules now require valid non-future timestamps and path-matching IDs, limit legacy backup access, and are covered by 16 Firestore emulator tests. Deployment and a user-visible phone-clock warning remain operational follow-ups. |
+| 2026-10-10 | `src/lib/syncManager.ts`, `Settings.tsx` | F-01: Google Auth login on a fresh device immediately and automatically restored all ledger records without verifying whether the device was authorized by the user. | Critical | Fixed — Untrusted device cloud restore authorization gate implemented. Unverified devices require explicit confirmation in settings modal before pulling cloud records. |
+| 2026-10-10 | `src/lib/db.ts`, `syncManager.ts` | F-02: Offline multi-device synchronization resolved concurrent mutations with silent Last-Writer-Wins, without logging superseded records or alerting users. | High | Fixed — Added `ConflictAuditEntry` logging across all collections with `recordSyncConflicts` and `getSyncConflictHistory` in IndexedDB. |
+| 2026-10-10 | `Settings.tsx`, `PartyLedger.tsx`, `ErrorBoundary.tsx` | F-04: 11 raw browser `alert()` and `confirm()` calls were used across backup, restore, media uploads, and error recovery. | Medium | Fixed — Replaced all browser dialogs with `IOSConfirmModal`, inline error state banners, and iOS audio toasts. |
+| 2026-10-10 | `src/index.css`, `Layout.tsx`, `Settings.tsx`, `devSeed.ts`, receipts | F-05: Lingering linear-gradients in CSS and UI emojis in toasts, banners, and receipt badges violated iOS flat design rules. | Medium | Fixed — Purged all `linear-gradient` occurrences and replaced all emojis with Lucide icons (`Bell`, `BellOff`, `CheckCircle`, `AlertTriangle`, `Lightbulb`). |
+| 2026-10-10 | `src/App.tsx`, `src/pages/NotFound.tsx` | F-06: Missing catch-all 404 route in React Router produced an unstyled blank screen on invalid deep links. | Medium | Fixed — Created native iOS grouped card `NotFound.tsx` page with `FileQuestion` icon and back button, wired with `<Route path="*" />`. |
+| 2026-10-10 | `vite.config.ts` | F-07: Vite build emitted chunk warning for lazy-loaded ExcelJS and Firebase vendor bundles. | Low | Fixed — Adjusted `chunkSizeWarningLimit` to 1000 kB recognizing lazy-loaded chunks. |
 
 ---
 

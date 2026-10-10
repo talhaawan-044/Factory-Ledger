@@ -13,6 +13,7 @@ import {
   getTombstones,
   rollbackToPreRestoreSnapshot,
   getPreRestoreSnapshotMeta,
+  setLedgerOwner,
   type PreRestoreSnapshotMeta,
   type BackupPayload,
 } from '../lib/db';
@@ -51,6 +52,7 @@ import {
   /* Info, */
   Sliders,
   CloudOff,
+  Lightbulb,
   // Sparkles,
 } from 'lucide-react';
 import { triggerConfetti, playSuccessSound, playPopSound, playCashChime } from '../utils/delight';
@@ -71,7 +73,7 @@ import {
   wipeCloudUserData,
   isFirebaseConfigured,
 } from '../lib/firebase';
-import { useSyncStatus, type LoginScenarioResult } from '../lib/syncManager';
+import { useSyncStatus, setDeviceAuthorized, type LoginScenarioResult } from '../lib/syncManager';
 import { useLedgerListener } from '../hooks/useLedgerListener';
 import {
   AccountSwitchModal,
@@ -230,6 +232,7 @@ export default function Settings() {
   const [isRestoringFromCloud, setIsRestoringFromCloud] = useState(false);
   const [switchScenario, setSwitchScenario] = useState<LoginScenarioResult | null>(null);
   const [conflictScenario, setConflictScenario] = useState<LoginScenarioResult | null>(null);
+  const [untrustedRestoreScenario, setUntrustedRestoreScenario] = useState<LoginScenarioResult | null>(null);
   const [isSignOutSheetOpen, setIsSignOutSheetOpen] = useState(false);
 
   // Modal triggers
@@ -246,6 +249,7 @@ export default function Settings() {
   const [showImportConfirmModal, setShowImportConfirmModal] = useState(false);
   const [snapshotMeta, setSnapshotMeta] = useState<PreRestoreSnapshotMeta | null>(null);
   const [showRollbackConfirm, setShowRollbackConfirm] = useState(false);
+  const [showRestoreCloudConfirm, setShowRestoreCloudConfirm] = useState(false);
   const [isRollingBack, setIsRollingBack] = useState(false);
 
   // Issue 45: one-time migration notice for existing installs on formula_18_5 default
@@ -288,8 +292,36 @@ export default function Settings() {
   };
 
   useEffect(() => {
-    loadAllData();
-    isBiometricAvailable().then(setIsBioHardwareAvailable);
+    let active = true;
+    Promise.all([
+      getSettings(),
+      getDispatches(),
+      getParties(),
+      getPayments(),
+      getPurchaseOrders(),
+      getPreRestoreSnapshotMeta(),
+    ]).then(([s, d, p, pay, pos, snap]) => {
+      if (!active) return;
+      setSettings(s);
+      setStats({
+        dispatches: d.length,
+        parties: p.length,
+        payments: pay.length,
+        pos: pos.length,
+      });
+      setSnapshotMeta(snap);
+      setLoading(false);
+
+      const MIGRATION_FLAG = 'migrations.manualTaxNotice_v1';
+      const alreadyShown = localStorage.getItem(MIGRATION_FLAG);
+      if (!alreadyShown && s.defaultTaxMethod === 'formula_18_5') {
+        setShowManualTaxNotice(true);
+      }
+    });
+
+    isBiometricAvailable().then((avail) => {
+      if (active) setIsBioHardwareAvailable(avail);
+    });
 
     const handleLockStatusChange = () => {
       setAppLockActive(isAppLockEnabled());
@@ -298,7 +330,10 @@ export default function Settings() {
       setPinLength(getPinLength());
     };
     window.addEventListener('coal_lock_status_changed', handleLockStatusChange);
-    return () => window.removeEventListener('coal_lock_status_changed', handleLockStatusChange);
+    return () => {
+      active = false;
+      window.removeEventListener('coal_lock_status_changed', handleLockStatusChange);
+    };
   }, []);
 
   // Auto-refresh settings and stats when any mutation or cloud sync happens
@@ -366,6 +401,8 @@ export default function Settings() {
         setSwitchScenario(scenario);
       } else if (scenario.type === 'anonymous_conflict') {
         setConflictScenario(scenario);
+      } else if (scenario.type === 'untrusted_restore_confirmation') {
+        setUntrustedRestoreScenario(scenario);
       } else {
         playSuccessSound();
         triggerConfetti();
@@ -379,7 +416,8 @@ export default function Settings() {
         return;
       }
       const friendlyMsg = getFriendlyAuthErrorMessage(err);
-      alert(friendlyMsg);
+      playPopSound();
+      showToast(friendlyMsg);
     } finally {
       setIsSigningIn(false);
     }
@@ -396,7 +434,7 @@ export default function Settings() {
     try {
       const res = await handleSignOut(mode);
       if (!res.success) {
-        alert(res.message);
+        showToast(res.message);
         return;
       }
       showToast(res.message);
@@ -422,24 +460,26 @@ export default function Settings() {
       } else if (result.protected) {
         showToast('Cloud backup preserved (Local storage is empty)');
       } else {
-        alert('Cloud Sync: ' + (result.message || 'Failed to sync'));
+        showToast('Cloud Sync: ' + (result.message || 'Failed to sync'));
       }
     } catch (err: any) {
       console.error('Cloud Sync error:', err);
-      alert('Cloud Sync Error: ' + (err.message || 'Failed to sync data to Firebase'));
+      showToast('Cloud Sync Error: ' + (err.message || 'Failed to sync data to Firebase'));
     } finally {
       setIsSyncing(false);
     }
   };
 
-  const handleCloudRestore = async () => {
+  const handleCloudRestore = () => {
     if (!googleUser) {
       showToast('Please sign in with Google first');
       return;
     }
-    if (!confirm('Restore ledgers and parties from Firebase Cloud? This will merge and download your cloud records to this device.')) {
-      return;
-    }
+    setShowRestoreCloudConfirm(true);
+  };
+
+  const executeCloudRestore = async () => {
+    setShowRestoreCloudConfirm(false);
     setIsRestoringFromCloud(true);
     playPopSound();
     try {
@@ -447,14 +487,14 @@ export default function Settings() {
       if (result.success) {
         playSuccessSound();
         triggerConfetti();
-        showToast('Restored successfully from Firebase Cloud! 🎉');
+        showToast('Restored successfully from Firebase Cloud');
         loadAllData();
       } else {
-        alert(result.message || 'Failed to restore backup');
+        showToast(result.message || 'Failed to restore backup');
       }
     } catch (err: any) {
       console.error('Cloud restore error:', err);
-      alert('Failed to restore from Firebase Cloud: ' + (err.message || 'Error'));
+      showToast('Failed to restore from Firebase Cloud: ' + (err.message || 'Error'));
     } finally {
       setIsRestoringFromCloud(false);
     }
@@ -473,7 +513,7 @@ export default function Settings() {
       playSuccessSound();
       showToast('Logo updated');
     } catch (err: any) {
-      alert(err.message || 'Failed to process logo');
+      showToast(err.message || 'Failed to process logo');
     } finally {
       setIsLogoUploading(false);
       if (logoInputRef.current) logoInputRef.current.value = '';
@@ -501,7 +541,7 @@ export default function Settings() {
       playSuccessSound();
       showToast('Authorized signature updated');
     } catch (err: any) {
-      alert(err.message || 'Failed to process signature image');
+      showToast(err.message || 'Failed to process signature image');
     } finally {
       setIsSignatureUploading(false);
       if (signatureInputRef.current) signatureInputRef.current.value = '';
@@ -1265,7 +1305,7 @@ export default function Settings() {
                         {isSyncing
                           ? 'Syncing with Firebase…'
                           : unresolvedCount && unresolvedCount > 0
-                            ? `⚠️ ${unresolvedCount} item(s) could not sync with cloud`
+                            ? `${unresolvedCount} item(s) could not sync with cloud`
                             : hasPendingChanges
                               ? 'Local changes waiting to sync'
                               : lastSyncTime
@@ -2348,7 +2388,7 @@ export default function Settings() {
                     alignItems: 'flex-start',
                   }}
                 >
-                  <span style={{ fontSize: 18, flexShrink: 0 }}>💡</span>
+                  <Lightbulb size={18} style={{ color: 'var(--ios-orange)', flexShrink: 0, marginTop: 2 }} />
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--label-primary)', marginBottom: 4 }}>
                       New Default: Manual Tax
@@ -2658,6 +2698,19 @@ export default function Settings() {
       />
 
       <IOSConfirmModal
+        isOpen={showRestoreCloudConfirm}
+        title="Restore from Firebase Cloud?"
+        message="Restore ledgers and parties from Firebase Cloud? This will merge and download your cloud records to this device."
+        confirmText={isRestoringFromCloud ? 'Restoring...' : 'Restore Data'}
+        cancelText="Cancel"
+        destructive={false}
+        countdownSeconds={0}
+        icon="none"
+        onConfirm={executeCloudRestore}
+        onCancel={() => setShowRestoreCloudConfirm(false)}
+      />
+
+      <IOSConfirmModal
         isOpen={showClearConfirm}
         title="Clear All Data?"
         message="Are you sure you want to clear ALL dispatches, parties, payments, and POs? This action cannot be undone."
@@ -2707,6 +2760,42 @@ export default function Settings() {
         icon="warning"
         onConfirm={handleConfirmDisableLock}
         onCancel={() => setShowDisableLockConfirm(false)}
+      />
+
+      <IOSConfirmModal
+        isOpen={Boolean(untrustedRestoreScenario)}
+        title="Authorize Device & Restore?"
+        message={
+          untrustedRestoreScenario
+            ? `Google account ${untrustedRestoreScenario.user.email} has ${untrustedRestoreScenario.cloudCount} cloud records. Authorize this device and download your business ledger?`
+            : 'Authorize this device and download your cloud records?'
+        }
+        confirmText="Authorize & Restore"
+        cancelText="Keep Offline"
+        destructive={false}
+        countdownSeconds={0}
+        icon="none"
+        onConfirm={async () => {
+          if (!untrustedRestoreScenario) return;
+          const { user, cloudData } = untrustedRestoreScenario;
+          setDeviceAuthorized(user.uid, true);
+          setLedgerOwner(user.uid, user.email);
+          if (cloudData) {
+            await restoreBackup(cloudData, { silent: false });
+          }
+          setUntrustedRestoreScenario(null);
+          playSuccessSound();
+          triggerConfetti();
+          showToast(`Device authorized. Restored ${untrustedRestoreScenario.cloudCount} records.`);
+          loadAllData();
+        }}
+        onCancel={() => {
+          if (untrustedRestoreScenario) {
+            setDeviceAuthorized(untrustedRestoreScenario.user.uid, false);
+          }
+          setUntrustedRestoreScenario(null);
+          showToast('Device authorization skipped. Ledger kept offline.');
+        }}
       />
 
       {/* ── Set / Change Passcode PIN Modal ── */}

@@ -117,8 +117,28 @@ export default function MineLedger() {
   }, [mineId]);
 
   useEffect(() => {
-    loadData();
-  }, [loadData]);
+    let active = true;
+    if (!mineId) return;
+    Promise.all([
+      getMine(mineId),
+      getMineLots(mineId),
+      getDispatches(),
+      getParties(),
+      getSettings(),
+    ]).then(([m, allLots, allDispatches, allParties, s]) => {
+      if (active) {
+        setMine(m);
+        setLots(allLots);
+        setDispatches(allDispatches);
+        setParties(allParties);
+        setSettings(s);
+        setLoading(false);
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [mineId]);
 
   useLedgerListener(() => {
     loadData();

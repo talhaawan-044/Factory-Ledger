@@ -1669,24 +1669,15 @@ body:has(textarea:focus) .ios-tabbar {
       inset 0 1px 0 rgba(255, 255, 255, 0.14);
   }
 
-  /* Directional rim highlight */
+  /* Solid rim border */
   .ios-datepicker-sheet.glass::before {
     content: '';
     position: absolute;
     inset: 0;
-    padding: 1px;
     border-radius: inherit;
     pointer-events: none;
     z-index: 10;
-    background: linear-gradient(135deg,
-        var(--glass-rim-hi) 0%,
-        transparent 28%,
-        transparent 72%,
-        var(--glass-rim-lo) 100%);
-    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-    -webkit-mask-composite: xor;
-    mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-    mask-composite: exclude;
+    border: 0.5px solid var(--separator);
   }
 }
 
@@ -1785,24 +1776,15 @@ body:has(textarea:focus) .ios-tabbar {
       inset 0 1px 0 rgba(255, 255, 255, 0.14);
   }
 
-  /* Directional rim highlight */
+  /* Solid rim border */
   .ios-confirm-dialog.glass::before {
     content: '';
     position: absolute;
     inset: 0;
-    padding: 1px;
     border-radius: inherit;
     pointer-events: none;
     z-index: 10;
-    background: linear-gradient(135deg,
-        var(--glass-rim-hi) 0%,
-        transparent 28%,
-        transparent 72%,
-        var(--glass-rim-lo) 100%);
-    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-    -webkit-mask-composite: xor;
-    mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-    mask-composite: exclude;
+    border: 0.5px solid var(--separator);
   }
 }
 
