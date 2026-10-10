@@ -627,3 +627,39 @@ Adjusted `chunkSizeWarningLimit: 1000` in `vite.config.ts`. Verified that `excel
 #### Deployment and Validation Still Required
 
 Identity Platform TOTP MFA must be enabled in the Firebase project before these rules are deployed. Then run the clean-browser, enrollment, first-factor denial, valid-TOTP access, cancellation, account-recovery and account-switch tests in `docs/CLOUD_MFA_ROLLOUT.md`. This change does not yet provide an admin-approved device registry, remote device revocation, immutable audit history, or protection from a compromised device.
+
+---
+
+### Issue 59: Android Native Capacitor Firebase Google Sign-In with TOTP Multi-Factor Authentication
+
+- **Severity:** High (Mobile Google Sign-In with MFA)
+- **Status:** RESOLVED
+- **Files Modified:**
+  - `src/lib/firebase.ts`
+  - `src/pages/Settings.tsx`
+  - `ISSUES_AND_FIXES_PART_4.md`
+  - `SOLVED_ISSUES_PART_4.md`
+
+#### Detail of the Issue
+
+When an account with TOTP Multi-Factor Authentication enrolled signed in on native Android via `@capacitor-firebase/authentication`, the native plugin attempted to sign into Android native `FirebaseAuth.signInWithCredential()`. The Android native Firebase SDK threw `FirebaseAuthMultiFactorException` with message: `"Please complete a second factor challenge to finish signing into this account."`.
+
+Because `@capacitor-firebase/authentication` does not expose native multi-factor challenge resolvers or TOTP generators, the plugin rejected the call, returning only the raw error message as a toast notification. The app never received the OAuth credential or the `MultiFactorResolver` needed to render the native iOS-style TOTP challenge sheet (`IOSTotpMfaModal`).
+
+#### How It Was Solved
+
+1. Configured `{ skipNativeAuth: true }` in `FirebaseAuthentication.signInWithGoogle({ skipNativeAuth: true })` and `beginTotpEnrollment()`.
+   - On Android native, Google Play Services now safely provides the Google OAuth `idToken` to the JavaScript layer without attempting native Android Firebase sign-in.
+   - The credential is bridged directly to the Firebase Web JS SDK via `signInWithCredential(auth, credential)`.
+2. The Firebase Web JS SDK properly throws `auth/multi-factor-auth-required` with the complete `MultiFactorResolver` and TOTP factor hints.
+3. Hardened `toTotpSignInRequiredError(error)` to detect both `auth/multi-factor-auth-required`, `auth/mfa-required`, and runtime error messages, safely extracting the resolver and factor hints.
+4. Hardened `Settings.tsx` to catch `TotpSignInRequiredError`, `err?.name === 'TotpSignInRequiredError'`, and `err?.challenge`, reliably presenting `IOSTotpMfaModal` in `'sign-in'` mode.
+5. After the user inputs their 6-digit authenticator code, `completeTotpSignIn(code)` calls `resolver.resolveSignIn(assertion)` using `TotpMultiFactorGenerator.assertionForSignIn(...)`, successfully verifying the second factor on the session and unlocking cloud ledger access.
+
+#### Verification Performed
+
+- Built production web bundle via `npm run build` (clean build in 11.3s).
+- Ran all 12 test suites / 133 unit tests via `npm test` (all 133 tests passed).
+- Synchronized Capacitor Android project (`npx cap sync android`).
+- Built Android APK via Gradle (`./gradlew assembleDebug` - BUILD SUCCESSFUL).
+- Installed and deployed updated debug APK directly onto connected physical Android device via ADB (`adb install -r app/build/outputs/apk/debug/app-debug.apk`).

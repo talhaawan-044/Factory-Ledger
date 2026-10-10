@@ -363,7 +363,7 @@ export default function Settings() {
         }
       })
       .catch((err) => {
-        if (err instanceof TotpSignInRequiredError) {
+        if (err instanceof TotpSignInRequiredError || err?.name === 'TotpSignInRequiredError' || Boolean(err?.challenge)) {
           setTotpSignInChallenge(err.challenge);
           showToast('Enter your authenticator code to finish Google sign-in.');
           return;
@@ -448,7 +448,7 @@ export default function Settings() {
       await finishGoogleLogin(user);
     } catch (err: any) {
       console.error('Google Sign-in error:', err);
-      if (err instanceof TotpSignInRequiredError) {
+      if (err instanceof TotpSignInRequiredError || err?.name === 'TotpSignInRequiredError' || Boolean(err?.challenge)) {
         setTotpSignInChallenge(err.challenge);
         showToast('Enter your authenticator code to finish Google sign-in.');
         return;

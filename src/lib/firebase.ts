@@ -148,19 +148,36 @@ function toGoogleUserData(user: FirebaseUser): GoogleUserData {
 }
 
 function toTotpSignInRequiredError(error: any): TotpSignInRequiredError | null {
-  if (error?.code !== 'auth/multi-factor-auth-required') return null;
+  if (!error) return null;
 
-  const resolver = getMultiFactorResolver(auth, error);
-  const factor = resolver.hints.find((hint) => hint.factorId === TotpMultiFactorGenerator.FACTOR_ID);
-  if (!factor?.uid) {
-    throw new Error('This account requires a second factor that Factory Ledger does not support. Use a TOTP authenticator factor for cloud access.');
+  const isMfaCode =
+    error.code === 'auth/multi-factor-auth-required' ||
+    error.code === 'auth/mfa-required';
+  const isMfaMessage =
+    typeof error.message === 'string' &&
+    error.message.toLowerCase().includes('second factor challenge');
+
+  if (!isMfaCode && !isMfaMessage) return null;
+
+  try {
+    const resolver = getMultiFactorResolver(auth, error);
+    const factor =
+      resolver.hints.find((hint) => hint.factorId === TotpMultiFactorGenerator.FACTOR_ID) ||
+      resolver.hints[0];
+    if (!factor?.uid) {
+      throw new Error('This account requires a second factor that Factory Ledger does not support. Use a TOTP authenticator factor for cloud access.');
+    }
+
+    pendingTotpSignIn = { resolver, enrollmentId: factor.uid };
+    return new TotpSignInRequiredError({
+      enrollmentId: factor.uid,
+      displayName: factor.displayName || 'Factory Ledger authenticator',
+    });
+  } catch (resolverErr) {
+    if (resolverErr instanceof TotpSignInRequiredError) throw resolverErr;
+    console.warn('Could not extract multi-factor resolver from error:', resolverErr);
+    return null;
   }
-
-  pendingTotpSignIn = { resolver, enrollmentId: factor.uid };
-  return new TotpSignInRequiredError({
-    enrollmentId: factor.uid,
-    displayName: factor.displayName || 'Factory Ledger authenticator',
-  });
 }
 
 /**
@@ -200,11 +217,12 @@ export async function beginTotpEnrollment(): Promise<TotpEnrollmentSetup> {
 
   const user = auth.currentUser as FirebaseUser;
   if (Capacitor.isNativePlatform()) {
-    const result = await FirebaseAuthentication.signInWithGoogle();
-    if (!result.credential?.idToken) {
+    const result = await FirebaseAuthentication.signInWithGoogle({ skipNativeAuth: true });
+    const idToken = result.credential?.idToken || (result as any).idToken;
+    if (!idToken) {
       throw new Error('Google did not provide a credential for the required account-security check.');
     }
-    const credential = GoogleAuthProvider.credential(result.credential.idToken);
+    const credential = GoogleAuthProvider.credential(idToken);
     await reauthenticateWithCredential(user, credential);
   } else {
     await reauthenticateWithPopup(user, googleProvider);
@@ -278,7 +296,12 @@ export function getFriendlyAuthErrorMessage(error: any): string {
   if (msg.includes('12501') || code === 'auth/popup-closed-by-user' || msg.includes('cancel')) {
     return 'Sign-in was cancelled.';
   }
-  if (error instanceof TotpSignInRequiredError || code === 'auth/multi-factor-auth-required') {
+  if (
+    error instanceof TotpSignInRequiredError ||
+    code === 'auth/multi-factor-auth-required' ||
+    code === 'auth/mfa-required' ||
+    msg.toLowerCase().includes('second factor challenge')
+  ) {
     return 'Enter the current code from your Factory Ledger authenticator to finish sign-in.';
   }
   switch (code) {
@@ -298,7 +321,8 @@ export function getFriendlyAuthErrorMessage(error: any): string {
 
 /**
  * Trigger Google Sign In
- * - On Native Android: Opens the Native Google Play Services bottom sheet account picker
+ * - On Native Android: Uses Native Google Play Services account picker with skipNativeAuth: true
+ *   so the Firebase auth session and MFA/TOTP challenge are handled in the Firebase Web JS SDK.
  * - On Web / Desktop: Opens the standard popup
  */
 export async function loginWithGoogle(): Promise<GoogleUserData> {
@@ -309,25 +333,18 @@ export async function loginWithGoogle(): Promise<GoogleUserData> {
   if (Capacitor.isNativePlatform()) {
     try {
       // Native Android Google Play Services account picker
-      const result = await FirebaseAuthentication.signInWithGoogle();
+      const result = await FirebaseAuthentication.signInWithGoogle({ skipNativeAuth: true });
 
-      // Bridge native credential to Firebase Web JS SDK for Firestore & cloud persistence
-      if (result.credential?.idToken) {
-        const credential = GoogleAuthProvider.credential(result.credential.idToken);
-        await signInWithCredential(auth, credential);
+      const idToken = result.credential?.idToken || (result as any).idToken;
+      if (!idToken) {
+        throw new Error('Google sign-in was cancelled or did not provide an identity token.');
       }
 
-      const user = result.user;
-      if (!user) {
-        throw new Error('Google sign-in was cancelled.');
-      }
+      // Bridge native credential to Firebase Web JS SDK for Firestore & MFA resolution
+      const credential = GoogleAuthProvider.credential(idToken);
+      const userCredential = await signInWithCredential(auth, credential);
 
-      return {
-        displayName: user.displayName || user.email?.split('@')[0] || 'Google User',
-        email: user.email || '',
-        photoUrl: user.photoUrl || '',
-        uid: user.uid,
-      };
+      return toGoogleUserData(userCredential.user);
     } catch (err: any) {
       const mfaError = toTotpSignInRequiredError(err);
       if (mfaError) throw mfaError;
@@ -342,13 +359,7 @@ export async function loginWithGoogle(): Promise<GoogleUserData> {
   // Web browser fallback
   try {
     const result = await signInWithPopup(auth, googleProvider);
-    const user = result.user;
-    return {
-      displayName: user.displayName || user.email?.split('@')[0] || 'Google User',
-      email: user.email || '',
-      photoUrl: user.photoURL || '',
-      uid: user.uid,
-    };
+    return toGoogleUserData(result.user);
   } catch (error: any) {
     const mfaError = toTotpSignInRequiredError(error);
     if (mfaError) throw mfaError;
@@ -366,6 +377,10 @@ export async function loginWithGoogle(): Promise<GoogleUserData> {
 export async function checkRedirectAuth(): Promise<GoogleUserData | null> {
   if (!isFirebaseConfigured) return null;
 
+  if (auth.currentUser) {
+    return toGoogleUserData(auth.currentUser);
+  }
+
   if (Capacitor.isNativePlatform()) {
     try {
       const current = await FirebaseAuthentication.getCurrentUser();
@@ -373,16 +388,13 @@ export async function checkRedirectAuth(): Promise<GoogleUserData | null> {
         const idTokenRes = await FirebaseAuthentication.getIdToken();
         if (idTokenRes.token) {
           const credential = GoogleAuthProvider.credential(idTokenRes.token);
-          await signInWithCredential(auth, credential);
+          const userCredential = await signInWithCredential(auth, credential);
+          return toGoogleUserData(userCredential.user);
         }
-        return {
-          displayName: current.user.displayName || current.user.email?.split('@')[0] || 'Google User',
-          email: current.user.email || '',
-          photoUrl: current.user.photoUrl || '',
-          uid: current.user.uid,
-        };
       }
     } catch (err) {
+      const mfaError = toTotpSignInRequiredError(err);
+      if (mfaError) throw mfaError;
       console.warn('Native initial auth check error:', err);
     }
     return null;
